@@ -251,7 +251,8 @@ not shared mutable statics.
 1. ✅ Toolchain + blinky on the DEV-KIT
 2. Switch task: count clicks on the serial console (turn hub by hand)
 3. `Motor` + `feed(n)` with the RGB LED as fake motor, then with the DRV8833
-4. Wi-Fi + MQTT: connect, LWT, discovery, manual `feed` command
+4. Wi-Fi + MQTT: ✅ connect, LWT, availability + mocked state. Still to do:
+   discovery, subscriptions, manual `feed` command
 5. `schedule` + `time` handling, local clock, double-feed guard
 6. Board feature for the Zero, flash the three production units
 7. Home Assistant automation publishing time + schedule; retire the old PCBs
