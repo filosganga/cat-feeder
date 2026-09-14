@@ -1,0 +1,17 @@
+# Copy to cfg.toml and fill in. cfg.toml is git-ignored.
+#
+#   cp cfg.toml.example cfg.toml
+#
+# These values are read by build.rs and compiled into the firmware, so changing
+# any of them needs `cargo build`, not just a reflash.
+
+wifi_ssid     = "your-wifi"
+wifi_password = "your-wifi-password"
+
+# The broker. For the local dev stack this is the Mac's LAN address, which you
+# can read with `ipconfig getifaddr en0`. An IP address, not a hostname:
+# there is no DNS lookup in the firmware yet.
+mqtt_host     = "192.168.68.108"
+mqtt_port     = 1883
+mqtt_user     = "feeder"
+mqtt_password = "feeder-dev"

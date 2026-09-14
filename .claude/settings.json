@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(/.claude/skills/**)",
+      "WebFetch(domain:www.waveshare.com)",
+      "WebSearch",
+      "Bash(docker *)",
+      "Bash(ipconfig getifaddr *)",
+      "Bash(pkill -f \"mosquitto_sub -h localhost\")",
+      "Bash(curl *)",
+      "Bash(git check-ignore *)",
+      "Read(//dev/**)",
+      "Bash(espflash *)",
+      "Bash(cargo *)",
+      "Bash(timeout * espflash *)",
+      "Bash(timeout * cargo *)",
+      "Bash(timeout * ./dev/watch.sh *)"
+    ],
+    "additionalDirectories": [
+      "/Users/filippodeluca/Documents/development/personal/cat-feeder",
+      "/tmp"
+    ]
+  }
+}

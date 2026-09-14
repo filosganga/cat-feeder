@@ -1,0 +1,43 @@
+name: cat-feeder-dev
+
+# Local development stack: the broker and Home Assistant the firmware talks to,
+# so nothing depends on the Raspberry Pi. See dev/README.md.
+#
+#   ./dev/bootstrap.sh     once, creates the broker password file
+#   docker compose up -d
+#
+# Broker only:  docker compose up -d mosquitto
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: cat-feeder-mosquitto
+    restart: unless-stopped
+    ports:
+      # Published on all interfaces so the ESP32 can reach it over Wi-Fi,
+      # not just the Mac.
+      - "1883:1883"
+    volumes:
+      - ./dev/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./dev/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto-data:/mosquitto/data
+
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: cat-feeder-ha
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    environment:
+      # Home Assistant owns the clock for this project, so its timezone is
+      # what ends up in feeder/time.
+      TZ: Europe/Rome
+    volumes:
+      - ./dev/homeassistant:/config
+    depends_on:
+      - mosquitto
+
+volumes:
+  # Named rather than a bind mount so `docker compose down -v` wipes every
+  # retained message in one go. That is the only way to test a cold boot.
+  mosquitto-data:
