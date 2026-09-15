@@ -244,8 +244,15 @@ publishing its first state. Widen that grace only if those lines start arriving
 after it.
 
 Verify on the broker too, not only on the console: three retained configs under
-`homeassistant/`, then `online` retained on `feeder/<id>/availability`, and the
-device appearing in Home Assistant as one device with three entities.
+`homeassistant/`, then `online` retained on `feeder/<id>/availability`.
+
+Observed in Home Assistant: one device, `Cat feeder <id>`, firmware `0.1.0`,
+with **Feed** and **Paused** under Controls and **Jammed** under Diagnostic.
+Three separate entities with no device card means the `device` block or a
+`unique_id` is missing; Jammed sitting in Controls means `entity_category` was
+dropped. The end-to-end check is pressing Feed in Home Assistant and watching
+the console: the command must reach the feeder task, not merely appear on the
+broker.
 
 Then publish a manual feed and watch both sides:
 
