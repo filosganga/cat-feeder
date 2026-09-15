@@ -169,6 +169,21 @@ topics with no `<id>`, so all three feeders read the same thing.
     payload: "{{ now().isoformat() }}"
 ```
 
+**`now()`, never `utcnow()`.** The firmware reads the wall-clock fields and does
+not apply the offset: schedule slots are local times and the feeders share a
+house with the broker, so `08:00` already means 08:00 on the wall. Publishing
+UTC would still look like a valid time while moving every meal by the offset,
+with nothing failing. The offset is parsed and logged at startup so that
+mistake is visible on the console, but nothing rejects it.
+
+Not applying the offset is also what makes daylight saving free — in October
+`now()` simply starts rendering `+01:00` and the wall-clock fields shift with
+it, with no timezone rules on the device.
+
+`now().isoformat()` renders a bare ISO 8601 string with microseconds,
+`2026-09-14T08:00:00.123456+02:00`, not a quoted JSON string. The firmware
+accepts that, a quoted string, a trailing `Z`, `+HHMM`, and no offset at all.
+
 ```yaml
 # publish once, and whenever the schedule changes
 - service: mqtt.publish

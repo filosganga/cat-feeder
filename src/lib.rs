@@ -21,6 +21,7 @@
 // Pure logic. No esp-hal, testable on the host.
 pub mod feeder;
 pub mod portions;
+pub mod schedule;
 
 // Hardware. Only built for the board.
 #[cfg(target_os = "none")]

@@ -11,8 +11,9 @@ use cat_feeder::config::{DEVICE_ID_LEN, device_id, load_config};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::motor::{LogMotor, MotorDriver};
 use cat_feeder::portions::{Added, MAX_PORTIONS};
+use cat_feeder::schedule::{Alignment, Due, LocalClock, Scheduler, Skipped, Wall};
 use cat_feeder::switch::{ClickSource, Switch};
-use cat_feeder::wiring::{FeedChannel, FeederStatus};
+use cat_feeder::wiring::{Bus, now_ms};
 use cat_feeder::{mqtt, switch_pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
@@ -52,14 +53,8 @@ pub extern "Rust" fn _esp_println_timestamp() -> u64 {
         .as_millis()
 }
 
-/// Portion requests, from every producer to the one task that owns the motor.
-static FEED: FeedChannel = Channel::new();
-
-/// What the feeder task is doing, read by `mqtt` for the state topic.
-///
-/// The feeder writes it from the action it is about to take, so the state
-/// payload reports what the unit is acting on rather than what it was told.
-static STATUS: FeederStatus = FeederStatus::new();
+/// Everything the tasks share. See `wiring.rs` for who writes what.
+static BUS: Bus = Bus::new();
 
 /// Debounced clicks, from the task that owns the switch to the feeder.
 ///
@@ -77,13 +72,6 @@ static CLICKS: Channel<CriticalSectionRawMutex, (), 4> = Channel::new();
 /// spends a real quarter turn on alignment and dispenses a portion more than it
 /// counts.
 static SWITCH_PRESSED: AtomicBool = AtomicBool::new(false);
-
-/// Milliseconds since boot, the clock the feeder state machine runs on.
-fn now_ms() -> u64 {
-    esp_hal::time::Instant::now()
-        .duration_since_epoch()
-        .as_millis()
-}
 
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
@@ -122,6 +110,7 @@ async fn main(spawner: Spawner) -> ! {
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
     spawner.spawn(feeder_task(LogMotor::new()).expect("failed to create feeder task"));
+    spawner.spawn(schedule_task().expect("failed to create schedule task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -155,7 +144,7 @@ async fn main(spawner: Spawner) -> ! {
         info!("wifi: connected, ip={}", v4.address);
     }
 
-    mqtt::run(stack, cfg, id.as_str(), FEED.sender(), &STATUS).await
+    mqtt::run(stack, cfg, id.as_str(), &BUS).await
 }
 
 /// Owns the switch and nothing else.
@@ -200,7 +189,8 @@ async fn feeder_task(mut motor: LogMotor) {
 
         // Published by `mqtt`. Set from the action about to be taken, so the
         // state topic never claims the unit is feeding while it waits for work.
-        STATUS.set(matches!(action, Action::Turning { .. }), feeder.is_jammed());
+        BUS.status
+            .set(matches!(action, Action::Turning { .. }), feeder.is_jammed());
 
         match action {
             Action::Idle => {
@@ -208,7 +198,7 @@ async fn feeder_task(mut motor: LogMotor) {
 
                 // Watch clicks even while idle, so a hub turned by hand is
                 // visible rather than silently discarded.
-                let portions = match select(FEED.receive(), CLICKS.receive()).await {
+                let portions = match select(BUS.feed.receive(), CLICKS.receive()).await {
                     Either::First(portions) => portions,
                     Either::Second(()) => {
                         info!("feed: click while idle, hub turned by hand");
@@ -242,7 +232,7 @@ async fn feeder_task(mut motor: LogMotor) {
                 // anything. That is the whole reason clicks travel by channel.
                 let event = select3(
                     CLICKS.receive(),
-                    FEED.receive(),
+                    BUS.feed.receive(),
                     Timer::after_millis(jam_timeout_ms as u64),
                 )
                 .await;
@@ -281,6 +271,117 @@ fn log_start(portions: u8, switch_pressed: bool) {
             ", needs aligning"
         }
     );
+}
+
+/// Owns the clock and the schedule, and decides nothing either.
+///
+/// Every rule belongs to `schedule::Scheduler`, which is pure and host-tested.
+/// This task applies whatever `mqtt` last heard from the broker, asks once a
+/// second whether anything is due, and forwards the answer to the feeder.
+#[embassy_executor::task]
+async fn schedule_task() {
+    let mut clock = LocalClock::new();
+    let mut scheduler = Scheduler::new();
+    let mut waiting_logged = false;
+
+    loop {
+        if let Some(sync) = BUS.time.try_take() {
+            log_alignment(clock.align(sync.monotonic_ms, sync.wall), sync.wall);
+        }
+
+        if let Some(schedule) = BUS.schedule.try_take() {
+            info!("schedule: {} slots", schedule.len());
+            scheduler.set_schedule(schedule);
+        }
+
+        // No time means no schedule. A unit that was power-cycled while the
+        // broker was down waits to be told; it never guesses.
+        match clock.now(now_ms()) {
+            None => {
+                if !waiting_logged {
+                    info!("clock: no time received, waiting");
+                    waiting_logged = true;
+                }
+            }
+            Some(now) => match scheduler.next_due(now, BUS.is_paused()) {
+                Due::Nothing => {}
+                Due::Feed {
+                    minute_of_day,
+                    portions,
+                } => {
+                    // Recorded only once the request is queued, so a full queue
+                    // never leaves `last_fed` claiming a meal that never ran.
+                    match BUS.feed.try_send(portions) {
+                        Ok(()) => {
+                            BUS.last_fed.set(now);
+                            log_due(minute_of_day, portions);
+                        }
+                        Err(_) => warn!("schedule: feed queue full, slot dropped"),
+                    }
+                }
+                Due::Consumed { minute_of_day, why } => log_skipped(minute_of_day, why),
+            },
+        }
+
+        Timer::after(SCHEDULE_TICK).await;
+    }
+}
+
+/// How often the scheduler looks at the clock.
+///
+/// Anything under a minute is enough, since the lateness limit is two minutes.
+/// A second keeps a slot's log line close to its wall-clock time, which makes
+/// the console readable against Home Assistant's own history.
+const SCHEDULE_TICK: Duration = Duration::from_secs(1);
+
+/// See [`log_start`] for why these are separate, never-inlined functions.
+/// The startup line prints the time in full, offset included.
+///
+/// The offset never enters a feeding decision — slots are local wall-clock
+/// times and the feeders share a house with the broker, so there is nothing to
+/// convert. It is printed because it is the one clue that the assumption has
+/// broken: an automation publishing `utcnow()` instead of `now()` would still
+/// look like a valid time while moving every meal by the offset.
+#[inline(never)]
+fn log_alignment(alignment: Alignment, wall: Wall) {
+    match alignment {
+        Alignment::Started => info!("clock: started, {wall}"),
+        // Home Assistant republishes every minute, so a second or two of drift
+        // is the normal state of affairs and not worth a line each time.
+        Alignment::Adjusted { drift_s } if drift_s.abs() < 2 => {}
+        Alignment::Adjusted { drift_s } => info!("clock: aligned, drift={drift_s}s"),
+    }
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_due(minute_of_day: u16, portions: u8) {
+    info!(
+        "schedule: slot {:02}:{:02} due, feeding {portions}",
+        minute_of_day / 60,
+        minute_of_day % 60
+    );
+}
+
+/// See [`log_start`] for why this is a separate function.
+///
+/// Every one of these lines is a meal that did *not* happen, so none of them is
+/// silent. A feeder that quietly stops feeding is the failure mode this whole
+/// project has to avoid.
+#[inline(never)]
+fn log_skipped(minute_of_day: u16, why: Skipped) {
+    let hour = minute_of_day / 60;
+    let minute = minute_of_day % 60;
+    match why {
+        Skipped::Baseline => info!("schedule: slot {hour:02}:{minute:02} already past at startup"),
+        Skipped::Paused => {
+            info!("schedule: slot {hour:02}:{minute:02} due but paused, marking consumed")
+        }
+        Skipped::TooLate { by_s } => info!(
+            "schedule: slot {hour:02}:{minute:02} missed by {}m, not catching up",
+            by_s / 60
+        ),
+    }
 }
 
 /// Says out loud when the hopper guard bit.

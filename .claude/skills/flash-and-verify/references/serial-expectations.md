@@ -360,102 +360,108 @@ Failure signatures:
 
 ## Step 5 — schedule, time and the double-feed guard
 
-Action: publish a retained time and schedule, then step the clock.
+Status: observed on the dev kit.
 
-```
-INFO - mqtt: rx feeder/time = 2026-09-14T07:59:30+02:00
-INFO - clock: aligned, drift=-120ms
-INFO - mqtt: rx feeder/schedule = 2 slots
-INFO - schedule: next due 08:00, portions=2
-INFO - schedule: slot 08:00 due, feeding 2
-INFO - feed: done, portions=2, elapsed=3.9s
-INFO - schedule: last_fed = (day 257, slot 0)
-```
-
-The guard is the part that must be tested deliberately. Re-publish a time that
-jumps forward past a slot already fed:
-
-```
-INFO - mqtt: rx feeder/time = 2026-09-14T08:05:00+02:00
-INFO - clock: aligned, drift=+5m
-INFO - schedule: slot 08:00 already fed today, skipping
-```
-
-And a time that jumps past a slot that was **missed** entirely:
-
-```
-INFO - schedule: slot 08:00 missed, not catching up
-```
-
-Both must skip. A missed meal is preferable to a double one. If either line is
-absent and a feed starts instead, stop and fix the guard before flashing any
-production unit.
-
-Offline behaviour: stop the broker and confirm the device keeps feeding on the
-last schedule it received, with no re-alignment lines. Power-cycle it with the
-broker still down and confirm it waits and never guesses a time:
-
-```
-WARN - mqtt: disconnected, running on last known schedule
-INFO - clock: no time received, waiting
-```
-
-### Pause
-
-Four behaviours, and the last two are the ones that break.
+**Drive the clock from the broker.** The firmware trusts `feeder/time`
+completely and keeps no RTC, so publishing times by hand walks it through a
+whole day in seconds. Waiting for real mealtimes to test a schedule is a way to
+test it roughly twice a day.
 
 ```sh
-mosquitto_pub -r -t 'feeder/<id>/paused' -m 'ON'
+pub() { docker compose exec -T mosquitto \
+  mosquitto_pub -h localhost -u feeder -P feeder-dev "$@"; }
+
+pub -r -t 'feeder/schedule' -m '[{"time":"08:00","portions":1},{"time":"12:00","portions":2}]'
+pub -r -t 'feeder/time' -m '2026-09-15T09:00:00+02:00'
+```
+
+Then step the clock with further retained publishes to `feeder/time`. The whole
+sequence below took 120 seconds. `dev/` in the scratchpad of the session that
+first ran it has a script; it is nothing more than the publishes in order.
+
+Observed, with the gaps between lines stripped for readability:
+
+```
+INFO - clock: no time received, waiting              # before the broker is up
+INFO - mqtt: subscribed
+INFO - clock: started, 2026-09-15T09:00:00+02:00
+INFO - schedule: 2 slots
+INFO - schedule: slot 08:00 already past at startup  # baseline: no feed
+
+INFO - clock: aligned, drift=10784s                  # step to 11:59:55
+INFO - schedule: slot 12:00 due, feeding 2           # step to 12:00:03
+INFO - motor: forward
+INFO - feed: start, portions=2, needs aligning
+
+INFO - clock: aligned, drift=71972s                  # step to the next day
+INFO - schedule: slot 08:00 due, feeding 1           # a new day re-arms slots
+
+INFO - mqtt: paused = ON
+INFO - schedule: slot 12:00 due but paused, marking consumed
+INFO - mqtt: paused = OFF
+                                                     # nothing: no replay
+INFO - schedule: slot 08:00 missed by 30m, not catching up
+```
+
+Five rules, each of which will silently feed the cats twice if it breaks:
+
+- **`slot ... already past at startup`, and no feed.** The guard lives in RAM,
+  so a reboot a few seconds after 08:00 would otherwise dispense 08:00 again.
+  The first look at the clock only takes a baseline.
+- **`missed by 30m, not catching up`.** A clock correction that jumps the unit
+  past a slot is not the slot falling due. Anything more than two minutes late
+  is marked consumed instead.
+- **A new day re-arms every slot,** but only by date, never by replaying.
+- **`due but paused, marking consumed`,** then silence on resume. Marking
+  consumed is the whole point: if slots were merely skipped, every unpause would
+  dispense the meal that was deliberately missed.
+- **No `schedule:` line at all** for a slot already resolved, however many times
+  the clock is stepped over it.
+
+**Read the offset on that first line.** The firmware does not apply it — slots
+are local wall-clock times and the feeders share a house with the broker — so it
+is printed precisely because nothing else would notice if it were wrong. An
+automation publishing `utcnow()` instead of `now()` still looks like a valid
+time while moving every meal by the offset, and `+00:00` on a unit in Rome is
+the only visible sign.
+
+Check `feeder/<id>/state` on the broker afterwards. `last_fed` carries the local
+time of the last **scheduled** feed with the offset as published, and is the
+quickest confirmation the whole path ran:
+
+```
+{"feeding":false,"jammed":true,"paused":false,"last_fed":"2026-09-16T08:00:02+02:00"}
+```
+
+A manual feed while paused must still work — the check most likely to be built
+backwards, because treating pause as a global disable feels tidier:
+
+```sh
+pub -r -t 'feeder/<id>/paused' -m 'ON'
+pub -t 'feeder/<id>/feed' -m '1'
 ```
 
 ```
-INFO - mqtt: rx feeder/<id>/paused = ON
-INFO - schedule: paused
-INFO - mqtt: state published
-```
-
-The Home Assistant switch must flip only after that state publish, because it is
-not optimistic. A switch that springs back means the device never echoed
-`paused` in its state payload.
-
-Then step the clock past a slot while still paused:
-
-```
-INFO - schedule: slot 08:00 due but paused, marking consumed
-```
-
-**Marking consumed is the point.** Resume and confirm the slot does not fire
-retroactively:
-
-```
-INFO - mqtt: rx feeder/<id>/paused = OFF
-INFO - schedule: resumed, next due 19:00
-```
-
-If resuming produces `feed: start` instead, slots are being skipped rather than
-consumed, and every unpause replays the last missed meal.
-
-A manual feed while paused must still work. This is the check most likely to be
-implemented backwards, because treating pause as a global disable feels tidier:
-
-```
-INFO - mqtt: rx feeder/<id>/feed = 1
+INFO - mqtt: feed 1
 INFO - feed: start, portions=1
 ```
 
-Finally, power-cycle while paused. The unit must come back paused, from the
-retained topic alone, since nothing is stored in flash:
+Offline behaviour: stop the broker and confirm the unit keeps feeding on the
+last schedule it received, with no `clock: aligned` lines, since the local clock
+free-runs. Power-cycle with the broker still down and confirm it waits rather
+than guessing a time:
 
 ```
-INFO - mqtt: rx feeder/<id>/paused = ON
-INFO - schedule: paused
+INFO - clock: no time received, waiting
 ```
 
-A unit that comes back running has a retain flag missing on the command, or is
-publishing its first state payload before the retained flag has arrived.
+Finally, power-cycle while paused. The unit must come back paused from the
+retained topic alone, since nothing is stored in flash. One that comes back
+running has a retain flag missing on the command, or is publishing its first
+state payload before the retained flag arrives.
 
-Most of this logic is host-testable with `cargo test`. Use the console to verify
-the wiring between the pure logic and the tasks, not the logic itself.
+Most of this logic is host-testable and 32 tests cover it. Use the console to
+verify the wiring between the pure logic and the tasks, not the logic itself.
 
 ## Step 6 — the Zero boards
 

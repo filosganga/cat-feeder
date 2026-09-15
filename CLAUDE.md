@@ -104,7 +104,7 @@ edge.
 
 ### The feeder task owns the motor
 
-One task, one queue. Producers (`mqtt`, `clock`) send portion counts and
+One task, one queue. Producers (`mqtt`, `schedule`) send portion counts and
 nothing else; only this task touches the motor and the switch, so there is no
 shared mutable state and no mutex.
 
@@ -178,9 +178,15 @@ loop {
   `Config` struct / `load_config()` so a later runtime-provisioning version
   (captive portal / BLE) is a drop-in.
 - Device id = derived from the MAC. One binary flashes all units.
-- **Never double-feed.** Track `last_fed: (day, slot)` in RAM; a `time` jump
-  forward must not replay a slot already fed nor catch up a missed one. A
-  missed meal is preferable to a double one.
+- **Never double-feed.** A missed meal is preferable to a double one. Three
+  mechanisms in `schedule.rs`, each covering a failure the others cannot see:
+  a **consumed marker** in RAM, `(day, minute-of-day)` of the last slot
+  resolved; a **baseline pass**, so the first look at the clock after boot only
+  records where the day is and never feeds; and a **lateness limit** of two
+  minutes, so a `time` jump forward is never mistaken for a slot falling due.
+  The marker is keyed on time of day rather than slot index, because Home
+  Assistant can republish a schedule with a slot inserted or removed and an
+  index would then point at a different meal.
 
 ## MQTT contract
 
@@ -193,9 +199,51 @@ feeder/<id>/feed           <portions:u8>           cmd, manual feed
 feeder/all/feed            <portions:u8>           cmd, all units at once
 feeder/<id>/paused         ON | OFF                cmd, retained, pause the schedule
 feeder/schedule            [{"time":"08:00","portions":2}, ...]   retained, from HA
-feeder/time                "2026-09-14T08:00:00+02:00"           retained, from HA, every minute
+feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
 feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"last_fed":"..."}
 ```
+
+Three different limits apply, and they are easy to confuse because two of them
+are the same number:
+
+| Constant | Value | Limits |
+|---|---|---|
+| `MAX_SLOTS` (`schedule.rs`) | 8 | **meals per day** |
+| `MAX_PORTIONS` (`portions.rs`) | 10 | portions owed at once, so portions per meal |
+| `FEED_DEPTH` (`wiring.rs`) | 8 | unread feed **requests** in the channel |
+
+Two meals a day is the usual case, but three, four or five are ordinary and all
+fire. A schedule with more than `MAX_SLOTS` entries is rejected whole rather
+than truncated, because a silently shortened one drops meals with nothing to
+show for it, and the unit keeps running the schedule it already had.
+
+`MAX_PORTIONS` caps a single meal, not the day: eight meals of ten portions is
+80 portions, because the queue drains between them. `FEED_DEPTH` counts
+messages rather than portions — one `feed 3` occupies one of the eight — and
+only matters when producers outrun the feeder task.
+
+`feeder/time` is a bare ISO 8601 string, which is what `{{ now().isoformat() }}`
+publishes. Wrapping double quotes and fractional seconds are tolerated too, so
+a hand-published JSON string also works.
+
+The **offset is recorded but never applied**, and that is a decision rather than
+an oversight. Home Assistant publishes its own local time and the feeders live
+in the same house, so the wall-clock fields already arrive in the frame the
+schedule is written in: `08:00` in a slot means 08:00 on the kitchen wall.
+There is nothing to convert to, and no timezone rules are needed on the device.
+Daylight saving then costs nothing — in October Home Assistant simply starts
+sending `+01:00` and the wall-clock fields shift with it.
+
+The assumption this rests on is **the broker and the feeders share a
+timezone**. The one realistic way to break it is publishing `utcnow()` instead
+of `now()`, which would still look like a valid time while moving every meal by
+the offset. That is why the offset is kept and printed at startup
+(`clock: started, 2026-09-15T09:00:00+02:00`) rather than dropped: it turns a
+silent hour-long error into the first line on the console.
+
+`last_fed` is reported the same way, local with the published offset, and
+covers scheduled feeds only — a manual feed reaches the feeder task, which has
+no clock, and Home Assistant already records button presses in its own history.
 
 Home Assistant MQTT discovery: on connect, publish **retained** config to
 `homeassistant/<component>/feeder_<id>/<object>/config` for: a `button`
@@ -310,9 +358,10 @@ src/
 build.rs          injects cfg.toml/.env values as env vars
 ```
 
-Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `feeder` (owns motor + switch),
-`clock` (ticks + re-align). Communicate via `embassy_sync` channels/signals,
-not shared mutable statics.
+Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
+`feeder` (owns the motor), `schedule` (owns the clock, ticks once a second and
+re-aligns). They communicate through the one `wiring::Bus` static, which names
+every shared handle and documents who writes each one.
 
 ## Conventions
 
@@ -339,10 +388,20 @@ not shared mutable statics.
    binary_sensor), subscriptions, manual and broadcast `feed`, `paused`, and a
    state payload carrying the feeder's real flags. `schedule` and `time` are
    subscribed and logged but not acted on — that is step 5
-5. `schedule` + `time` handling, local clock, double-feed guard
+5. ✅ `schedule` + `time` handling, local clock, double-feed guard. Pure logic
+   in `schedule.rs` with 32 host tests, and every rule verified on hardware by
+   driving `feeder/time` from the broker
 6. Board feature for the Zero, flash the three production units
 7. Home Assistant automation publishing time + schedule; retire the old PCBs
 
 Later (not now): physical feed button on a spare GPIO (so a manual feed works
 with the broker down), runtime Wi-Fi/broker provisioning, battery backup,
 buzzer.
+
+Also later: a configured feeder timezone (`Europe/Rome`) so the unit can apply
+the offset itself and work out DST, instead of assuming it shares a timezone
+with the broker. Worth doing only if the broker ever publishes UTC, or moves to
+a different zone from the feeders. It means carrying timezone rules on the
+device, which is precisely the weight the current design avoids, so it is a
+deliberate trade rather than an obvious improvement. The offset is already
+parsed and kept in `Wall::offset_minutes`, so the input is there when needed.

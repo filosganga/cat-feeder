@@ -36,7 +36,8 @@ use rust_mqtt::io::Transport;
 use rust_mqtt::types::{MqttBinary, MqttString, TopicFilter, TopicName};
 
 use crate::config::Config;
-use crate::wiring::{FeedSender, FeederStatus};
+use crate::schedule::{Schedule, Wall, parse_time};
+use crate::wiring::{Bus, TimeSync, now_ms};
 
 /// Longest topic this firmware builds is a discovery config,
 /// `homeassistant/binary_sensor/feeder_<id>/jammed/config`, 55 characters.
@@ -123,16 +124,39 @@ pub struct State {
     pub feeding: bool,
     pub jammed: bool,
     pub paused: bool,
+    pub last_fed: Option<Wall>,
 }
 
 impl State {
+    fn read(bus: &Bus) -> Self {
+        Self {
+            feeding: bus.status.feeding(),
+            jammed: bus.status.jammed(),
+            paused: bus.is_paused(),
+            last_fed: bus.last_fed.get(),
+        }
+    }
+
+    /// `last_fed` is local wall-clock, carrying whatever offset Home Assistant
+    /// published, and covers scheduled feeds only. It is informational; none of
+    /// the three entities reads it.
     fn to_json(self) -> String<PAYLOAD_LEN> {
         let mut json = String::new();
         let _ = write!(
             json,
-            r#"{{"feeding":{},"jammed":{},"paused":{},"last_fed":null}}"#,
+            r#"{{"feeding":{},"jammed":{},"paused":{},"last_fed":"#,
             self.feeding, self.jammed, self.paused
         );
+
+        match self.last_fed {
+            None => {
+                let _ = write!(json, "null}}");
+            }
+            Some(at) => {
+                let _ = write!(json, r#""{at}"}}"#);
+            }
+        }
+
         json
     }
 }
@@ -141,13 +165,7 @@ impl State {
 ///
 /// Never returns: losing the broker is normal, not fatal. The unit keeps
 /// running and retries.
-pub async fn run(
-    stack: Stack<'static>,
-    cfg: Config,
-    id: &str,
-    feed: FeedSender,
-    status: &'static FeederStatus,
-) -> ! {
+pub async fn run(stack: Stack<'static>, cfg: Config, id: &str, bus: &'static Bus) -> ! {
     let topics = Topics::new(id);
 
     let mut client_id: String<CLIENT_ID_LEN> = String::new();
@@ -165,25 +183,10 @@ pub async fn run(
     };
     let endpoint = IpEndpoint::new(IpAddress::Ipv4(host), cfg.mqtt_port);
 
-    // `paused` outlives the connection on purpose. The broker replays the
-    // retained flag on every reconnect, but until it does, the last value this
-    // unit acted on is a better answer than `false`.
-    let mut paused = false;
-
     loop {
-        if session(
-            stack,
-            cfg,
-            endpoint,
-            &topics,
-            &client_id,
-            id,
-            feed,
-            status,
-            &mut paused,
-        )
-        .await
-        .is_err()
+        if session(stack, cfg, endpoint, &topics, &client_id, id, bus)
+            .await
+            .is_err()
         {
             warn!("mqtt: disconnected, retrying in 5s");
         }
@@ -200,9 +203,7 @@ async fn session(
     topics: &Topics,
     client_id: &str,
     id: &str,
-    feed: FeedSender,
-    status: &'static FeederStatus,
-    paused: &mut bool,
+    bus: &'static Bus,
 ) -> Result<(), ()> {
     let mut rx_buffer = [0u8; 1024];
     let mut tx_buffer = [0u8; 1024];
@@ -283,8 +284,7 @@ async fn session(
                         message.topic.as_ref().as_str(),
                         &message.message,
                         topics,
-                        feed,
-                        paused,
+                        bus,
                     )
                 {
                     // Home Assistant's paused switch is not optimistic: it only
@@ -297,12 +297,7 @@ async fn session(
             Either::Second(()) => {
                 next_state = Instant::now() + STATE_INTERVAL;
 
-                let state = State {
-                    feeding: status.feeding(),
-                    jammed: status.jammed(),
-                    paused: *paused,
-                };
-                let payload = state.to_json();
+                let payload = State::read(bus).to_json();
                 publish(&mut client, &topics.state, payload.as_bytes(), true).await?;
             }
         }
@@ -313,15 +308,9 @@ async fn session(
 ///
 /// Returns true if the state payload should go out now rather than at the next
 /// interval.
-fn on_message(
-    topic_name: &str,
-    payload: &[u8],
-    topics: &Topics,
-    feed: FeedSender,
-    paused: &mut bool,
-) -> bool {
+fn on_message(topic_name: &str, payload: &[u8], topics: &Topics, bus: &'static Bus) -> bool {
     if topic_name == topics.feed.as_str() || topic_name == TOPIC_ALL_FEED {
-        on_feed(payload, feed);
+        on_feed(payload, bus);
         false
     } else if topic_name == topics.paused.as_str() {
         // Reported as the command that arrived, not as a transition: the
@@ -329,14 +318,14 @@ fn on_message(
         // logged on a unit that was never paused.
         match payload {
             b"ON" => {
-                let changed = !*paused;
-                *paused = true;
+                let changed = !bus.is_paused();
+                bus.set_paused(true);
                 info!("mqtt: paused = ON");
                 changed
             }
             b"OFF" => {
-                let changed = *paused;
-                *paused = false;
+                let changed = bus.is_paused();
+                bus.set_paused(false);
                 info!("mqtt: paused = OFF");
                 changed
             }
@@ -345,14 +334,11 @@ fn on_message(
                 false
             }
         }
-    } else if topic_name == TOPIC_SCHEDULE || topic_name == TOPIC_TIME {
-        // Roadmap step 5 owns these. Subscribing now is deliberate: it proves
-        // the retained messages arrive, and the log says plainly that nothing
-        // acts on them yet.
-        info!(
-            "mqtt: {topic_name} received, {} bytes, not handled yet",
-            payload.len()
-        );
+    } else if topic_name == TOPIC_TIME {
+        on_time(payload, bus);
+        false
+    } else if topic_name == TOPIC_SCHEDULE {
+        on_schedule(payload, bus);
         false
     } else {
         warn!("mqtt: unexpected topic {topic_name}");
@@ -360,11 +346,36 @@ fn on_message(
     }
 }
 
+/// Hands the time to the schedule task, stamped with the monotonic reading now.
+///
+/// A payload that will not parse is dropped with a warning rather than stopping
+/// the clock: the unit keeps free-running on the last time it understood, which
+/// is the whole reason it keeps one.
+fn on_time(payload: &[u8], bus: &'static Bus) {
+    let monotonic_ms = now_ms();
+    match parse_time(payload) {
+        Ok(wall) => bus.time.signal(TimeSync { monotonic_ms, wall }),
+        Err(e) => warn!("mqtt: time payload rejected: {e:?}"),
+    }
+}
+
+/// Hands the schedule to the schedule task.
+///
+/// A rejected payload leaves the previous schedule in place. That is
+/// deliberate: a unit running yesterday's schedule feeds the cats, and a unit
+/// with no schedule does not.
+fn on_schedule(payload: &[u8], bus: &'static Bus) {
+    match Schedule::parse(payload) {
+        Ok(schedule) => bus.schedule.signal(schedule),
+        Err(e) => warn!("mqtt: schedule payload rejected: {e:?}, keeping the last one"),
+    }
+}
+
 /// Manual feeds accumulate: this forwards the count and never replaces it.
 ///
 /// The clamp to `MAX_PORTIONS` lives in the feeder, which is the only place
 /// that knows how much is already pending.
-fn on_feed(payload: &[u8], feed: FeedSender) {
+fn on_feed(payload: &[u8], bus: &'static Bus) {
     let Some(portions) = core::str::from_utf8(payload)
         .ok()
         .and_then(|text| text.trim().parse::<u8>().ok())
@@ -379,7 +390,9 @@ fn on_feed(payload: &[u8], feed: FeedSender) {
         return;
     }
 
-    match feed.try_send(portions) {
+    // Manual feed works while paused, on purpose. Pause stops the schedule, not
+    // the feeder, so a bowl can always be topped up by hand.
+    match bus.feed.try_send(portions) {
         Ok(()) => info!("mqtt: feed {portions}"),
         Err(_) => warn!("mqtt: feed queue full, {portions} portions dropped"),
     }
