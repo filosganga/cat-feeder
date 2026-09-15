@@ -8,6 +8,21 @@ version      = "0.1.0"
 name = "cat-feeder"
 path = "./src/bin/main.rs"
 
+# Which board this binary is for. One binary still flashes all three production
+# units, because the device id comes from the MAC; the feature only selects the
+# pin map and the serial interface.
+#
+#   cargo run                                                # dev kit
+#   cargo run --no-default-features --features board-zero    # a Zero
+#
+# Features are additive, so selecting the Zero needs --no-default-features.
+# Getting that wrong fails in esp-println's build script with "Exactly one of
+# the following features must be enabled"; see src/board.rs.
+[features]
+default      = ["board-devkit"]
+board-devkit = ["esp-println/uart"]
+board-zero   = ["esp-println/jtag-serial"]
+
 # Portable dependencies. These build for the host too, so the pure-logic
 # modules can be tested with `cargo test`.
 [dependencies]
@@ -50,13 +65,21 @@ esp-backtrace = { version = "0.19.0", features = [
 # and no log line ever reaches the serial monitor.
 # DEV-KIT: `uart`  (logs come out of the CH343 bridge port)
 # Zero:    `jtag-serial`  (native USB only, no bridge) — switch at roadmap step 6
+# The output interface is NOT listed here: it comes from the board feature,
+# because the dev kit needs `uart` and the Zero needs `jtag-serial`. See
+# `[features]` and `src/board.rs`.
+#
+# `default-features = false` is still required. `auto`, `colors` and
+# `critical-section` are the defaults, `auto` picks the wrong peripheral on the
+# dev kit, and `auto` is mutually exclusive with both explicit interfaces — so
+# it has to be dropped rather than overridden, which is why the other two are
+# listed again.
 esp-println = { version = "0.17.0", default-features = false, features = [
   "colors",
   "critical-section",
   "esp32c6",
   "log-04",
   "timestamp",
-  "uart",
 ] }
 # for more networking protocol support see https://crates.io/crates/edge-net
 embassy-executor = { version = "0.10.0", features = ["log"] }

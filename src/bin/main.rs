@@ -105,7 +105,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let cfg = load_config();
     let id = mk_static!(heapless::String<DEVICE_ID_LEN>, device_id());
-    info!("board: devkit, id={id}");
+    info!("board: {}, id={id}", cat_feeder::board::NAME);
 
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));

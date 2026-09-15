@@ -288,7 +288,9 @@ alarms. Keep `paused` visible in the state payload and as a switch in HA.
   board `esp32c6-wroom-1`. **No BLE, no probe-rs/defmt.**
 - `./dev/flash.sh [secs] [filter]` = build + flash + bounded capture, with each
   line annotated by the gap since the previous one. `./dev/capture.sh` does the
-  same without reflashing. Prefer these over a hand-written `espflash` command:
+  same without reflashing. `./dev/soak.sh [hours]` captures overnight and
+  `./dev/soak-report.sh` summarises what happened: reboots, panics, scheduled
+  feeds, reconnects. Logs land in `soak/`, which is git-ignored. Prefer these over a hand-written `espflash` command:
   they pin the right port and avoid `--no-reset`, which halts the application
   so only the bootloader prints.
 - `cargo run` = build + `espflash` + interactive monitor, for driving by hand.
@@ -398,7 +400,11 @@ every shared handle and documents who writes each one.
 5. ✅ `schedule` + `time` handling, local clock, double-feed guard. Pure logic
    in `schedule.rs` with 32 host tests, and every rule verified on hardware by
    driving `feeder/time` from the broker
-6. Board feature for the Zero, flash the three production units
+6. ✅ Board feature: `board-devkit` (default) / `board-zero`, selecting the pin
+   map, the board name and `esp-println`'s interface (`uart` vs `jtag-serial`).
+   Both variants build and lint; the dev kit path is verified on hardware.
+   Still to do: flash the three production units, and confirm GPIO11 exists on
+   the Zero's pad map before wiring one
 7. ✅ Home Assistant: automations publishing time (every minute) + schedule,
    the pause helper and a feed-all script, in
    `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
@@ -408,12 +414,34 @@ every shared handle and documents who writes each one.
    5 V from the feeder's original USB port. The last step in the project and
    the only one with no software in it
 
+### Known gap: a retained `time` can be arbitrarily old
+
+`feeder/time` is retained, so a unit that subscribes is handed the last message
+Home Assistant published. Normally that is at most 60 s old and the next live
+publish corrects it — visible on the console as a one-off
+`clock: aligned, drift=Ns` after boot, which is the retained message's age and
+not the crystal.
+
+**If Home Assistant stops while Mosquitto keeps running**, that retained
+message stops being refreshed and can be hours old. The firmware cannot tell:
+it anchors to it, free-runs from there, and believes a time that is badly
+wrong. A unit rebooting in that state would work through the day's slots again
+from the stale anchor, which is the one thing `schedule.rs` exists to prevent.
+The architecture rule says *power-cycled and no broker → wait, never guess*,
+and this is the case where the broker is up but nobody is telling it the time.
+
+The fix has the information it needs already: MQTT marks a delivery as retained
+or live, and `rust_mqtt::client::event::Publish` carries a `retain` flag that
+`mqtt.rs` currently ignores. A retained `time` should start the clock but not
+arm the scheduler; only a live one should, since a live one proves Home
+Assistant is publishing now. Not yet implemented.
+
 Steps 3, 6 and 8 wait on hardware rather than on code:
 
 | Blocked step | Waiting for |
 |---|---|
 | 3, the DRV8833 and the clicks-per-revolution contract | the part |
-| 6, the Zero boards | the boards |
+| 6, flashing the three Zeros | the boards |
 | 8, retiring the PCBs | 3 and 6 |
 
 Later (not now): physical feed button on a spare GPIO (so a manual feed works
