@@ -414,27 +414,44 @@ every shared handle and documents who writes each one.
    5 V from the feeder's original USB port. The last step in the project and
    the only one with no software in it
 
-### Known gap: a retained `time` can be arbitrarily old
+### A retained `time` is not a trusted one
 
-`feeder/time` is retained, so a unit that subscribes is handed the last message
-Home Assistant published. Normally that is at most 60 s old and the next live
-publish corrects it — visible on the console as a one-off
-`clock: aligned, drift=Ns` after boot, which is the retained message's age and
-not the crystal.
+`feeder/time` is retained, so a unit that subscribes is handed whatever Home
+Assistant last published. While Home Assistant is alive that is under a minute
+old. **If it stops while Mosquitto keeps running, that message simply stops
+being refreshed and can be any age at all**, and nothing in the payload
+distinguishes the two cases. Anchoring to a stale one and feeding from it would
+work through the whole day's slots at the wrong times.
 
-**If Home Assistant stops while Mosquitto keeps running**, that retained
-message stops being refreshed and can be hours old. The firmware cannot tell:
-it anchors to it, free-runs from there, and believes a time that is badly
-wrong. A unit rebooting in that state would work through the day's slots again
-from the stale anchor, which is the one thing `schedule.rs` exists to prevent.
-The architecture rule says *power-cycled and no broker → wait, never guess*,
-and this is the case where the broker is up but nobody is telling it the time.
+So the clock separates *having* a time from *trusting* one:
 
-The fix has the information it needs already: MQTT marks a delivery as retained
-or live, and `rust_mqtt::client::event::Publish` carries a `retain` flag that
-`mqtt.rs` currently ignores. A retained `time` should start the clock but not
-arm the scheduler; only a live one should, since a live one proves Home
-Assistant is publishing now. Not yet implemented.
+- A **retained** time starts the clock, because a time is worth having in a log
+  line, but leaves the schedule holding.
+- A **live** time arms the schedule, because it proves somebody is publishing
+  now. The baseline pass then runs against an accurate clock rather than a
+  stale one.
+- Once armed, retained times are **ignored outright**. Every reconnect replays
+  one, and applying it would drag the clock back to whatever the broker holds.
+- Trust never lapses. A unit that has been told the time keeps free-running if
+  Home Assistant disappears, which is the documented offline behaviour.
+
+MQTT supplies the distinction: the subscription leaves `retain_as_published`
+off, so the broker clears the retain flag on everything it forwards live and
+sets it only on the messages it replays at subscribe time.
+
+On the console:
+
+```
+INFO - clock: started, 2026-09-15T21:45:00+02:00 (retained; waiting for a live time)
+INFO - clock: live time 2026-09-15T21:46:00+02:00, schedule armed
+```
+
+The consequence to know about: a unit that reboots while Home Assistant is down
+but the broker is up will **not feed at all** until Home Assistant returns.
+That is deliberate, and the same rule as *power-cycled and no broker → wait,
+never guess*. It is only visible on the console, so a unit stuck at
+`schedule holding` is silent to Home Assistant — though if Home Assistant is
+down, it could not have raised the alarm either.
 
 Steps 3, 6 and 8 wait on hardware rather than on code:
 

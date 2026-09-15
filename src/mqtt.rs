@@ -36,7 +36,7 @@ use rust_mqtt::io::Transport;
 use rust_mqtt::types::{MqttBinary, MqttString, TopicFilter, TopicName};
 
 use crate::config::Config;
-use crate::schedule::{Schedule, Wall, parse_time};
+use crate::schedule::{Schedule, TimeSource, Wall, parse_time};
 use crate::wiring::{Bus, TimeSync, now_ms};
 
 /// Longest topic this firmware builds is a discovery config,
@@ -283,6 +283,12 @@ async fn session(
                     && on_message(
                         message.topic.as_ref().as_str(),
                         &message.message,
+                        // True only for messages the broker replayed at
+                        // subscribe time: the subscription leaves
+                        // `retain_as_published` off, so the flag is cleared on
+                        // everything forwarded live. `feeder/time` depends on
+                        // that distinction.
+                        message.retain,
                         topics,
                         bus,
                     )
@@ -308,7 +314,13 @@ async fn session(
 ///
 /// Returns true if the state payload should go out now rather than at the next
 /// interval.
-fn on_message(topic_name: &str, payload: &[u8], topics: &Topics, bus: &'static Bus) -> bool {
+fn on_message(
+    topic_name: &str,
+    payload: &[u8],
+    retained: bool,
+    topics: &Topics,
+    bus: &'static Bus,
+) -> bool {
     if topic_name == topics.feed.as_str() || topic_name == TOPIC_ALL_FEED {
         on_feed(payload, bus);
         false
@@ -335,7 +347,7 @@ fn on_message(topic_name: &str, payload: &[u8], topics: &Topics, bus: &'static B
             }
         }
     } else if topic_name == TOPIC_TIME {
-        on_time(payload, bus);
+        on_time(payload, retained, bus);
         false
     } else if topic_name == TOPIC_SCHEDULE {
         on_schedule(payload, bus);
@@ -348,13 +360,28 @@ fn on_message(topic_name: &str, payload: &[u8], topics: &Topics, bus: &'static B
 
 /// Hands the time to the schedule task, stamped with the monotonic reading now.
 ///
+/// The retained-or-live distinction travels with it. A retained `feeder/time`
+/// is whatever the broker last stored, which is under a minute old while Home
+/// Assistant is publishing and arbitrarily old once it stops — and the unit
+/// cannot tell those apart by looking at the timestamp.
+///
 /// A payload that will not parse is dropped with a warning rather than stopping
 /// the clock: the unit keeps free-running on the last time it understood, which
 /// is the whole reason it keeps one.
-fn on_time(payload: &[u8], bus: &'static Bus) {
+fn on_time(payload: &[u8], retained: bool, bus: &'static Bus) {
     let monotonic_ms = now_ms();
+    let source = if retained {
+        TimeSource::Retained
+    } else {
+        TimeSource::Live
+    };
+
     match parse_time(payload) {
-        Ok(wall) => bus.time.signal(TimeSync { monotonic_ms, wall }),
+        Ok(wall) => bus.time.signal(TimeSync {
+            monotonic_ms,
+            wall,
+            source,
+        }),
         Err(e) => warn!("mqtt: time payload rejected: {e:?}"),
     }
 }

@@ -11,7 +11,7 @@ use cat_feeder::config::{DEVICE_ID_LEN, device_id, load_config};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::motor::{LogMotor, MotorDriver};
 use cat_feeder::portions::{Added, MAX_PORTIONS};
-use cat_feeder::schedule::{Alignment, Due, LocalClock, Scheduler, Skipped, Wall};
+use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::wiring::{Bus, now_ms};
 use cat_feeder::{mqtt, switch_pin};
@@ -291,7 +291,8 @@ async fn schedule_task() {
 
     loop {
         if let Some(sync) = BUS.time.try_take() {
-            log_alignment(clock.align(sync.monotonic_ms, sync.wall), sync.wall);
+            let alignment = clock.align(sync.monotonic_ms, sync.wall, sync.source);
+            log_alignment(alignment, sync.wall);
         }
 
         if let Some(schedule) = BUS.schedule.try_take() {
@@ -299,12 +300,14 @@ async fn schedule_task() {
             scheduler.set_schedule(schedule);
         }
 
-        // No time means no schedule. A unit that was power-cycled while the
-        // broker was down waits to be told; it never guesses.
-        match clock.now(now_ms()) {
+        // No trustworthy time means no schedule. A unit power-cycled while the
+        // broker was down waits to be told; so does one handed only a retained
+        // time, which may be whatever Home Assistant published before it
+        // stopped. Both wait; neither guesses.
+        match clock.now(now_ms()).filter(|_| clock.is_trusted()) {
             None => {
                 if !waiting_logged {
-                    info!("clock: no time received, waiting");
+                    info!("clock: no trusted time yet, schedule holding");
                     waiting_logged = true;
                 }
             }
@@ -349,12 +352,23 @@ const SCHEDULE_TICK: Duration = Duration::from_secs(1);
 /// look like a valid time while moving every meal by the offset.
 #[inline(never)]
 fn log_alignment(alignment: Alignment, wall: Wall) {
-    match alignment {
-        Alignment::Started => info!("clock: started, {wall}"),
+    if alignment.armed_now {
+        info!("clock: live time {wall}, schedule armed");
+        return;
+    }
+
+    match alignment.change {
+        Change::Started if alignment.trusted => info!("clock: started, {wall}"),
+        // Worth a line of its own. Until a live message lands, this unit is
+        // running but will not feed on schedule, and nothing else says so.
+        Change::Started => info!("clock: started, {wall} (retained; waiting for a live time)"),
+        Change::IgnoredStale => info!("clock: ignored a retained time, still on the live one"),
         // Home Assistant republishes every minute, so a second or two of drift
-        // is the normal state of affairs and not worth a line each time.
-        Alignment::Adjusted { drift_s } if drift_s.abs() < 2 => {}
-        Alignment::Adjusted { drift_s } => info!("clock: aligned, drift={drift_s}s"),
+        // is the normal state of affairs and not worth a line each time. The
+        // first alignment after boot is usually larger: it is the age of the
+        // retained message the unit started from, not the crystal.
+        Change::Adjusted { drift_s } if drift_s.abs() < 2 => {}
+        Change::Adjusted { drift_s } => info!("clock: aligned, drift={drift_s}s"),
     }
 }
 

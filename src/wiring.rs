@@ -22,7 +22,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
-use crate::schedule::{Schedule, Wall};
+use crate::schedule::{Schedule, TimeSource, Wall};
 
 /// How many unread feed **requests** can be waiting before producers drop them.
 ///
@@ -51,10 +51,15 @@ pub fn now_ms() -> u64 {
 ///
 /// The stamp travels with the message rather than being taken when the
 /// schedule task gets round to it, so a busy executor costs accuracy nowhere.
+///
+/// `source` carries MQTT's retained-or-live distinction through to the clock,
+/// which is what stops a unit trusting a `feeder/time` that Home Assistant
+/// stopped refreshing hours ago. See [`crate::schedule::LocalClock`].
 #[derive(Debug, Clone, Copy)]
 pub struct TimeSync {
     pub monotonic_ms: u64,
     pub wall: Wall,
+    pub source: TimeSource,
 }
 
 /// What the feeder task knows about itself, published by `mqtt`.

@@ -58,11 +58,24 @@ echo "    mqtt reconnects:   $(grep -ac 'mqtt: connected' "$LOG" || true)"
 echo "    mqtt failures:     $(grep -acE 'mqtt: (disconnected|connect failed|tcp connect failed|publish to)' "$LOG" || true)"
 echo
 
+# The schedule does not run until a live feeder/time arrives, so a unit still
+# holding at the end of the log fed nothing all night and said so only here.
+echo "=== is the schedule armed?"
+if grep -aq 'schedule armed' "$LOG"; then
+  grep -a 'schedule armed' "$LOG" | head -3 | sed 's/^/    /'
+else
+  echo "    NO. The schedule never armed, so nothing was ever going to feed."
+  echo "    A live feeder/time never arrived: check Home Assistant is running"
+  echo "    and its publish-the-time automation is enabled."
+  grep -aE 'clock: (started|no trusted)' "$LOG" | head -3 | sed 's/^/    /'
+fi
+echo
+
 # Sub-2s drift is not logged at all, so anything here is worth a look. Steady
 # growth in one direction is crystal drift; isolated large values are the
 # broker or Home Assistant hiccuping.
 echo "=== clock alignments worth noticing"
-grep -aE 'clock: (started|aligned)' "$LOG" | tail -20 | sed 's/^/    /' || echo "    none"
+grep -aE 'clock: (started|aligned|ignored)' "$LOG" | tail -20 | sed 's/^/    /' || echo "    none"
 echo
 
 echo "=== warnings and errors, by kind"

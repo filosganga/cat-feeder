@@ -415,7 +415,7 @@ first ran it has a script; it is nothing more than the publishes in order.
 Observed, with the gaps between lines stripped for readability:
 
 ```
-INFO - clock: no time received, waiting              # before the broker is up
+INFO - clock: no trusted time yet, schedule holding  # before the broker is up
 INFO - mqtt: subscribed
 INFO - clock: started, 2026-09-15T09:00:00+02:00
 INFO - schedule: 2 slots
@@ -450,6 +450,29 @@ Five rules, each of which will silently feed the cats twice if it breaks:
   dispense the meal that was deliberately missed.
 - **No `schedule:` line at all** for a slot already resolved, however many times
   the clock is stepped over it.
+
+### The schedule holds until a live time arrives
+
+Against a broker that already has a retained `feeder/time`, the boot sequence
+has an extra step that is easy to mistake for a fault:
+
+```
+INFO (14578) - clock: started, 2026-09-15T21:45:00+02:00 (retained; waiting for a live time)
+INFO (14587) - schedule: 2 slots
+INFO (34593) - clock: live time 2026-09-15T21:46:00+02:00, schedule armed   (+20006 ms)
+INFO (34600) - schedule: slot 19:00 already past at startup
+```
+
+The unit sat for twenty seconds knowing the time and refusing to use it. That
+is correct: a retained `feeder/time` is whatever the broker last stored, which
+is arbitrarily old if Home Assistant stopped, and the baseline must not run
+against a stale clock. Up to a minute of this is normal, since Home Assistant
+publishes on the minute.
+
+**A unit that never prints `schedule armed` will never feed on schedule.** If
+it is still holding after a couple of minutes, Home Assistant is not publishing
+— check that its container is up and the publish-the-time automation is
+enabled. `./dev/soak-report.sh` calls this out for exactly that reason.
 
 **Read the offset on that first line.** The firmware does not apply it — slots
 are local wall-clock times and the feeders share a house with the broker — so it

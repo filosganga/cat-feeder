@@ -298,47 +298,120 @@ fn digits(bytes: &[u8]) -> Option<u16> {
     Some(value)
 }
 
+/// How a `feeder/time` message reached this unit.
+///
+/// MQTT makes this distinction for us and it is the whole basis of
+/// [`LocalClock::is_trusted`]. Because the subscription leaves
+/// `retain_as_published` off, the broker clears the retain flag on everything
+/// it forwards *except* the messages it replays at subscribe time — so the flag
+/// means exactly "this was replayed from the broker's store", not "the
+/// publisher set retain".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeSource {
+    /// Published while this unit was listening, so Home Assistant is alive and
+    /// the time is current to within the network round trip.
+    Live,
+    /// Replayed by the broker on subscribe. Usually under a minute old — but
+    /// if Home Assistant has stopped while the broker keeps running, nothing
+    /// refreshes it and it can be any age at all.
+    Retained,
+}
+
 /// Wall-clock time held in RAM and advanced by the monotonic counter.
 ///
-/// Re-aligned on every `feeder/time` message. Between messages it free-runs, so
-/// losing the broker does not stop the schedule — which is the point, since the
-/// broker is also the only thing that could ever tell it the time again.
+/// Re-aligned on every live `feeder/time` message. Between messages it
+/// free-runs, so losing Home Assistant does not stop a unit that was already
+/// running — which is the point, since the broker is also the only thing that
+/// could ever tell it the time again.
+///
+/// ## Trust
+///
+/// A retained time starts the clock but does **not** make it trustworthy, and
+/// the schedule does not run until a live message arrives. A retained
+/// `feeder/time` is normally under a minute old, but if Home Assistant stops
+/// while Mosquitto keeps running it simply stops being refreshed, and the unit
+/// has no way to tell an hour-old message from a fresh one. Anchoring to a
+/// stale one and feeding from it would work through the whole day's slots at
+/// the wrong times — the exact thing [`Scheduler`] exists to prevent.
+///
+/// So: the clock runs from a retained time, because a wrong time is still
+/// useful in a log line, and the schedule waits for proof that somebody is
+/// publishing *now*.
+///
+/// Once trusted, retained messages are ignored outright. A reconnect replays
+/// one, and applying it would drag the clock backwards to whatever the broker
+/// happens to be holding.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LocalClock {
     anchor: Option<(u64, Wall)>,
+    trusted: bool,
 }
 
 /// What an alignment did to the clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Alignment {
-    /// The clock had never been set. The schedule can start running.
+pub struct Alignment {
+    pub change: Change,
+    /// Whether the schedule may run. See [`LocalClock`].
+    pub trusted: bool,
+    /// True only on the call that first earned trust, so the console says so
+    /// once rather than every minute.
+    pub armed_now: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// The clock had never been set.
     Started,
-    /// Adjusted by this many seconds, positive if the clock moved forward.
+    /// Moved by this many seconds, positive if the clock went forward.
     Adjusted { drift_s: i64 },
+    /// A retained time arrived after the clock was already trusted, and was
+    /// discarded rather than dragging the clock back to it.
+    IgnoredStale,
 }
 
 impl LocalClock {
     pub const fn new() -> Self {
-        Self { anchor: None }
-    }
-
-    /// Pins wall-clock time to a reading of the monotonic counter.
-    pub fn align(&mut self, monotonic_ms: u64, wall: Wall) -> Alignment {
-        let before = self.now(monotonic_ms);
-        self.anchor = Some((monotonic_ms, wall));
-
-        match before {
-            None => Alignment::Started,
-            Some(old) => Alignment::Adjusted {
-                drift_s: seconds_between(old, wall),
-            },
+        Self {
+            anchor: None,
+            trusted: false,
         }
     }
 
-    /// Local time now, or `None` if the broker has never said what time it is.
+    /// Pins wall-clock time to a reading of the monotonic counter.
+    pub fn align(&mut self, monotonic_ms: u64, wall: Wall, source: TimeSource) -> Alignment {
+        if source == TimeSource::Retained && self.trusted {
+            return Alignment {
+                change: Change::IgnoredStale,
+                trusted: true,
+                armed_now: false,
+            };
+        }
+
+        let armed_now = source == TimeSource::Live && !self.trusted;
+        self.trusted |= source == TimeSource::Live;
+
+        let before = self.now(monotonic_ms);
+        self.anchor = Some((monotonic_ms, wall));
+
+        Alignment {
+            change: match before {
+                None => Change::Started,
+                Some(old) => Change::Adjusted {
+                    drift_s: seconds_between(old, wall),
+                },
+            },
+            trusted: self.trusted,
+            armed_now,
+        }
+    }
+
+    /// Local time now, or `None` if nothing has ever said what time it is.
     ///
     /// `None` is the correct answer to "what time is it" on a unit that has
     /// been power-cycled with no broker. It waits; it does not guess.
+    ///
+    /// A value here does **not** mean the schedule may run — check
+    /// [`Self::is_trusted`] for that.
     pub fn now(&self, monotonic_ms: u64) -> Option<Wall> {
         let (anchored_at, wall) = self.anchor?;
         wall.plus_seconds(monotonic_ms.saturating_sub(anchored_at) / 1_000)
@@ -346,6 +419,13 @@ impl LocalClock {
 
     pub fn is_set(&self) -> bool {
         self.anchor.is_some()
+    }
+
+    /// Whether a live time has ever arrived, and so whether the schedule may
+    /// run. Never goes back to false: a unit that has been told the time keeps
+    /// free-running if Home Assistant disappears.
+    pub fn is_trusted(&self) -> bool {
+        self.trusted
     }
 }
 
@@ -872,7 +952,11 @@ mod tests {
         // It ends up in `last_fed`, so it has to survive the local clock
         // advancing and rolling over midnight.
         let mut clock = LocalClock::new();
-        clock.align(0, parse_time(b"2026-09-14T23:59:30+02:00").unwrap());
+        clock.align(
+            0,
+            parse_time(b"2026-09-14T23:59:30+02:00").unwrap(),
+            TimeSource::Live,
+        );
 
         let later = clock.now(60_000).unwrap();
         assert_eq!(later.date, date(2026, 9, 15));
@@ -940,9 +1024,10 @@ mod tests {
     #[test]
     fn the_clock_free_runs_between_messages() {
         let mut clock = LocalClock::new();
-        assert_eq!(clock.align(10_000, wall(14, 8, 0)), Alignment::Started);
+        let started = clock.align(10_000, wall(14, 8, 0), TimeSource::Live);
+        assert_eq!(started.change, Change::Started);
 
-        // Ten minutes of monotonic time with no word from the broker.
+        // Ten minutes of monotonic time with no word from Home Assistant.
         let later = clock.now(10_000 + 600_000).unwrap();
         assert_eq!(later, wall(14, 8, 10));
     }
@@ -950,7 +1035,7 @@ mod tests {
     #[test]
     fn the_clock_rolls_over_midnight_on_its_own() {
         let mut clock = LocalClock::new();
-        clock.align(0, wall_s(30, 23, 59, 30));
+        clock.align(0, wall_s(30, 23, 59, 30), TimeSource::Live);
 
         let later = clock.now(60_000).unwrap();
         assert_eq!(later.date, date(2026, 10, 1));
@@ -960,13 +1045,87 @@ mod tests {
     #[test]
     fn realignment_reports_the_drift_it_corrected() {
         let mut clock = LocalClock::new();
-        clock.align(0, wall(14, 8, 0));
+        clock.align(0, wall(14, 8, 0), TimeSource::Live);
 
-        // A minute of monotonic time passes, but the broker says five went by.
+        // A minute of monotonic time passes, but Home Assistant says five did.
         assert_eq!(
-            clock.align(60_000, wall(14, 8, 5)),
-            Alignment::Adjusted { drift_s: 240 }
+            clock.align(60_000, wall(14, 8, 5), TimeSource::Live).change,
+            Change::Adjusted { drift_s: 240 }
         );
+    }
+
+    // ---- trusting the clock ----
+
+    #[test]
+    fn a_retained_time_runs_the_clock_but_does_not_arm_the_schedule() {
+        // A retained feeder/time is normally under a minute old. But if Home
+        // Assistant stops while Mosquitto keeps running, nothing refreshes it
+        // and it can be any age, with nothing to distinguish the two cases.
+        let mut clock = LocalClock::new();
+        let started = clock.align(10_000, wall(14, 8, 0), TimeSource::Retained);
+
+        assert_eq!(started.change, Change::Started);
+        assert!(!started.trusted);
+        assert!(!started.armed_now);
+        assert!(!clock.is_trusted());
+
+        // The clock still runs, because a time is worth having in a log line.
+        assert_eq!(clock.now(10_000 + 60_000).unwrap(), wall(14, 8, 1));
+    }
+
+    #[test]
+    fn a_live_time_arms_the_schedule_and_says_so_once() {
+        let mut clock = LocalClock::new();
+        clock.align(10_000, wall(14, 8, 0), TimeSource::Retained);
+
+        let live = clock.align(70_000, wall(14, 8, 2), TimeSource::Live);
+        assert!(live.trusted);
+        assert!(live.armed_now, "the console should announce this once");
+        assert!(clock.is_trusted());
+
+        // ...and not announce it again on every subsequent message.
+        let next = clock.align(130_000, wall(14, 8, 3), TimeSource::Live);
+        assert!(next.trusted);
+        assert!(!next.armed_now);
+    }
+
+    #[test]
+    fn a_live_time_first_arms_immediately() {
+        let mut clock = LocalClock::new();
+        let started = clock.align(10_000, wall(14, 8, 0), TimeSource::Live);
+
+        assert_eq!(started.change, Change::Started);
+        assert!(started.trusted);
+        assert!(started.armed_now);
+    }
+
+    #[test]
+    fn a_retained_time_after_trust_is_ignored_rather_than_applied() {
+        // Every reconnect replays the retained message. Applying it would drag
+        // the clock backwards to whatever the broker is holding, which is the
+        // whole hazard if Home Assistant has stopped.
+        let mut clock = LocalClock::new();
+        clock.align(0, wall(14, 8, 0), TimeSource::Live);
+
+        let replayed = clock.align(600_000, wall(14, 6, 0), TimeSource::Retained);
+
+        assert_eq!(replayed.change, Change::IgnoredStale);
+        assert!(replayed.trusted, "a stale replay must never disarm a unit");
+        // The clock kept free-running instead of jumping back two hours.
+        assert_eq!(clock.now(600_000).unwrap(), wall(14, 8, 10));
+    }
+
+    #[test]
+    fn trust_survives_home_assistant_disappearing() {
+        // Offline is not the same as untold. A unit that has been told the time
+        // keeps feeding on its own clock, which is the documented behaviour.
+        let mut clock = LocalClock::new();
+        clock.align(0, wall(14, 7, 0), TimeSource::Live);
+
+        assert!(clock.is_trusted());
+        // Six hours later, still nothing from Home Assistant.
+        assert!(clock.is_trusted());
+        assert_eq!(clock.now(6 * 3600 * 1000).unwrap(), wall(14, 13, 0));
     }
 
     // ---- parsing the schedule ----
