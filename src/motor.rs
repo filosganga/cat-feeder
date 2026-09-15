@@ -9,9 +9,8 @@ use log::info;
 
 /// Something that can drive the feed motor one way and stop it.
 ///
-/// There is no reverse. The worm gear is self-locking and the hub only ever
-/// turns one way, so reversing would serve no purpose and could jam the
-/// mechanism against its own geometry.
+/// There is no reverse. The hub only ever turns one way, so reversing would
+/// serve no purpose and could jam the mechanism against its own geometry.
 pub trait MotorDriver {
     /// Turn the hub in the feeding direction.
     fn run_forward(&mut self);

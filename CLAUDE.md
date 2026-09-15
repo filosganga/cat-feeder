@@ -1,7 +1,7 @@
 # cat-feeder — ESP32-C6 firmware (Rust, no_std, Embassy)
 
 Replacement electronics for three commercial automatic cat feeders. The
-original PCB (LCD + RTC + buttons) is removed; the mechanics (5 V DC worm-gear
+original PCB (LCD + RTC + buttons) is removed; the mechanics (5 V DC geared
 motor + microswitch on the output hub) are kept. Three units must feed at the
 same instant, coordinated by Home Assistant over MQTT.
 
@@ -12,7 +12,7 @@ same instant, coordinated by Home Assistant over MQTT.
 | Waveshare ESP32-C6-DEV-KIT-N8-M | **dev board only** (breadboard, pin headers). WROOM-1 module, 8 MB flash |
 | Waveshare ESP32-C6-Zero ×3 | **production boards**, one per feeder. Bare C6FH8, 8 MB flash |
 | DRV8833 breakout (black 10-pin) | H-bridge. `nSLEEP`/`ULT` **must be driven high** or the motor won't run |
-| Motor DRF-W500CA, 5 V, 8 rpm | worm gear → self-locking, no coasting; ~1.9 s per 90° |
+| Motor DRF-W500CA, 5 V, 8 rpm | geared reducer → stops dead on brake, no coasting past a detent; ~1.9 s per 90°. Back-drivable by hand, but stiff enough that turning the hub is a poor way to test anything |
 | Microswitch on output hub | **4 clicks per revolution, 1 click = 1 portion** |
 | 220 µF 16 V electrolytic | across 5 V/GND next to the DRV8833 (brown-out on motor start) |
 | 5 V from the feeder's original USB port | ≥1 A adapter. **No batteries in v1** |
@@ -81,10 +81,10 @@ quarter turn needs ~1900 ms, so this cannot reject a real click. It works
 together with the 30 ms debounce, not instead of it.
 
 The placement matters. That 1900 ms floor only holds **while the motor is
-driving**. A hub turned by hand, or a bench button pressed twice quickly, can
-legitimately produce edges far closer together. If the rule lived in
-`switch.rs`, the stream would silently swallow real edges and lie about what it
-observed, and every bench test would look like a broken debounce.
+driving**. A bench button pressed twice quickly produces edges far closer
+together and every one of them is real. If the rule lived in `switch.rs`, the
+stream would silently swallow them and lie about what it observed, and every
+bench test would look like a broken debounce.
 
 So: `switch.rs` debounces at 30 ms and reports **every** real edge.
 `feeder.rs` applies the 800 ms rejection, where the motor-driven assumption
@@ -384,11 +384,14 @@ every shared handle and documents who writes each one.
 ## Roadmap
 
 1. ✅ Toolchain + blinky on the DEV-KIT
-2. ✅ Switch task: debounced clicks on the console (bench button; still to
-   re-check against the real hub, where the contract is 4 clicks/revolution)
+2. ✅ Switch task: debounced clicks on the console, on a bench button
 3. `feed(n)`: ✅ state machine host-tested and verified on hardware with a
    logging fake motor (align, 800 ms rejection, counting, jam, accumulation).
-   Still to do: the DRV8833 itself
+   Still to do: the DRV8833, and with it the **4 clicks per revolution**
+   contract. That check belongs here rather than in step 2: the hub can be
+   back-driven by hand, but the gear reduction makes turning it steadily
+   through a revolution awkward enough that the count is not worth trusting.
+   The motor does it in one command, at the speed the mechanism actually sees
 4. ✅ Wi-Fi + MQTT: connect, LWT, availability, discovery (button + switch +
    binary_sensor), subscriptions, manual and broadcast `feed`, `paused`, and a
    state payload carrying the feeder's real flags
@@ -405,14 +408,13 @@ every shared handle and documents who writes each one.
    5 V from the feeder's original USB port. The last step in the project and
    the only one with no software in it
 
-Steps 2, 3, 6 and 8 all wait on hardware rather than on code:
+Steps 3, 6 and 8 wait on hardware rather than on code:
 
 | Blocked step | Waiting for |
 |---|---|
-| 2, the four-clicks-per-revolution check | a feeder hub on the bench |
-| 3, the DRV8833 | the part |
+| 3, the DRV8833 and the clicks-per-revolution contract | the part |
 | 6, the Zero boards | the boards |
-| 8, retiring the PCBs | 2, 3 and 6 |
+| 8, retiring the PCBs | 3 and 6 |
 
 Later (not now): physical feed button on a spare GPIO (so a manual feed works
 with the broker down), runtime Wi-Fi/broker provisioning, battery backup,

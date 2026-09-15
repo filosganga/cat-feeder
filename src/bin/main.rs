@@ -196,12 +196,17 @@ async fn feeder_task(mut motor: LogMotor) {
             Action::Idle => {
                 motor.brake();
 
-                // Watch clicks even while idle, so a hub turned by hand is
+                // Watch clicks even while idle, so an edge nobody asked for is
                 // visible rather than silently discarded.
+                //
+                // On the bench that is the test button. On an assembled feeder
+                // it means the hub was turned by hand — possible, but it takes
+                // real effort against the gear reduction — or that the switch
+                // is noisy. Either is worth seeing.
                 let portions = match select(BUS.feed.receive(), CLICKS.receive()).await {
                     Either::First(portions) => portions,
                     Either::Second(()) => {
-                        info!("feed: click while idle, hub turned by hand");
+                        info!("feed: click while idle, nothing was feeding");
                         continue;
                     }
                 };

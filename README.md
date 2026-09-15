@@ -4,7 +4,7 @@ Replacement electronics for three commercial automatic cat feeders, so all
 three dispense at the same instant.
 
 The original board in each feeder is removed. The mechanics are kept: a 5 V
-worm-gear motor and a microswitch on the output hub that clicks four times per
+geared motor and a microswitch on the output hub that clicks four times per
 revolution, one click per portion. An ESP32-C6 running Rust firmware drives the
 motor and takes its orders from Home Assistant over MQTT.
 

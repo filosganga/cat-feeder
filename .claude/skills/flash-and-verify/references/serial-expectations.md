@@ -97,18 +97,20 @@ INFO - switch: click 2
 - Holding the button down must produce exactly one click, not a stream. The
   task counts falling edges, not the level.
 
-### Pass 2, the real hub
+### The real hub belongs to step 3, not here
 
-Action: turn the output hub by hand, slowly, through one full revolution.
+The four-clicks-per-revolution contract is checked in
+[step 3](#step-3--motor-and-feedn), with the motor driving.
 
-Exactly **four clicks per revolution**. That is the mechanical contract and the
-real point of this step. Fewer than four means a missed edge; more means bounce
-the debounce did not catch.
+The hub *can* be back-driven by hand, but the gear reduction makes it hard
+enough that turning it steadily through a full revolution is an awkward and
+unconvincing test: it is slow, the speed is uneven, and any hesitation on a
+detent invites exactly the bounce the test is supposed to be measuring. Driving
+it with the motor takes one command, runs at the speed the mechanism actually
+sees, and is repeatable.
 
-Run it twice, once with the hub parked on a detent so the switch starts pressed
-and once parked between detents so it starts free. Both must give four. A run
-that reports a click the instant the task starts is reading the level rather
-than waiting for an edge.
+A bench button is therefore not a poor substitute at this step, it is the whole
+of it: it proves the debounce, the pull-up, and that every edge is reported.
 
 ## Step 3 — motor and feed(n)
 
@@ -133,6 +135,36 @@ Checks:
   time. Mark the hub and confirm it lands identically across several feeds.
 - With the LED standing in for the motor, the LED is on for the same interval
   the motor would run.
+
+### Four clicks per revolution
+
+The mechanical contract, and the right place for it. The hub can be back-driven
+by hand, but the gear reduction makes turning it steadily through a revolution
+awkward enough that the result is not worth trusting. Let the motor do it.
+
+Action: mark the hub, then trigger a **four**-portion feed.
+
+```
+INFO - feed: start, portions=4
+INFO - feed: click, 3 to go
+INFO - feed: click, 2 to go
+INFO - feed: click, 1 to go
+INFO - feed: done
+```
+
+The mark must come back to where it started, one full revolution, in about
+7.6 s. Then:
+
+- **Mark short of a full turn** — more than four detents per revolution. Every
+  portion is smaller than intended and the whole schedule under-feeds.
+- **Mark past the start** — fewer than four, or an edge is being missed.
+- **Right place, wrong time** — count the seconds. Four portions much faster
+  than 7.6 s means bounce is being counted as detents, and the 800 ms rejection
+  is not doing its job.
+
+Repeat it three or four times without stopping. The mark must return to the
+same place every revolution, not drift, since a drift of a fraction of a detent
+per turn compounds into a missed meal over a day.
 
 ### The align phase
 
