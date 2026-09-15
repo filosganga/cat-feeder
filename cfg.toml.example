@@ -4,6 +4,11 @@
 #
 # These values are read by build.rs and compiled into the firmware, so changing
 # any of them needs `cargo build`, not just a reflash.
+#
+# Everything except `ap_secret` is on its way out. Once setup mode lands, a unit
+# takes its Wi-Fi and broker settings from the form over its own access point
+# and keeps them in flash, and the Wi-Fi password stops being compiled into the
+# binary at all. See roadmap step 9 in CLAUDE.md for the full list of what goes.
 
 wifi_ssid     = "your-wifi"
 wifi_password = "your-wifi-password"
@@ -15,3 +20,20 @@ mqtt_host     = "192.168.68.108"
 mqtt_port     = 1883
 mqtt_user     = "feeder"
 mqtt_password = "feeder-dev"
+
+# Salt for the setup network's password. Generate once and keep it:
+#
+#   openssl rand -hex 16
+#
+# Each unit's setup password is base32(sha256("<ap_secret>:<device id>")), so it
+# is different per unit and cannot be worked out from the MAC the unit
+# broadcasts in its SSID and beacons. Without the salt it would be public, and
+# WPA2 gives no protection against someone who knows the passphrase — they could
+# read the setup session, which is the one where the Wi-Fi password above gets
+# typed in.
+#
+# `./dev/ap-password.sh <device id>` prints it, for stickers.
+#
+# Changing it invalidates every sticker already printed. It is not a secret that
+# protects your network; it only protects the setup window.
+ap_secret     = "change-me"

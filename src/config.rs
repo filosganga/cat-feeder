@@ -13,7 +13,14 @@ use core::fmt::Write as _;
 use esp_hal::efuse::{self, InterfaceMacAddress};
 use heapless::String;
 
+use crate::provisioning::Record;
+
 /// Wi-Fi and broker settings.
+///
+/// Borrowed rather than owned so this stays cheap to copy into the async task
+/// frames that carry it. The strings live either in the binary, for a
+/// build-time config, or in the [`Record`] the boot path leaks into a static
+/// after reading it from flash.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub wifi_ssid: &'static str,
@@ -24,7 +31,40 @@ pub struct Config {
     pub mqtt_password: &'static str,
 }
 
+impl Config {
+    /// The settings a provisioned unit stored in flash.
+    pub fn from_record(record: &'static Record) -> Self {
+        Self {
+            wifi_ssid: record.wifi_ssid.as_str(),
+            wifi_password: record.wifi_password.as_str(),
+            mqtt_host: record.mqtt_host.as_str(),
+            mqtt_port: record.mqtt_port,
+            mqtt_user: record.mqtt_user.as_str(),
+            mqtt_password: record.mqtt_password.as_str(),
+        }
+    }
+
+    /// The same settings as a record, ready to be written to flash.
+    ///
+    /// Only used to seed a unit from `cfg.toml`; the setup form builds its
+    /// record directly from what was typed.
+    pub fn to_record(self) -> Option<Record> {
+        Some(Record {
+            wifi_ssid: String::try_from(self.wifi_ssid).ok()?,
+            wifi_password: String::try_from(self.wifi_password).ok()?,
+            mqtt_host: String::try_from(self.mqtt_host).ok()?,
+            mqtt_port: self.mqtt_port,
+            mqtt_user: String::try_from(self.mqtt_user).ok()?,
+            mqtt_password: String::try_from(self.mqtt_password).ok()?,
+        })
+    }
+}
+
 /// The configuration this firmware was built with.
+///
+/// Still the source for `ap_secret`, which is deliberately build-time. For
+/// Wi-Fi and broker settings this is now only a seed: see the boot path in
+/// `main.rs`.
 pub const fn load_config() -> Config {
     Config {
         wifi_ssid: env!("CFG_WIFI_SSID"),
@@ -35,6 +75,9 @@ pub const fn load_config() -> Config {
         mqtt_password: env!("CFG_MQTT_PASSWORD"),
     }
 }
+
+/// Salts the setup network's password. Not a network credential.
+pub const AP_SECRET: &str = env!("CFG_AP_SECRET");
 
 /// Number of characters in a device id.
 pub const DEVICE_ID_LEN: usize = 6;

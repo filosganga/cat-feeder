@@ -18,11 +18,16 @@
 
 #![cfg_attr(not(test), no_std)]
 
+// esp-radio requires a heap anyway, and the partition-table buffer in
+// `store` is better off there than on a task stack.
+extern crate alloc;
+
 // Pure logic. No esp-hal, testable on the host.
 pub mod feeder;
 pub mod portions;
 pub mod provisioning;
 pub mod schedule;
+pub mod sha256;
 
 // Hardware. Only built for the board.
 #[cfg(target_os = "none")]
@@ -33,6 +38,8 @@ pub mod config;
 pub mod motor;
 #[cfg(target_os = "none")]
 pub mod mqtt;
+#[cfg(target_os = "none")]
+pub mod store;
 #[cfg(target_os = "none")]
 pub mod switch;
 #[cfg(target_os = "none")]

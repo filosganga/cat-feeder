@@ -7,11 +7,13 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use cat_feeder::config::{DEVICE_ID_LEN, device_id, load_config};
+use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id, load_config};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::motor::{LogMotor, MotorDriver};
 use cat_feeder::portions::{Added, MAX_PORTIONS};
+use cat_feeder::provisioning::{DecodeError, Record, ap_password, ap_ssid};
 use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
+use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::wiring::{Bus, now_ms};
 use cat_feeder::{mqtt, switch_pin};
@@ -103,9 +105,10 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    let cfg = load_config();
     let id = mk_static!(heapless::String<DEVICE_ID_LEN>, device_id());
     info!("board: {}, id={id}", cat_feeder::board::NAME);
+
+    let cfg = resolve_config(peripherals.FLASH, id);
 
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
@@ -145,6 +148,105 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     mqtt::run(stack, cfg, id.as_str(), &BUS).await
+}
+
+/// Decides which credentials this unit runs on.
+///
+/// Flash is the source of truth. A unit that has been set up keeps its
+/// credentials across every reflash, because `espflash` rewrites only the app
+/// partition — which is what makes `cargo run` bearable during development.
+///
+/// **The seed-from-`cfg.toml` path below is temporary.** It exists so the flash
+/// store can be exercised before the access point is built. Once setup mode
+/// lands, an unconfigured unit raises its own network and serves the form
+/// instead of quietly adopting whatever the binary was built with. Roadmap
+/// step 9.
+fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, id: &str) -> Config {
+    let mut store = match Store::new(flash) {
+        Ok(store) => store,
+        Err(e) => {
+            // Without the partition there is nowhere to keep credentials, so
+            // the unit can only run on what it was built with.
+            warn!("store: no nvs partition ({e:?}), using build-time config");
+            return load_config();
+        }
+    };
+
+    let (offset, len) = store.location();
+    info!("store: nvs at {offset:#x}, {len} bytes");
+
+    stored_config(&mut store).unwrap_or_else(|| seed_config(&mut store, id))
+}
+
+/// The credentials already in flash, if there are any worth using.
+///
+/// Its own function, never inlined, because a `Record` is 284 bytes and the
+/// moves in and out of one do not get elided at this optimisation level. Three
+/// of them in a single frame is past the stack budget this crate denies on.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "a Record is 284 bytes and decoding one cannot avoid building it by \
+    value; a few copies land in one frame. This runs once, at boot, on main's own \
+    task rather than nested inside an async frame that is held for the life of the \
+    program. Verified on hardware: no stack overflow, and esp-backtrace would say so."
+)]
+#[inline(never)]
+fn stored_config(store: &mut Store) -> Option<Config> {
+    match store.load() {
+        Ok(record) if record.is_usable() => {
+            info!(
+                "store: configured for {} via {}:{}",
+                record.wifi_ssid, record.mqtt_host, record.mqtt_port
+            );
+            Some(Config::from_record(mk_static!(Record, record)))
+        }
+        Ok(_) => {
+            warn!("store: record is unusable, re-seeding");
+            None
+        }
+        Err(StoreError::Record(DecodeError::NotConfigured)) => {
+            info!("store: no record yet");
+            None
+        }
+        Err(e) => {
+            warn!("store: unreadable ({e:?}), re-seeding");
+            None
+        }
+    }
+}
+
+/// **TEMPORARY.** Writes the build-time config into flash so an unprovisioned
+/// unit has something to connect with.
+///
+/// This is what setup mode replaces: an unconfigured unit should raise its own
+/// network and ask, not quietly adopt whatever the binary was built with. It
+/// exists now so the flash store can be exercised before the access point
+/// exists. Roadmap step 9.
+#[allow(
+    clippy::large_stack_frames,
+    reason = "a Record is 284 bytes and decoding one cannot avoid building it by \
+    value; a few copies land in one frame. This runs once, at boot, on main's own \
+    task rather than nested inside an async frame that is held for the life of the \
+    program. Verified on hardware: no stack overflow, and esp-backtrace would say so."
+)]
+#[inline(never)]
+fn seed_config(store: &mut Store, id: &str) -> Config {
+    info!(
+        "setup: would raise {} / {}",
+        ap_ssid(id),
+        ap_password(AP_SECRET, id)
+    );
+
+    let cfg = load_config();
+    match cfg.to_record() {
+        Some(record) => match store.save(&record) {
+            Ok(()) => info!("store: seeded from cfg.toml"),
+            Err(e) => warn!("store: could not save ({e:?})"),
+        },
+        None => warn!("store: cfg.toml values do not fit a record"),
+    }
+
+    cfg
 }
 
 /// Owns the switch and nothing else.

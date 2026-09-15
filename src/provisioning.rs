@@ -211,6 +211,71 @@ fn crc32(bytes: &[u8]) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// The setup network
+// ---------------------------------------------------------------------------
+
+/// `cat-feeder-` plus the six-character device id.
+pub const AP_SSID_LEN: usize = 17;
+
+/// Twelve symbols in three groups of four, `K7M2-QH9X-4TRN`.
+pub const AP_PASSWORD_LEN: usize = 14;
+
+/// Crockford's base32: no `I`, `L`, `O` or `U`, so nothing on a sticker can be
+/// misread as something else, and no word can accidentally appear.
+const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// The name of the setup network, which is also how you tell three feeders
+/// apart while holding a phone in front of them.
+pub fn ap_ssid(device_id: &str) -> String<AP_SSID_LEN> {
+    let mut ssid = String::new();
+    let _ = ssid.push_str("cat-feeder-");
+    let _ = ssid.push_str(device_id);
+    ssid
+}
+
+/// The setup network's password: unique per unit, and not derivable from
+/// anything the unit broadcasts.
+///
+/// Deriving it from the MAC alone would not be a secret at all. The MAC is in
+/// the SSID, it is the BSSID in every beacon frame, and this function is public
+/// — so anyone in range could compute it. That matters because WPA2-PSK gives
+/// no protection against someone who knows the passphrase: they can capture the
+/// handshake and read the session, which is the one where the home Wi-Fi
+/// password gets typed into the form.
+///
+/// The secret comes from `cfg.toml` at build time, like the rest. It is not the
+/// home Wi-Fi password and it never leaves the unit, so it is the only
+/// build-time value that survives this feature.
+///
+/// Reproduced by `dev/ap-password.sh` so stickers can be printed before a unit
+/// is first powered on. Both sides must agree, which is why this is plain
+/// SHA-256 over `<secret>:<device id>` and nothing more inventive.
+pub fn ap_password(secret: &str, device_id: &str) -> String<AP_PASSWORD_LEN> {
+    let mut input: heapless::Vec<u8, 128> = heapless::Vec::new();
+    let _ = input.extend_from_slice(secret.as_bytes());
+    let _ = input.push(b':');
+    let _ = input.extend_from_slice(device_id.as_bytes());
+
+    let digest = crate::sha256::sha256(&input);
+
+    // Sixty bits off the front of the digest, five at a time. Far more than
+    // enough for a network nobody can reach without being in the room.
+    let bits = u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ]);
+
+    let mut password = String::new();
+    for symbol in 0u32..12 {
+        if symbol > 0 && symbol.is_multiple_of(4) {
+            let _ = password.push('-');
+        }
+        let index = (bits >> (59 - 5 * symbol)) & 0x1F;
+        let _ = password.push(ALPHABET[index as usize] as char);
+    }
+    password
+}
+
+// ---------------------------------------------------------------------------
 // The setup form
 // ---------------------------------------------------------------------------
 
@@ -546,6 +611,63 @@ mod tests {
         let mut no_port = sample();
         no_port.mqtt_port = 0;
         assert!(!no_port.is_usable());
+    }
+
+    // ---- the setup network ----
+
+    #[test]
+    fn the_ssid_names_the_unit() {
+        assert_eq!(ap_ssid("db0260").as_str(), "cat-feeder-db0260");
+        // Exactly fills the buffer, so nothing is silently dropped.
+        assert_eq!(ap_ssid("db0260").len(), AP_SSID_LEN);
+    }
+
+    #[test]
+    fn the_password_is_shaped_for_reading_off_a_sticker() {
+        let password = ap_password("s3cr3t", "db0260");
+
+        assert_eq!(password.len(), AP_PASSWORD_LEN);
+        assert_eq!(password.chars().filter(|c| *c == '-').count(), 2);
+        assert!(
+            password
+                .chars()
+                .all(|c| c == '-' || ALPHABET.contains(&(c as u8))),
+            "{password} strayed outside the alphabet"
+        );
+        // WPA2 will not accept anything shorter than eight characters.
+        assert!(password.len() >= 8);
+    }
+
+    #[test]
+    fn the_password_is_stable() {
+        // The unit and dev/ap-password.sh derive this independently, so a
+        // change here silently invalidates every sticker already printed.
+        //
+        // These values come from a separate Python implementation of the same
+        // rule, not from this code, so the test pins the definition rather than
+        // whatever the implementation happens to do.
+        assert_eq!(ap_password("s3cr3t", "db0260").as_str(), "55KA-G8H6-9NMQ");
+        assert_eq!(ap_password("s3cr3t", "db0261").as_str(), "BPF0-16PA-MXSN");
+        assert_eq!(ap_password("one", "db0260").as_str(), "5K3Z-ZCX0-H9KP");
+    }
+
+    #[test]
+    fn each_unit_gets_a_different_password() {
+        let secret = "s3cr3t";
+        let a = ap_password(secret, "db0260");
+        let b = ap_password(secret, "db0261");
+        let c = ap_password(secret, "aabbcc");
+
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+    }
+
+    #[test]
+    fn a_different_secret_gives_a_different_password() {
+        // The whole point: the device id is public, so it must not be the only
+        // input. Changing the secret has to change the answer.
+        assert_ne!(ap_password("one", "db0260"), ap_password("two", "db0260"));
     }
 
     // ---- the form ----

@@ -45,6 +45,7 @@ fn inject_config() {
                 ("MQTT_USER", "ci-placeholder"),
                 ("MQTT_PASSWORD", "ci-placeholder"),
                 ("MQTT_PORT", "1883"),
+                ("AP_SECRET", "ci-placeholder"),
             ] {
                 println!("cargo:rustc-env=CFG_{key}={value}");
             }
@@ -69,6 +70,9 @@ fn inject_config() {
         "mqtt_host",
         "mqtt_user",
         "mqtt_password",
+        // Salts the setup network's password. Not a network credential; see
+        // "Provisioning" in CLAUDE.md for why it stays a build-time value.
+        "ap_secret",
     ] {
         let value = table
             .get(key)

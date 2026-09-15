@@ -173,10 +173,11 @@ loop {
   re-aligned on every `time` message. Offline → keep running on the last
   received schedule/time. Power-cycled and no broker → wait, never guess.
 - **No batteries, no sleep modes, no USB detection** in v1.
-- Wi-Fi + MQTT credentials come from **build-time config** (`cfg.toml` or
-  `.env`, git-ignored, loaded via `build.rs` → `env!()`). Read through a
-  `Config` struct / `load_config()` so a later runtime-provisioning version
-  (captive portal / BLE) is a drop-in.
+- Wi-Fi + MQTT credentials come from **build-time config** (`cfg.toml`,
+  git-ignored, loaded via `build.rs` → `env!()`), read through a `Config`
+  struct / `load_config()`. That seam is being used now: see *Provisioning*
+  below, which replaces the source of those values without changing anything
+  that consumes them. `ap_secret` stays build-time either way.
 - Device id = derived from the MAC. One binary flashes all units.
 - **Never double-feed.** A missed meal is preferable to a double one. Three
   mechanisms in `schedule.rs`, each covering a failure the others cannot see:
@@ -187,6 +188,76 @@ loop {
   The marker is keyed on time of day rather than slot index, because Home
   Assistant can republish a schedule with a slot inserted or removed and an
   index would then point at a different meal.
+
+## Provisioning
+
+Credentials come from flash, and a unit with none raises its own Wi-Fi network
+and serves a form. **Partly built** — see roadmap step 9 for what runs today.
+
+```text
+  boot ── read the record from the nvs partition
+           ├── valid   → station mode, connect, run normally
+           └── missing → access point, serve the form, save, reboot
+
+  reset button (GPIO10) held → erase the record, reboot   (lands in "missing")
+```
+
+**One way in, not two.** The button erases rather than signalling, so "no valid
+record" is the only state the boot path has to recognise. There is deliberately
+no fall back to setup mode after failing to connect: a router rebooting for five
+minutes must not drop a working feeder into setup and stop it feeding.
+
+The value is in *re*-provisioning, not first boot. Flashing a new unit over USB
+makes build-time config free; what costs is the Wi-Fi password changing across
+three units already screwed into place. That is why the trigger is a button on
+the outside of the case rather than a flash-empty check alone.
+
+### The button is not the hub switch
+
+GPIO11 is the rotor microswitch, inside the mechanism and unreachable once
+assembled. The reset button is a separate part on **GPIO10** — the other header
+pin with no alternate function — and goes somewhere you can press it.
+
+### The setup network
+
+| | |
+|---|---|
+| SSID | `cat-feeder-<id>`, so three feeders are told apart on a phone |
+| Password | `base32(sha256("<ap_secret>:<id>"))`, 60 bits as `XXXX-XXXX-XXXX` |
+| Auth | WPA2. WPA3 is available and would add forward secrecy, unverified here |
+| Address | `192.168.4.1`, typed in by hand — no captive-portal DNS hijack |
+
+**The salt is the point.** Deriving the password from the MAC alone would not be
+a secret: the MAC is in the SSID, it is the BSSID in every beacon frame, and the
+derivation is public. WPA2-PSK gives no protection against someone who knows the
+passphrase — they capture the handshake and read the session, and that session
+is the one where the home Wi-Fi password is typed into the form. `ap_secret` in
+`cfg.toml` is what stops that, and it is the only build-time secret this feature
+keeps.
+
+Crockford's base32 drops `I`, `L`, `O` and `U`, so nothing on a sticker can be
+misread and no word appears by accident. `./dev/ap-password.sh <id>` prints it
+so stickers can be made before a unit is first powered on; the firmware prints
+it on the console in setup mode as well. **Both must agree byte-for-byte**,
+which is why the derivation is plain SHA-256 over `<secret>:<id>` and nothing
+more inventive, and why `provisioning::tests::the_password_is_stable` pins
+values produced by a separate implementation rather than by the firmware.
+
+### Flash
+
+The `nvs` partition — 24 KB at 0x9000 in the default table — is unused: esp-radio
+has a `NVS` symbol but it is a 15-word RAM array in its ESP-IDF shim, not the
+partition. No custom partition table is needed, and `espflash` rewrites only the
+app partition, so configuration survives a reflash.
+
+This does **not** contradict *no flash persistence* above. That rule is about
+schedule and time state, which stay the broker's job. Credentials are the one
+thing the broker cannot tell a unit, because they are how it reaches the broker.
+
+A record carries a magic and a CRC-32 so that erased flash (`0xFF` everywhere)
+and an interrupted write both read as *unconfigured* rather than as garbage
+credentials. A unit that believes a corrupt record sits trying to join a network
+that does not exist, and the only way back is the button.
 
 ## MQTT contract
 
@@ -356,6 +427,9 @@ src/
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
   wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed
+  provisioning.rs pure logic: the flash record, setup-network credentials,
+                  the setup form and just enough HTTP
+  sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
   config.rs       Config + load_config()
 build.rs          injects cfg.toml/.env values as env vars
 
@@ -453,6 +527,34 @@ never guess*. It is only visible on the console, so a unit stuck at
 `schedule holding` is silent to Home Assistant — though if Home Assistant is
 down, it could not have raised the alarm either.
 
+9. Provisioning: credentials from flash, setup over the unit's own access
+   point. Independent of steps 3, 6 and 8 — see *Provisioning* above.
+   - ✅ the flash record: format, CRC, and every single-bit flip and
+     interrupted write rejected (`provisioning.rs`, host-tested)
+   - ✅ the setup form: `x-www-form-urlencoded` and just enough HTTP
+   - ✅ setup network credentials, and `dev/ap-password.sh` to match
+   - ✅ SHA-256 (`sha256.rs`), pinned to NIST vectors and padding boundaries
+   - ✅ reading and writing the `nvs` partition (`store.rs`, `esp-storage`
+     **0.9** not 0.10 — 0.10 requires an esp-hal 1.2 release candidate).
+     Verified: found at 0x9000, seeded, and read back across a full reflash
+   - ✅ the boot decision, and `Config` borrowing a record instead of `env!()`
+   - ⬜ access point + DHCP server (`edge-dhcp` 0.8) + the form over TCP
+   - ⬜ the reset button on GPIO10
+   - ⬜ retire build-time credentials once setup mode works. `cfg.toml` keeps
+     `ap_secret` and nothing else, and the Wi-Fi password stops being compiled
+     into the binary at all. To delete, together:
+     - `seed_config` in `main.rs` (marked TEMPORARY), and the build-time
+       fallback beside it — with no credentials to fall back on, a missing
+       `nvs` partition means the unit cannot be provisioned either, so that
+       becomes a loud error rather than a quiet default
+     - `load_config`, `Config::to_record` and `parse_u16` in `config.rs`
+       (`parse_u16` exists only for the port)
+     - the key loop, port parsing and CI placeholders in `build.rs`
+     - the six credential lines in `cfg.toml` and `cfg.toml.example`
+
+     `Config` stays; it is what the rest of the firmware consumes. Only its
+     source changes, which is what `load_config()` was a seam for.
+
 Steps 3, 6 and 8 wait on hardware rather than on code:
 
 | Blocked step | Waiting for |
@@ -461,9 +563,8 @@ Steps 3, 6 and 8 wait on hardware rather than on code:
 | 6, flashing the three Zeros | the boards |
 | 8, retiring the PCBs | 3 and 6 |
 
-Later (not now): physical feed button on a spare GPIO (so a manual feed works
-with the broker down), runtime Wi-Fi/broker provisioning, battery backup,
-buzzer.
+Later (not now): a short press on the GPIO10 button feeding one portion, so a
+manual feed works with the broker down; battery backup; buzzer.
 
 Also later: a configured feeder timezone (`Europe/Rome`) so the unit can apply
 the offset itself and work out DST, instead of assuming it shares a timezone

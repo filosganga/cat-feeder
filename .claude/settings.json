@@ -8,7 +8,7 @@
       "Bash(pkill -f \"mosquitto_sub -h localhost\")",
       "Bash(curl *)",
       "Bash(git check-ignore *)",
-      "Read(//dev/**)",
+      "Read(./dev/**)",
       "Read(~/.cargo/**)",
       "Bash(espflash *)",
       "Bash(rustc *)",
@@ -18,7 +18,9 @@
       "Bash(timeout * ./dev/watch.sh *)",
       "WebFetch(domain:waveshare.com)",
       "WebFetch(domain:espressif.com)",
-      "Bash(awk -F'[\\(\\)]' '{t=$2+0; if\\(NR>1\\) printf \"%-64s \\(+%d ms\\)\\\\n\",$0,t-p; else print; p=t}')"
+      "Bash(awk -F'[\\(\\)]' '{t=$2+0; if\\(NR>1\\) printf \"%-64s \\(+%d ms\\)\\\\n\",$0,t-p; else print; p=t}')",
+      "Bash(./dev/flash.sh *)",
+      "Bash(./dev/ap-password.sh *)"
     ],
     "additionalDirectories": [
       "/Users/filippodeluca/Documents/development/personal/cat-feeder",

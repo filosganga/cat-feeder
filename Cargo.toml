@@ -45,6 +45,17 @@ esp-rtos = { version = "0.3.0", features = [
 
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c6", "log-04"] }
 
+# Raw flash access, for the provisioning record in the nvs partition.
+#
+# Pinned to 0.9, NOT the latest. esp-storage tracks esp-hal closely: 0.10
+# requires `esp-hal ~1.2.0-rc.0` and would drag the whole HAL onto a release
+# candidate. 0.9 wants `~1.1.0-rc.0`, which the 1.1.2 pinned above satisfies.
+# Check that requirement before bumping this.
+esp-storage = { version = "0.9.0", features = ["esp32c6"] }
+# The traits esp-storage's FlashStorage implements. Its own dependency, but not
+# re-exported, so it has to be named here to bring Read/Storage into scope.
+embedded-storage = "0.3.1"
+
 embassy-net = { version = "0.9.1", features = [
   "dhcpv4",
   "log",
