@@ -8,7 +8,8 @@
 #![deny(clippy::large_stack_frames)]
 
 use cat_feeder::config::{DEVICE_ID_LEN, device_id, load_config};
-use cat_feeder::mqtt;
+use cat_feeder::switch::{ClickSource, Switch};
+use cat_feeder::{mqtt, switch_pin};
 use embassy_executor::Spawner;
 use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
@@ -27,6 +28,21 @@ extern crate alloc;
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
+
+/// Supplies the clock for `esp-println`'s `timestamp` feature.
+///
+/// Every log line is then stamped with milliseconds since boot, which is what
+/// makes the timing rules checkable on the console rather than inferred:
+/// the 30 ms debounce, the 800 ms minimum click spacing, ~1.9 s per portion
+/// and the 5 s jam timeout.
+///
+/// Lives in the binary rather than the library so the linker cannot drop it.
+#[unsafe(no_mangle)]
+pub extern "Rust" fn _esp_println_timestamp() -> u64 {
+    esp_hal::time::Instant::now()
+        .duration_since_epoch()
+        .as_millis()
+}
 
 macro_rules! mk_static {
     ($t:ty, $val:expr) => {{
@@ -61,6 +77,10 @@ async fn main(spawner: Spawner) -> ! {
     let cfg = load_config();
     let id = mk_static!(heapless::String<DEVICE_ID_LEN>, device_id());
     info!("board: devkit, id={id}");
+
+    let switch = Switch::new(switch_pin!(peripherals));
+    spawner
+        .spawn(switch_task(switch).expect("failed to create switch task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -97,6 +117,27 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     mqtt::run(stack, cfg, id.as_str()).await
+}
+
+/// Roadmap step 2: count clicks on the console so the switch and the debounce
+/// can be checked by hand, before any motor exists.
+#[embassy_executor::task]
+async fn switch_task(mut switch: Switch<'static>) {
+    info!(
+        "switch: waiting for clicks on GPIO11, currently {}",
+        if switch.is_pressed() {
+            "pressed"
+        } else {
+            "released"
+        }
+    );
+
+    let mut clicks: u32 = 0;
+    loop {
+        switch.next_click().await;
+        clicks += 1;
+        info!("switch: click {clicks}");
+    }
 }
 
 /// Keeps the station associated, retrying forever. Losing Wi-Fi is normal.

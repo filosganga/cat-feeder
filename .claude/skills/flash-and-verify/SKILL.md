@@ -81,15 +81,28 @@ I (23) boot: ESP-IDF v6.1-beta1-497-g14f663f003e 2nd stage bootloader
 I (63) boot:  2 factory          factory app      00 00 00010000 007f0000
 I (198) boot: Loaded app from partition at offset 0x10000
 I (198) boot: Disabling RNG early entropy source...
-INFO - Embassy initialized!
-INFO - Hello world!
+INFO (261) - Embassy initialized!
+INFO (264) - board: devkit, id=db0260
+INFO (358) - wifi: connecting to <ssid>
+INFO (364) - switch: waiting for clicks on GPIO11, currently released
+INFO (1621) - wifi: associated
+INFO (11643) - wifi: connected, ip=192.168.68.123/24
+INFO (11797) - mqtt: connected, id=feeder_<id>
+INFO (11821) - mqtt: online
 ```
 
-The `I (nnn) boot:` lines come from the bootloader and appear even when the
-application is dead. **Only the lines formatted `INFO - ...` are yours.** If the
-log stops at "Disabling RNG early entropy source", the application produced no
-output — see [references/troubleshooting.md](references/troubleshooting.md),
-starting with the `esp-println` output interface.
+Two different timestamp formats share this log and they are not the same clock.
+`I (nnn) boot:` lines come from the ESP-IDF bootloader and appear even when the
+application is dead. **Only the lines formatted `LEVEL (ms) - ...` are yours**,
+stamped with milliseconds since boot.
+
+If the log stops at "Disabling RNG early entropy source", the application
+produced no output — see
+[references/troubleshooting.md](references/troubleshooting.md), starting with
+the `esp-println` output interface.
+
+Sample logs elsewhere in this skill omit the millisecond field for readability.
+Real output always carries it.
 
 ## Per-step expectations
 

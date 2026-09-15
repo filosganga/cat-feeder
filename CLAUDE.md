@@ -36,8 +36,20 @@ Feeding = run forward until N falling edges on the switch, then brake. Stop
 **on** the edge, so the hub always parks in the same position. Safety
 timeout: if no click within 5 s while running → stop, report `jammed`.
 
-Switch: GPIO with internal pull-up, other contact to GND. Debounce 30 ms in
-software (8 rpm → one edge every ~1.9 s, bouncing is trivial to filter).
+Switch: **GPIO11**, internal pull-up enabled in software
+(`InputConfig::default().with_pull(Pull::Up)`), other contact to GND. No
+external resistor. Idle reads high, pressed reads low, so a press is a
+**falling** edge. Debounce 30 ms in software (8 rpm → one edge every ~1.9 s,
+bouncing is trivial to filter).
+
+GPIO11 is on the DEV-KIT's J1 header, third pin in from 5V
+(`5V · GPIO3 · GPIO2 · GPIO11`). It and GPIO10 are the only header pins with no
+alternate function at all, which is why the switch gets one of them.
+
+⚠️ The nearest ground, J1 pin 15, sits **directly beside 5V**. A ground jumper
+off by one position puts 5 V through the switch onto GPIO11 and destroys the
+pin. Either double-check that jumper or take a ground from the J3 header, which
+has no 5 V neighbour.
 
 ### Edges, never levels
 
@@ -60,13 +72,23 @@ so the state machine is written so the starting level does not matter.
 Without the align phase, a run that starts with the switch free would make the
 first portion short of a full 90°.
 
-**Minimum spacing between clicks: ~800 ms.** Just after the motor starts, the
-hub is sitting right on an edge; a fraction of a turn can bounce the switch and
-produce a spurious falling edge at zero rotation. An edge arriving less than
-800 ms after the previous one, or after the motor started, is discarded. At
-8 rpm a quarter turn needs ~1900 ms, so this cannot reject a real click, and it
-makes counting immune to both bounce and the initial level. It works together
-with the 30 ms debounce, not instead of it.
+**Minimum spacing between clicks: ~800 ms, and it lives in `feeder.rs`, not in
+`switch.rs`.** Just after the motor starts, the hub is sitting right on an edge;
+a fraction of a turn can bounce the switch and produce a spurious falling edge
+at zero rotation. So inside the counting loop, an edge arriving less than 800 ms
+after the previous one, or after the motor started, is discarded. At 8 rpm a
+quarter turn needs ~1900 ms, so this cannot reject a real click. It works
+together with the 30 ms debounce, not instead of it.
+
+The placement matters. That 1900 ms floor only holds **while the motor is
+driving**. A hub turned by hand, or a bench button pressed twice quickly, can
+legitimately produce edges far closer together. If the rule lived in
+`switch.rs`, the stream would silently swallow real edges and lie about what it
+observed, and every bench test would look like a broken debounce.
+
+So: `switch.rs` debounces at 30 ms and reports **every** real edge.
+`feeder.rs` applies the 800 ms rejection, where the motor-driven assumption
+actually holds.
 
 The 5 s no-edge timeout remains the jam guard.
 
@@ -221,8 +243,9 @@ src/
   main.rs         wiring: peripherals, tasks, executor
   board.rs        pin map per board (feature-gated)
   motor.rs        Motor { run_forward(), brake() } over two Output pins + nSLEEP
-  switch.rs       debounced click stream (async), 30 ms + 800 ms min spacing
-  feeder.rs       owns motor + switch; FEED queue, align, count, brake, timeout
+  switch.rs       debounced click stream (async), 30 ms; reports every edge
+  feeder.rs       owns motor + switch; FEED queue, align, 800 ms spacing,
+                  count, brake, jam timeout
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
   config.rs       Config + load_config()

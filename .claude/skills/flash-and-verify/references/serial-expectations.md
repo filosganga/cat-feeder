@@ -20,10 +20,26 @@ Only step 1 has been observed on hardware. The rest are contracts, not
 transcripts. When you first reach a step, replace its expected block with what
 the console actually printed.
 
-Every application line is formatted `LEVEL - message`, for example
-`INFO - Embassy initialized!`. There is no timestamp, because `esp-println`'s
-`timestamp` feature is not enabled. Lines shaped `I (nnn) boot:` come from the
-ESP-IDF bootloader, not from this firmware.
+Every application line is formatted `LEVEL (ms) - message`, for example
+`INFO (261) - Embassy initialized!`. The number is milliseconds since boot,
+from `esp-println`'s `timestamp` feature, fed by `_esp_println_timestamp` in
+`main.rs`. Lines shaped `I (nnn) boot:` come from the ESP-IDF bootloader, not
+from this firmware.
+
+**Use those timestamps.** Every timing rule in this project is checkable from
+the console rather than guessed at: the 30 ms debounce, the 800 ms minimum
+click spacing, ~1.9 s per portion, the 5 s jam timeout. To read gaps between
+lines rather than absolute times:
+
+```sh
+espflash monitor --non-interactive --port "$ESPFLASH_PORT" \
+  | sed 's/\x1b\[[0-9;]*m//g' \
+  | awk -F'[()]' '{t=$2+0; if(NR>1) printf "%s  (+%d ms)\n",$0,t-p; else print; p=t}'
+```
+
+Observed on the dev kit for reference: boot to `Embassy initialized!` about
+260 ms, Wi-Fi associated about 1.6 s, an address about 11.6 s. That last gap is
+a lost first DHCP request and a retry, not negotiation.
 
 ## Step 1 — toolchain and blinky
 
@@ -48,35 +64,50 @@ entry in [troubleshooting.md](troubleshooting.md).
 
 ## Step 2 — switch task
 
-Action: flash, then turn the output hub by hand, slowly, through one full
-revolution.
+Two passes. A push button on a breadboard is enough for the first one and is the
+better place to start, because it separates wiring problems from mechanical
+ones. The real hub comes second.
+
+`switch.rs` debounces at 30 ms and reports **every** real edge. It does **not**
+apply the 800 ms minimum spacing; that belongs to `feeder.rs`, where the motor
+guarantees clicks cannot arrive faster than about 1900 ms. Getting this backwards
+is the likeliest mistake in this step, and it shows up as a bench button that
+ignores every second press.
+
+### Pass 1, bench button
+
+Action: flash, then press the button, including deliberately fast double
+presses.
 
 ```
 INFO - Embassy initialized!
 INFO - switch: waiting for clicks on GPIO<n>
 INFO - switch: click 1
 INFO - switch: click 2
-INFO - switch: click 3
-INFO - switch: click 4
 ```
 
-Exactly **four clicks per revolution**. That is the mechanical contract and the
-whole point of this step.
-
-- More than four, or a burst of clicks from one detent, means the 30 ms debounce
-  is not working. Log the raw edges at `debug` to see the bounce.
-- Fewer than four means a missed edge: check the pull-up configuration and that
-  the other switch contact really goes to ground.
-- Clicks arriving while the hub is still means the input is floating. The
+- **Every press counts, however fast.** Two presses 200 ms apart must produce
+  two clicks. If the second is swallowed, the 800 ms spacing rule has been put
+  in the switch stream instead of the feeder.
+- One press giving several clicks means the 30 ms debounce is not working. Log
+  raw edges at `debug` to see the bounce.
+- Clicks with nothing touching the button mean the input is floating, so the
   internal pull-up is not enabled.
+- Holding the button down must produce exactly one click, not a stream. The
+  task counts falling edges, not the level.
 
-At 8 rpm one edge arrives roughly every 1.9 s, so anything faster than that
-during motor-driven rotation is noise.
+### Pass 2, the real hub
 
-The stream counts **falling edges**, never the level. Start the test twice, once
-with the hub parked on a detent so the switch begins pressed, and once parked
-between detents so it begins free. Both must give four clicks per revolution. A
-run that reports a click the instant the task starts is reading the level.
+Action: turn the output hub by hand, slowly, through one full revolution.
+
+Exactly **four clicks per revolution**. That is the mechanical contract and the
+real point of this step. Fewer than four means a missed edge; more means bounce
+the debounce did not catch.
+
+Run it twice, once with the hub parked on a detent so the switch starts pressed
+and once parked between detents so it starts free. Both must give four. A run
+that reports a click the instant the task starts is reading the level rather
+than waiting for an edge.
 
 ## Step 3 — motor and feed(n)
 
@@ -122,14 +153,20 @@ edge, which is the normal resting position, and watch the first click:
 ```
 INFO - feed: start, portions=1
 INFO - feed: aligned
-DEBUG - switch: edge at 40ms ignored, minimum spacing
+DEBUG - feed: edge at 40ms ignored, below 800ms minimum spacing
 INFO - feed: click 1/1
 INFO - feed: done, portions=1, elapsed=1.9s
 ```
 
 A feed that completes in well under a second has counted the startup bounce as a
 portion. The 800 ms minimum spacing is what prevents that, and it is separate
-from the 30 ms debounce. Both must be present.
+from the 30 ms debounce in `switch.rs`. Both must be present, in their own
+modules: the debounce filters contact bounce everywhere, the spacing rule
+rejects impossible-at-8-rpm edges and is only correct while the motor drives.
+
+Cross-check against step 2. The same fast edges that `feeder.rs` rejects here
+must still be counted by the bench button test, because `switch.rs` reports
+them. If both tests pass, the rule is in the right place.
 
 ### Accumulation without stopping
 
