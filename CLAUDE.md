@@ -396,10 +396,23 @@ every shared handle and documents who writes each one.
    in `schedule.rs` with 32 host tests, and every rule verified on hardware by
    driving `feeder/time` from the broker
 6. Board feature for the Zero, flash the three production units
-7. Home Assistant: ✅ automations publishing time (every minute) + schedule,
+7. ✅ Home Assistant: automations publishing time (every minute) + schedule,
    the pause helper and a feed-all script, in
    `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
-   feed end to end. Still to do: retire the old PCBs
+   feed end to end
+8. Retire the old PCBs. Per feeder: remove the original LCD/RTC/button board,
+   fit the Zero + DRV8833 + 220 µF, connect the motor and the microswitch, take
+   5 V from the feeder's original USB port. The last step in the project and
+   the only one with no software in it
+
+Steps 2, 3, 6 and 8 all wait on hardware rather than on code:
+
+| Blocked step | Waiting for |
+|---|---|
+| 2, the four-clicks-per-revolution check | a feeder hub on the bench |
+| 3, the DRV8833 | the part |
+| 6, the Zero boards | the boards |
+| 8, retiring the PCBs | 2, 3 and 6 |
 
 Later (not now): physical feed button on a spare GPIO (so a manual feed works
 with the broker down), runtime Wi-Fi/broker provisioning, battery backup,

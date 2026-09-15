@@ -8,6 +8,7 @@
 - [Step 5 — schedule, time and the double-feed guard](#step-5--schedule-time-and-the-double-feed-guard)
 - [Step 6 — the Zero boards](#step-6--the-zero-boards)
 - [Step 7 — Home Assistant](#step-7--home-assistant)
+- [Step 8 — retiring the old PCBs](#step-8--retiring-the-old-pcbs)
 
 ## How to read this file
 
@@ -497,10 +498,45 @@ ids.
 
 ## Step 7 — Home Assistant
 
-Nothing new appears on the serial console at this step. Verification is that all
-three units log the same `feeder/time` re-alignment within the same second, and
-that a single publish to `feeder/all/feed` produces `feed: start` on all three
-consoles at once.
+Status: observed on one unit. The three-unit check below still needs the Zeros.
 
-That is the requirement the whole design exists for. Check it with three
+Home Assistant's half lives in `homeassistant/packages/cat_feeder.yaml`;
+`dev/README.md` covers installing it. Once it is running, the console shows the
+schedule arriving from Home Assistant rather than from a hand publish, and slots
+firing at their real times:
+
+```
+INFO - clock: started, 2026-09-15T19:56:00+02:00
+INFO - schedule: 2 slots
+INFO - schedule: slot 19:56 due, feeding 3
+```
+
+Confirm on the broker that `last_fed` matches the slot, which is the proof the
+whole path ran rather than just the publish:
+
+```
+"last_fed":"2026-09-15T19:56:00+02:00"
+```
+
+**Check the offset on that `clock: started` line against where you live.** Home
+Assistant's container defaults to UTC, and `TZ` in `compose.yaml` is what makes
+it local. Get it wrong and every meal lands an hour or two out while every
+entity still looks healthy — this line is the only place it shows.
+
+Then the requirement the whole design exists for, once all three units are
+built: a single publish to `feeder/all/feed`, or `script.cat_feeder_feed_all`,
+must produce `feed: start` on all three consoles at once, and all three must log
+the same `feeder/time` re-alignment within the same second. Check it with three
 monitors open, one per unit.
+
+## Step 8 — retiring the old PCBs
+
+No serial output belongs to this step; it is screwdriver work. The console check
+is simply that a feeder still behaves after being reassembled, so run step 3's
+`feed(n)` checks again on the real mechanism once each unit is in its case —
+especially the four-clicks-per-revolution contract, which is the thing most
+likely to differ between a bench hub and an assembled one.
+
+Watch the boot banner's `rst:` line on the first feed after assembly. A reset
+the moment the motor starts is the 220 µF capacitor, not the firmware. See
+[troubleshooting.md](troubleshooting.md).
