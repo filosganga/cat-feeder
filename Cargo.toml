@@ -8,7 +8,16 @@ version      = "0.1.0"
 name = "cat-feeder"
 path = "./src/bin/main.rs"
 
+# Portable dependencies. These build for the host too, so the pure-logic
+# modules can be tested with `cargo test`.
 [dependencies]
+heapless = "0.9"
+log      = "0.4.27"
+
+# Everything that only exists on the board. Target-gated so a host test build
+# does not try to compile esp-hal and friends for macOS or Linux; gating the
+# modules alone is not enough, because cargo still builds the dependencies.
+[target.'cfg(target_os = "none")'.dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32c6", "log-04", "unstable"] }
 
 esp-rtos = { version = "0.3.0", features = [
@@ -20,7 +29,6 @@ esp-rtos = { version = "0.3.0", features = [
 ] }
 
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c6", "log-04"] }
-log                    = "0.4.27"
 
 embassy-net = { version = "0.9.1", features = [
   "dhcpv4",
@@ -82,7 +90,6 @@ rust-mqtt = { version = "0.5.1", default-features = false, features = [
   "log-level-info",
   "v5",
 ] }
-heapless = "0.9"
 
 [build-dependencies]
 toml = "1"

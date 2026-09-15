@@ -92,9 +92,15 @@ actually holds.
 
 The 5 s no-edge timeout remains the jam guard.
 
-These four cases are exactly why `feeder.rs` takes a `ClickSource` trait:
-*starts pressed*, *starts free*, *bounce at t=0*, *no clicks at all* are four
-ten-line host tests with a fake source.
+These four cases — *starts pressed*, *starts free*, *bounce at t=0*, *no clicks
+at all* — are host tests in `feeder.rs`, along with the one that is easiest to
+get wrong: repeated bounce must not postpone jam detection.
+
+Note the 800 ms threshold is a wide margin, not a check that a full quarter
+turn happened. Real contact chatter lasts milliseconds; a real detent takes
+~1900 ms. Anything in between cannot occur while the motor drives, so the
+threshold sits comfortably in the empty middle rather than close to either
+edge.
 
 ### The feeder task owns the motor
 
@@ -102,38 +108,53 @@ One task, one queue. Producers (`mqtt`, `clock`) send portion counts and
 nothing else; only this task touches the motor and the switch, so there is no
 shared mutable state and no mutex.
 
+**The decisions live in a pure state machine, `feeder::Feeder`, not in the
+task.** Time arrives as milliseconds in each call, so the machine needs no
+clock and no executor and is fully host-tested. The task asks what to do, does
+it, and reports back. It decides nothing.
+
 ```rust
 // producers: FEED.try_send(2)
 static FEED: Channel<CriticalSectionRawMutex, u8, 8> = Channel::new();
 
-let mut pending: u8 = 0;
+let mut feeder = Feeder::new();
 loop {
-    if pending == 0 {
-        motor.brake();
-        pending = FEED.receive().await;   // sleep until there is work
-        motor.run_forward();
-        align(&mut clicks).await;         // only if the switch is free
-    }
-    // absorb anything that arrived meanwhile, without blocking
-    while let Ok(n) = FEED.try_receive() {
-        pending = pending.saturating_add(n).min(MAX_PORTIONS);
-    }
-    match with_timeout(JAM_TIMEOUT, clicks.next()).await {
-        Ok(()) => pending -= 1,
-        Err(_) => { motor.brake(); pending = 0; report_jammed(); }
+    match feeder.action(now_ms()) {
+        Action::Idle => {
+            motor.brake();
+            feeder.request(FEED.receive().await);        // sleep until there is work
+            feeder.start(now_ms(), switch.is_pressed()); // level decides alignment
+            motor.run_forward();
+        }
+        Action::Turning { jam_timeout_ms } => {
+            // absorb anything that arrived meanwhile, without blocking
+            while let Ok(n) = FEED.try_receive() { feeder.request(n); }
+
+            match select(clicks.next_click(), Timer::after_millis(jam_timeout_ms)).await {
+                Either::First(_)  => { feeder.on_click(now_ms()); }
+                Either::Second(_) => { motor.brake(); feeder.on_timeout(); }
+            }
+        }
     }
 }
 ```
 
-- **Do not stop the motor between portions.** The loop body is one portion,
-  but the brake happens only when the queue is empty. Two portions are one
-  continuous 180° turn, not two starts.
+- **Do not stop the motor between portions.** `action` keeps reporting
+  `Turning` until the last click, so two portions are one continuous 180° turn
+  rather than two starts.
 - **Accumulation falls out of it.** `feed 2` from HA plus `feed 1` from the
   scheduler is three clicks without the motor ever stopping.
+- **`jam_timeout_ms` is the remaining budget**, measured from the last counted
+  click, never a fresh 5 s. Otherwise sustained bounce would postpone jam
+  detection indefinitely and leave the motor energised against a stuck hub.
 - **A jam discards whatever is pending.** Resuming a queue into a jammed
-  mechanism is worse than dropping a meal.
+  mechanism is worse than dropping a meal. The jam flag clears by itself when
+  a portion is next counted.
 - Producers use `try_send` and log the discard, so a full queue never blocks
   the MQTT or clock task.
+- Reading the switch level is I/O, so it is an input to `start` rather than
+  something the machine works out. That is the only place the task supplies a
+  fact rather than an event.
 
 ## Architecture — decided, do not re-litigate
 
@@ -210,9 +231,31 @@ alarms. Keep `paused` visible in the state payload and as a switch in HA.
   board `esp32c6-wroom-1`. **No BLE, no probe-rs/defmt.**
 - `cargo run` = build + `espflash` + serial monitor.
 - `espflash board-info` verifies the board/cable.
-- Tests of pure logic (schedule evaluation, debounce state machine, double-feed
-  guard) live in a `#![cfg_attr(not(test), no_std)]`-style core crate or
-  behind `#[cfg(test)]` so they run on the host with `cargo test`.
+- Tests of pure logic (portion accounting, schedule evaluation, double-feed
+  guard) live behind `#[cfg(test)]` in modules that do **not** touch esp-hal,
+  and run on the host:
+
+  ```sh
+  cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"
+  ```
+
+  The explicit target is not optional: `.cargo/config.toml` points cargo at the
+  board, so plain `cargo test` builds the tests for the ESP32-C6 and fails to
+  link. CI runs the same command against `x86_64-unknown-linux-gnu`.
+
+  Two things keep the host build working, and both are easy to break:
+  - `src/lib.rs` gates every hardware module on `#[cfg(target_os = "none")]`.
+  - `Cargo.toml` puts every esp-* / embassy-* dependency under
+    `[target.'cfg(target_os = "none")'.dependencies]`. Gating the modules alone
+    is not enough, because cargo still compiles the dependencies.
+
+  `build.rs` likewise only emits `-Tlinkall.x` and the linker error-handling
+  hook for the bare-metal target; the host linker rejects both. It also falls
+  back to placeholder credentials when `cfg.toml` is absent **and** `CI` is
+  set, so CI can build without secrets while a local build still fails loudly.
+
+  New pure logic goes in a module listed above the gate in `lib.rs`. If it
+  needs a peripheral, it is not pure logic.
 
 Check the exact esp-hal / esp-radio / embassy versions in `Cargo.toml` and
 follow the matching `examples/` in the esp-hal repo; the API (e.g.

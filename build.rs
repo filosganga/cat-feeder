@@ -1,8 +1,26 @@
 fn main() {
+    // Must stay first: this function is also how the linker re-invokes this
+    // binary to explain undefined symbols, and that path exits immediately.
     linker_be_nice();
-    // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
-    println!("cargo:rustc-link-arg=-Tlinkall.x");
+
+    // The linker script and the error-handling hook are only meaningful when
+    // building for the board. Host test builds link with the system linker,
+    // which rejects both, so emit them only for the bare-metal target.
+    if is_embedded_target() {
+        // linkall.x must be the last linker script, or flip-link misbehaves.
+        println!("cargo:rustc-link-arg=-Tlinkall.x");
+        println!(
+            "cargo:rustc-link-arg=--error-handling-script={}",
+            std::env::current_exe().unwrap().display()
+        );
+    }
+
     inject_config();
+}
+
+/// True when cargo is building for the ESP32-C6 rather than for the host.
+fn is_embedded_target() -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none")
 }
 
 /// Reads `cfg.toml` and exposes its values to the firmware as `env!()` vars.
@@ -15,6 +33,26 @@ fn inject_config() {
 
     let path = std::path::Path::new("cfg.toml");
     if !path.exists() {
+        // cfg.toml is git-ignored, so CI never has one. Build with obvious
+        // placeholders there so compilation, clippy and fmt are still checked;
+        // the resulting binary is not meant to be flashed.
+        if std::env::var_os("CI").is_some() {
+            println!("cargo:warning=cfg.toml missing; building with placeholder credentials");
+            for (key, value) in [
+                ("WIFI_SSID", "ci-placeholder"),
+                ("WIFI_PASSWORD", "ci-placeholder"),
+                ("MQTT_HOST", "127.0.0.1"),
+                ("MQTT_USER", "ci-placeholder"),
+                ("MQTT_PASSWORD", "ci-placeholder"),
+                ("MQTT_PORT", "1883"),
+            ] {
+                println!("cargo:rustc-env=CFG_{key}={value}");
+            }
+            return;
+        }
+
+        // Locally, fail loudly. A firmware built with placeholder credentials
+        // would flash fine and then fail to join Wi-Fi for no visible reason.
         panic!(
             "\n\n  cfg.toml is missing.\n  \
              Copy the template and fill it in:\n\n      \
@@ -117,8 +155,6 @@ fn linker_be_nice() {
         std::process::exit(0);
     }
 
-    println!(
-        "cargo:rustc-link-arg=--error-handling-script={}",
-        std::env::current_exe().unwrap().display()
-    );
+    // Registering the hook itself happens in `main`, so it is skipped on host
+    // builds. Everything above only runs when the linker calls us back.
 }

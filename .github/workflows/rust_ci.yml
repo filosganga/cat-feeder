@@ -26,13 +26,17 @@ jobs:
             args: --all -- --check
           - command: clippy
             args: --all-features --workspace -- -D warnings
+          # Pure-logic tests. These need an explicit host target, because
+          # .cargo/config.toml points cargo at the board by default.
+          - command: test
+            args: --lib --target x86_64-unknown-linux-gnu
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@v1
         with:
-          target: riscv32imac-unknown-none-elf
+          targets: riscv32imac-unknown-none-elf, x86_64-unknown-linux-gnu
           toolchain: stable
           components: rust-src, rustfmt, clippy
       - name: Enable caching

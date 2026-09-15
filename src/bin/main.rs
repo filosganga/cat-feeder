@@ -79,8 +79,7 @@ async fn main(spawner: Spawner) -> ! {
     info!("board: devkit, id={id}");
 
     let switch = Switch::new(switch_pin!(peripherals));
-    spawner
-        .spawn(switch_task(switch).expect("failed to create switch task"));
+    spawner.spawn(switch_task(switch).expect("failed to create switch task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -106,9 +105,7 @@ async fn main(spawner: Spawner) -> ! {
 
     // In embassy-executor 0.10 the `task` macro returns a Result, so the token
     // is unwrapped before it reaches `spawn`.
-    spawner.spawn(
-        wifi_task(controller, cfg.wifi_ssid).expect("failed to create wifi task"),
-    );
+    spawner.spawn(wifi_task(controller, cfg.wifi_ssid).expect("failed to create wifi task"));
     spawner.spawn(net_task(runner).expect("failed to create net task"));
 
     stack.wait_config_up().await;
