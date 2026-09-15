@@ -58,6 +58,38 @@ from the image entirely.
 Third: `esp_println::logger::init_logger_from_env()` must actually be called,
 and called before anything that logs.
 
+## Clicks that work briefly and then stop
+
+Symptom: after a reset a few clicks arrive, then nothing ever again, while the
+rest of the firmware carries on publishing happily. No panic, no jam beyond the
+expected ones, just silence from the switch.
+
+That is an **intermittent connection**, not a software fault. It cost most of a
+session to diagnose, because it looks exactly like a stuck task and invites a
+hunt through the async code.
+
+What sends you down the wrong path: the boot line still reports the level
+correctly, because a plain pin read works whether or not the button is on the
+other end of the wire. A floating input with a pull-up simply reads `released`
+forever.
+
+The twenty-second test that settles it, with no tooling:
+
+1. Hold the button down.
+2. Tap RESET on the board.
+3. Read the first `switch:` line.
+
+`pressed` means the circuit is good and the problem is real. `released` while
+you are holding it means the circuit is open and no firmware change will help.
+Re-seat the jumper into the GPIO and the switch's legs, especially if anything
+on the breadboard was touched since it last worked.
+
+Two other clues that point at wiring rather than code:
+
+- A minimal single-purpose binary sees the edges but the full firmware does not,
+  and swapping the implementation changes nothing.
+- The behaviour changes across resets with no rebuild in between.
+
 ## Port problems
 
 `espflash list-ports` shows only one port on the dev kit. The board exposes two
