@@ -127,12 +127,13 @@ loop {
             motor.run_forward();
         }
         Action::Turning { jam_timeout_ms } => {
-            // absorb anything that arrived meanwhile, without blocking
-            while let Ok(n) = FEED.try_receive() { feeder.request(n); }
-
-            match select(clicks.next_click(), Timer::after_millis(jam_timeout_ms)).await {
-                Either::First(_)  => { feeder.on_click(now_ms()); }
-                Either::Second(_) => { motor.brake(); feeder.on_timeout(); }
+            // a request arriving mid-turn has to *wake* this loop
+            match select3(clicks.next_click(),
+                          FEED.receive(),
+                          Timer::after_millis(jam_timeout_ms)).await {
+                Either3::First(_)  => { feeder.on_click(now_ms()); }
+                Either3::Second(n) => { feeder.request(n); }   // no start, no motor
+                Either3::Third(_)  => { motor.brake(); feeder.on_timeout(); }
             }
         }
     }
@@ -144,6 +145,14 @@ loop {
   rather than two starts.
 - **Accumulation falls out of it.** `feed 2` from HA plus `feed 1` from the
   scheduler is three clicks without the motor ever stopping.
+- **`FEED` belongs in the `select`, not drained before it.** Draining with
+  `try_receive` at the top of the loop looks equivalent and is not: the loop
+  then blocks for the whole jam budget, so a request arriving mid-turn is not
+  seen until the next click — by which time the portion has finished, the
+  machine has gone idle and the motor has braked. Observed on hardware: three
+  `feed 1` within 170 ms produced one portion, not three. This is the mistake
+  the rule above exists to prevent, and it is invisible in the log unless the
+  `pending=` lines are read against the timestamps.
 - **`jam_timeout_ms` is the remaining budget**, measured from the last counted
   click, never a fresh 5 s. Otherwise sustained bounce would postpone jam
   detection indefinitely and leave the motor energised against a stuck hub.
@@ -296,6 +305,7 @@ src/
                   count, brake, jam timeout
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
+  wiring.rs       the types tasks share: FeedChannel/FeedSender, FeederStatus
   config.rs       Config + load_config()
 build.rs          injects cfg.toml/.env values as env vars
 ```
@@ -325,8 +335,10 @@ not shared mutable statics.
 3. `feed(n)`: ✅ state machine host-tested and verified on hardware with a
    logging fake motor (align, 800 ms rejection, counting, jam, accumulation).
    Still to do: the DRV8833 itself
-4. Wi-Fi + MQTT: ✅ connect, LWT, availability + mocked state. Still to do:
-   discovery, subscriptions, manual `feed` command
+4. ✅ Wi-Fi + MQTT: connect, LWT, availability, discovery (button + switch +
+   binary_sensor), subscriptions, manual and broadcast `feed`, `paused`, and a
+   state payload carrying the feeder's real flags. `schedule` and `time` are
+   subscribed and logged but not acted on — that is step 5
 5. `schedule` + `time` handling, local clock, double-feed guard
 6. Board feature for the Zero, flash the three production units
 7. Home Assistant automation publishing time + schedule; retire the old PCBs

@@ -33,3 +33,5 @@ pub mod motor;
 pub mod mqtt;
 #[cfg(target_os = "none")]
 pub mod switch;
+#[cfg(target_os = "none")]
+pub mod wiring;

@@ -212,72 +212,132 @@ not pulled up on the breakout.
 
 ## Step 4 — Wi-Fi and MQTT
 
-Action: flash with credentials configured, watch the console and
-`mosquitto_sub -v -t 'feeder/#' -t 'homeassistant/#'` side by side.
+Status: observed on the dev kit against the Docker broker, with `LogMotor`
+standing in for the DRV8833.
+
+Action: flash with credentials configured, and watch the console and the broker
+side by side. `./dev/watch.sh` tails the broker.
+
+Observed, from a cold boot:
 
 ```
-INFO - wifi: connecting to <ssid>
-INFO - wifi: connected, ip=192.168.1.42
-INFO - mqtt: connecting to 192.168.1.10:1883
-INFO - mqtt: connected, id=feeder_<id>
-INFO - mqtt: discovery published (button, switch, binary_sensor)
-INFO - mqtt: online
-INFO - mqtt: subscribed to feed, paused, schedule, time
+INFO (270) - Embassy initialized!
+INFO (274) - board: devkit, id=db0260                                   (+4 ms)
+INFO (368) - wifi: connecting to <ssid>                                 (+3 ms)
+INFO (375) - switch: watching GPIO11, currently released                (+7 ms)
+INFO (1630) - wifi: associated                                          (+4 ms)
+INFO (11774) - wifi: connected, ip=192.168.68.123/24                    (+10144 ms)
+INFO (11780) - mqtt: connecting to 192.168.68.108:1883                  (+6 ms)
+INFO (11960) - mqtt: connected, id=feeder_db0260                        (+6 ms)
+INFO (12052) - mqtt: discovery published                                (+92 ms)
+INFO (12085) - mqtt: online                                             (+33 ms)
+INFO (12161) - mqtt: subscribed                                         (+76 ms)
+INFO (12166) - mqtt: paused = OFF                                       (+5 ms)
+INFO (12170) - mqtt: feeder/schedule received, 61 bytes, not handled yet (+4 ms)
+INFO (12207) - mqtt: feeder/time received, 27 bytes, not handled yet    (+37 ms)
 ```
 
-Verify on the broker, not only on the console: the three retained configs under
-`homeassistant/`, then `online` retained on `feeder/<id>/availability`. The
-device must appear in Home Assistant as one device with three entities.
+The order is the contract: discovery, then `online`, then the subscriptions.
+Note the last three lines — every retained message landed within 46 ms of
+subscribing, comfortably inside the one-second grace the firmware waits before
+publishing its first state. Widen that grace only if those lines start arriving
+after it.
+
+Verify on the broker too, not only on the console: three retained configs under
+`homeassistant/`, then `online` retained on `feeder/<id>/availability`, and the
+device appearing in Home Assistant as one device with three entities.
 
 Then publish a manual feed and watch both sides:
 
 ```sh
-mosquitto_pub -t 'feeder/<id>/feed' -m '1'
+./dev/watch.sh &
+docker compose exec -T mosquitto \
+  mosquitto_pub -h localhost -u feeder -P feeder-dev -t 'feeder/<id>/feed' -m '2'
 ```
 
+Observed, with nothing turning the hub, which is the jam path:
+
 ```
-INFO - mqtt: rx feeder/<id>/feed = 1
-INFO - feed: start, portions=1
-INFO - feed: done, portions=1, elapsed=2.0s
-INFO - mqtt: state published
+INFO (20011) - mqtt: feed 2
+INFO (20014) - motor: forward                                           (+3 ms)
+INFO (20017) - feed: start, portions=2, needs aligning                  (+3 ms)
+INFO (25014) - motor: brake                                             (+4997 ms)
+WARN (25017) - feed: no click for 5s, jammed; pending discarded         (+3 ms)
+```
+
+The broker side shows the state following it, `"feeding":true` then
+`"jammed":true`. That is the useful end-to-end check without a motor: it proves
+the command reached the queue, the feeder acted on it, and the real flags — not
+a mock — reach Home Assistant.
+
+A payload that is not a number is rejected and nothing moves:
+
+```
+WARN (28115) - mqtt: feed payload is not a portion count
 ```
 
 Then the accumulation test, which is the part most likely to be wrong. Send
 three presses back to back, faster than one feed cycle:
 
 ```sh
-for i in 1 2 3; do mosquitto_pub -t 'feeder/<id>/feed' -m '1'; done
+for i in 1 2 3; do
+  docker compose exec -T mosquitto \
+    mosquitto_pub -h localhost -u feeder -P feeder-dev -t 'feeder/<id>/feed' -m '1'
+done
 ```
 
+Observed, with the requests spaced a second apart so the ordering is legible:
+
 ```
-INFO - mqtt: rx feeder/<id>/feed = 1
-INFO - feed: start, portions=1
-INFO - mqtt: rx feeder/<id>/feed = 1
-INFO - feed: pending=1
-INFO - mqtt: rx feeder/<id>/feed = 1
-INFO - feed: pending=2
-INFO - feed: click 1/1
-INFO - feed: done, portions=1, elapsed=2.0s
-INFO - feed: start, portions=1
-...
+INFO (18613) - mqtt: feed 1
+INFO (18616) - motor: forward                                           (+3 ms)
+INFO (18619) - feed: start, portions=1, needs aligning                  (+3 ms)
+INFO (19747) - mqtt: feed 1                                             (+1128 ms)
+INFO (19751) - feed: pending=2                                          (+4 ms)
+INFO (20856) - mqtt: feed 2                                             (+1105 ms)
+INFO (20859) - feed: pending=4                                          (+3 ms)
+INFO (23617) - motor: brake                                             (+2758 ms)
+WARN (23620) - feed: no click for 5s, jammed; pending discarded         (+3 ms)
 ```
 
-Count the clicks, not the log lines: the hub must turn **three** detents in
-total. Two failure modes to watch for, both of which look fine in the log:
+Three things in that transcript are the actual test, and all three are easy to
+miss:
+
+- **`motor: forward` appears once.** A second one means the machine went idle
+  between portions and restarted, which is the failure the `FEED`-in-the-select
+  shape exists to prevent. See *The feeder task owns the motor* in CLAUDE.md.
+- **`pending=` rises within ~4 ms of each command.** Tens of milliseconds is
+  fine; a delay of a whole portion time means the request waited for a click to
+  wake the loop instead of waking it itself. That is the bug, and with no motor
+  attached it hides completely — nothing wakes the loop at all, so the extra
+  requests are only picked up after the jam and look like fresh feeds.
+- **The brake lands 5000 ms after `feed: start`,** not 5000 ms after the last
+  command. A mid-turn request must not postpone jam detection.
+
+Count the clicks, not the log lines: the hub must turn **four** detents here in
+one continuous run. Two failure modes to watch for, both of which look fine in
+the log:
 
 - Only one portion dispensed. The commands arriving during a feed were dropped
   instead of accumulating.
 - The task deadlocks after the first feed. The counter is being read under a
   lock the feeder task still holds.
 
-Then check the clamp by sending 20 presses:
+Then check the clamp by asking for 20:
 
 ```
-WARN - feed: pending clamped to 10
+WARN - feed: clamped at 10 portions, 10 dropped
 ```
+
+**Time the commands after the board is up.** A `feed` is deliberately never
+retained, so anything published while the unit is still being flashed is simply
+gone — the broker shows it, the console does not, and it looks like a dropped
+subscription. Boot to `mqtt: subscribed` took 12 s in the capture above, and the
+flash before it another 25 s.
 
 Pull the power and confirm the broker shows `offline` on the availability topic:
-that proves the last will was registered in the CONNECT packet.
+that proves the last will was registered in the CONNECT packet. Reflashing does
+it too — the will fires as the old firmware's socket dies.
 
 Reconnect with the broker back up and confirm **no** feed happens on reconnect.
 A feed at that moment means a `feed` message was published retained somewhere.

@@ -1,36 +1,59 @@
-//! MQTT connection: last will, availability and state publishing.
+//! MQTT: last will, Home Assistant discovery, command subscriptions and state.
 //!
-//! This is the first increment of roadmap step 4. The state it publishes is
-//! mocked; the feeder task that will own the real values does not exist yet.
-//! Discovery and command subscriptions come next.
+//! The connection order is fixed and getting it wrong makes entities appear
+//! unavailable or not at all:
+//!
+//! 1. CONNECT carrying the will, so the broker says `offline` for us.
+//! 2. The three retained discovery configs.
+//! 3. `online`, retained.
+//! 4. Subscribe to the command topics.
+//! 5. The first state — but only after the retained `paused` has had a chance
+//!    to arrive, or Home Assistant briefly shows a paused feeder as running.
+//!
+//! Discovery is retained, so Home Assistant re-reads it after a restart on its
+//! own and this firmware never subscribes to `homeassistant/status`.
 
-use core::fmt::Write as _;
+use core::fmt::{Arguments, Write as _};
 use core::net::Ipv4Addr;
 use core::num::NonZero;
 use core::str::FromStr as _;
 
+use embassy_futures::select::{Either, select};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use heapless::String;
 use log::{error, info, warn};
 use rust_mqtt::Bytes;
 use rust_mqtt::buffer::AllocBuffer;
 use rust_mqtt::client::Client;
-use rust_mqtt::client::options::{ConnectOptions, PublicationOptions, TopicReference, WillOptions};
+use rust_mqtt::client::event::Event;
+use rust_mqtt::client::options::{
+    ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference, WillOptions,
+};
 use rust_mqtt::config::KeepAlive;
 use rust_mqtt::io::Transport;
-use rust_mqtt::types::{MqttBinary, MqttString, TopicName};
+use rust_mqtt::types::{MqttBinary, MqttString, TopicFilter, TopicName};
 
 use crate::config::Config;
+use crate::wiring::{FeedSender, FeederStatus};
 
-/// Longest topic this firmware builds, `feeder/<id>/availability`.
-const TOPIC_LEN: usize = 48;
+/// Longest topic this firmware builds is a discovery config,
+/// `homeassistant/binary_sensor/feeder_<id>/jammed/config`, 55 characters.
+const TOPIC_LEN: usize = 64;
 const PAYLOAD_LEN: usize = 128;
+/// Discovery payloads run to about 420 bytes with the device block. A silently
+/// truncated one is a classic reason an entity never appears, so [`fmt_into`]
+/// refuses to publish a payload that did not fit.
+const DISCOVERY_LEN: usize = 512;
 const CLIENT_ID_LEN: usize = 16;
 
 const STATE_INTERVAL: Duration = Duration::from_secs(5);
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// How long to let retained messages land after subscribing, before publishing
+/// a state payload that claims to know whether this unit is paused.
+const RETAINED_GRACE: Duration = Duration::from_millis(1_000);
 
 /// The broker declares a client dead after 1.5x this, and only then publishes
 /// the will. That delay is how long a powered-off feeder still reads `online`
@@ -45,17 +68,33 @@ const KEEP_ALIVE: KeepAlive = KeepAlive::Seconds(NonZero::new(15).unwrap());
 const PAYLOAD_ONLINE: &str = "online";
 const PAYLOAD_OFFLINE: &str = "offline";
 
-/// Concrete client type, so helpers can name it without repeating the generics.
-type FeederClient<'c, N> = Client<'c, N, AllocBuffer, 2, 2, 2, 2>;
+/// Broadcast feed. No discovery entity: Home Assistant automations publish here
+/// directly, and it is how three feeders feed at the same instant.
+const TOPIC_ALL_FEED: &str = "feeder/all/feed";
+const TOPIC_SCHEDULE: &str = "feeder/schedule";
+const TOPIC_TIME: &str = "feeder/time";
 
-/// The topics this unit publishes to. Built once, because every publish
-/// borrows from them.
+/// Shown in Home Assistant's device page, nowhere else.
+const SW_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Concrete client type, so helpers can name it without repeating the generics.
+///
+/// `MAX_SUBSCRIBES` is 8 because all five SUBSCRIBE packets are sent before any
+/// SUBACK is read; they are only removed from that list once the main loop
+/// polls the acknowledgements.
+type FeederClient<'c, N> = Client<'c, N, AllocBuffer, 8, 2, 2, 2>;
+
+/// The per-unit topics. Built once, because every publish borrows from them.
 struct Topics {
     availability: String<TOPIC_LEN>,
     state: String<TOPIC_LEN>,
+    feed: String<TOPIC_LEN>,
+    paused: String<TOPIC_LEN>,
 }
 
 impl Topics {
+    /// Cannot truncate: the device id is six characters and [`TOPIC_LEN`] is
+    /// sized for the longest topic this firmware builds.
     fn new(id: &str) -> Self {
         let mut availability = String::new();
         let _ = write!(availability, "feeder/{id}/availability");
@@ -63,17 +102,22 @@ impl Topics {
         let mut state = String::new();
         let _ = write!(state, "feeder/{id}/state");
 
+        let mut feed = String::new();
+        let _ = write!(feed, "feeder/{id}/feed");
+
+        let mut paused = String::new();
+        let _ = write!(paused, "feeder/{id}/paused");
+
         Self {
             availability,
             state,
+            feed,
+            paused,
         }
     }
 }
 
 /// What the unit reports about itself.
-///
-/// Mocked for now. When the feeder task lands it owns these values and this
-/// struct arrives over a channel instead of being invented here.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct State {
     pub feeding: bool,
@@ -97,7 +141,13 @@ impl State {
 ///
 /// Never returns: losing the broker is normal, not fatal. The unit keeps
 /// running and retries.
-pub async fn run(stack: Stack<'static>, cfg: Config, id: &str) -> ! {
+pub async fn run(
+    stack: Stack<'static>,
+    cfg: Config,
+    id: &str,
+    feed: FeedSender,
+    status: &'static FeederStatus,
+) -> ! {
     let topics = Topics::new(id);
 
     let mut client_id: String<CLIENT_ID_LEN> = String::new();
@@ -115,10 +165,25 @@ pub async fn run(stack: Stack<'static>, cfg: Config, id: &str) -> ! {
     };
     let endpoint = IpEndpoint::new(IpAddress::Ipv4(host), cfg.mqtt_port);
 
+    // `paused` outlives the connection on purpose. The broker replays the
+    // retained flag on every reconnect, but until it does, the last value this
+    // unit acted on is a better answer than `false`.
+    let mut paused = false;
+
     loop {
-        if session(stack, cfg, endpoint, &topics, &client_id)
-            .await
-            .is_err()
+        if session(
+            stack,
+            cfg,
+            endpoint,
+            &topics,
+            &client_id,
+            id,
+            feed,
+            status,
+            &mut paused,
+        )
+        .await
+        .is_err()
         {
             warn!("mqtt: disconnected, retrying in 5s");
         }
@@ -127,12 +192,17 @@ pub async fn run(stack: Stack<'static>, cfg: Config, id: &str) -> ! {
 }
 
 /// One connection, from TCP connect until something fails.
+#[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
 async fn session(
     stack: Stack<'static>,
     cfg: Config,
     endpoint: IpEndpoint,
     topics: &Topics,
     client_id: &str,
+    id: &str,
+    feed: FeedSender,
+    status: &'static FeederStatus,
+    paused: &mut bool,
 ) -> Result<(), ()> {
     let mut rx_buffer = [0u8; 1024];
     let mut tx_buffer = [0u8; 1024];
@@ -167,6 +237,8 @@ async fn session(
     }
     info!("mqtt: connected, id={client_id}");
 
+    publish_discovery(&mut client, id).await?;
+
     publish(
         &mut client,
         &topics.availability,
@@ -176,21 +248,270 @@ async fn session(
     .await?;
     info!("mqtt: online");
 
-    let mut state = State::default();
-    let mut tick: u32 = 0;
+    for filter in [
+        topics.feed.as_str(),
+        TOPIC_ALL_FEED,
+        topics.paused.as_str(),
+        TOPIC_SCHEDULE,
+        TOPIC_TIME,
+    ] {
+        subscribe(&mut client, filter).await?;
+    }
+    info!("mqtt: subscribed");
+
+    // The retained `paused`, `schedule` and `time` arrive right after the
+    // subscriptions. Hold the first state publish back until they have had
+    // their moment, so the switch in Home Assistant never flickers.
+    let mut next_state = Instant::now() + RETAINED_GRACE;
 
     loop {
-        // Mocked activity, so there is something to watch change in Home
-        // Assistant: pretend to feed for one interval in every six.
-        tick = tick.wrapping_add(1);
-        state.feeding = tick.is_multiple_of(6);
+        // `poll_header` is cancel-safe and `poll_body` is not, which is exactly
+        // why the select waits on the header alone. Reading the body then runs
+        // to completion with nothing racing it.
+        let next = select(client.poll_header(), Timer::at(next_state)).await;
 
-        let payload = state.to_json();
-        publish(&mut client, &topics.state, payload.as_bytes(), true).await?;
-        info!("mqtt: state published {payload}");
+        match next {
+            Either::First(header) => {
+                let header = header.map_err(|e| warn!("mqtt: poll failed: {e:?}"))?;
+                let event = client
+                    .poll_body(header)
+                    .await
+                    .map_err(|e| warn!("mqtt: read failed: {e:?}"))?;
 
-        Timer::after(STATE_INTERVAL).await;
+                if let Event::Publish(message) = event
+                    && on_message(
+                        message.topic.as_ref().as_str(),
+                        &message.message,
+                        topics,
+                        feed,
+                        paused,
+                    )
+                {
+                    // Home Assistant's paused switch is not optimistic: it only
+                    // moves once this state arrives. Do not make the user wait
+                    // out the interval.
+                    next_state = Instant::now();
+                }
+            }
+
+            Either::Second(()) => {
+                next_state = Instant::now() + STATE_INTERVAL;
+
+                let state = State {
+                    feeding: status.feeding(),
+                    jammed: status.jammed(),
+                    paused: *paused,
+                };
+                let payload = state.to_json();
+                publish(&mut client, &topics.state, payload.as_bytes(), true).await?;
+            }
+        }
     }
+}
+
+/// Acts on one incoming publication.
+///
+/// Returns true if the state payload should go out now rather than at the next
+/// interval.
+fn on_message(
+    topic_name: &str,
+    payload: &[u8],
+    topics: &Topics,
+    feed: FeedSender,
+    paused: &mut bool,
+) -> bool {
+    if topic_name == topics.feed.as_str() || topic_name == TOPIC_ALL_FEED {
+        on_feed(payload, feed);
+        false
+    } else if topic_name == topics.paused.as_str() {
+        // Reported as the command that arrived, not as a transition: the
+        // retained flag is replayed on every reconnect, so "resumed" would be
+        // logged on a unit that was never paused.
+        match payload {
+            b"ON" => {
+                let changed = !*paused;
+                *paused = true;
+                info!("mqtt: paused = ON");
+                changed
+            }
+            b"OFF" => {
+                let changed = *paused;
+                *paused = false;
+                info!("mqtt: paused = OFF");
+                changed
+            }
+            _ => {
+                warn!("mqtt: paused payload must be ON or OFF");
+                false
+            }
+        }
+    } else if topic_name == TOPIC_SCHEDULE || topic_name == TOPIC_TIME {
+        // Roadmap step 5 owns these. Subscribing now is deliberate: it proves
+        // the retained messages arrive, and the log says plainly that nothing
+        // acts on them yet.
+        info!(
+            "mqtt: {topic_name} received, {} bytes, not handled yet",
+            payload.len()
+        );
+        false
+    } else {
+        warn!("mqtt: unexpected topic {topic_name}");
+        false
+    }
+}
+
+/// Manual feeds accumulate: this forwards the count and never replaces it.
+///
+/// The clamp to `MAX_PORTIONS` lives in the feeder, which is the only place
+/// that knows how much is already pending.
+fn on_feed(payload: &[u8], feed: FeedSender) {
+    let Some(portions) = core::str::from_utf8(payload)
+        .ok()
+        .and_then(|text| text.trim().parse::<u8>().ok())
+    else {
+        warn!("mqtt: feed payload is not a portion count");
+        return;
+    };
+
+    if portions == 0 {
+        // A no-op, not an error.
+        info!("mqtt: feed 0 ignored");
+        return;
+    }
+
+    match feed.try_send(portions) {
+        Ok(()) => info!("mqtt: feed {portions}"),
+        Err(_) => warn!("mqtt: feed queue full, {portions} portions dropped"),
+    }
+}
+
+/// The three entities, each retained so Home Assistant re-reads them by itself.
+///
+/// All three carry the same `device` block and a `unique_id`, which is what
+/// groups them into one device; without `unique_id` the device block is ignored
+/// and the entities appear loose.
+async fn publish_discovery<N: Transport>(
+    client: &mut FeederClient<'_, N>,
+    id: &str,
+) -> Result<(), ()> {
+    /// Repeated verbatim in all three payloads. `identifiers` is what joins
+    /// them; the rest is cosmetic.
+    macro_rules! device {
+        () => {
+            concat!(
+                r#""device":{{"identifiers":["feeder_{id}"],"name":"Cat feeder {id}","#,
+                r#""manufacturer":"DIY","model":"cat-feeder ESP32-C6","sw_version":"{sw}"}}"#,
+            )
+        };
+    }
+
+    // One buffer, reused, because the whole connection's future is sized by
+    // whatever is live at an await point.
+    let mut payload: String<DISCOVERY_LEN> = String::new();
+
+    // `payload_press` is 1 and stays 1: three portions is three presses, which
+    // the feeder accumulates. Deliberately not retained — a retained feed
+    // command is replayed on every reconnect, and a boot loop would then empty
+    // the hopper.
+    fmt_into(
+        &mut payload,
+        format_args!(
+            concat!(
+                r#"{{"name":"Feed","unique_id":"feeder_{id}_feed","#,
+                r#""command_topic":"feeder/{id}/feed","payload_press":"1","#,
+                r#""availability_topic":"feeder/{id}/availability","#,
+                device!(),
+                "}}",
+            ),
+            id = id,
+            sw = SW_VERSION
+        ),
+    )?;
+    publish_config(client, "button", "feed", id, &payload).await?;
+
+    // `"retain": true` makes Home Assistant publish the command retained, which
+    // is the whole persistence story for pause: nothing is kept in flash, so a
+    // unit that reboots comes back paused only because the broker remembers.
+    //
+    // Not optimistic: the switch moves when the unit echoes `paused` in its
+    // state, so a switch that springs back means the command never landed.
+    fmt_into(
+        &mut payload,
+        format_args!(
+            concat!(
+                r#"{{"name":"Paused","unique_id":"feeder_{id}_paused","#,
+                r#""command_topic":"feeder/{id}/paused","state_topic":"feeder/{id}/state","#,
+                r#""value_template":"{{{{ 'ON' if value_json.paused else 'OFF' }}}}","#,
+                r#""retain":true,"optimistic":false,"#,
+                r#""availability_topic":"feeder/{id}/availability","#,
+                device!(),
+                "}}",
+            ),
+            id = id,
+            sw = SW_VERSION
+        ),
+    )?;
+    publish_config(client, "switch", "paused", id, &payload).await?;
+
+    // The template must not be `{{ value_json.jammed }}`: a JSON `true` renders
+    // as Python's `True`, which matches neither `payload_on` nor `payload_off`,
+    // and the entity sticks at unknown.
+    fmt_into(
+        &mut payload,
+        format_args!(
+            concat!(
+                r#"{{"name":"Jammed","unique_id":"feeder_{id}_jammed","#,
+                r#""state_topic":"feeder/{id}/state","#,
+                r#""value_template":"{{{{ 'ON' if value_json.jammed else 'OFF' }}}}","#,
+                r#""device_class":"problem","entity_category":"diagnostic","#,
+                r#""availability_topic":"feeder/{id}/availability","#,
+                device!(),
+                "}}",
+            ),
+            id = id,
+            sw = SW_VERSION
+        ),
+    )?;
+    publish_config(client, "binary_sensor", "jammed", id, &payload).await?;
+
+    info!("mqtt: discovery published");
+    Ok(())
+}
+
+async fn publish_config<N: Transport>(
+    client: &mut FeederClient<'_, N>,
+    component: &str,
+    object: &str,
+    id: &str,
+    payload: &str,
+) -> Result<(), ()> {
+    let mut topic_name: String<TOPIC_LEN> = String::new();
+    fmt_into(
+        &mut topic_name,
+        format_args!("homeassistant/{component}/feeder_{id}/{object}/config"),
+    )?;
+
+    publish(client, &topic_name, payload.as_bytes(), true).await
+}
+
+async fn subscribe<N: Transport>(
+    client: &mut FeederClient<'_, N>,
+    topic_filter: &str,
+) -> Result<(), ()> {
+    let filter = TopicFilter::new(string(topic_filter)?).ok_or_else(|| {
+        error!("mqtt: `{topic_filter}` is not a valid topic filter");
+    })?;
+
+    // At most once would be enough for `feed`, but the retained `paused`,
+    // `schedule` and `time` are worth a PUBACK. The duplicate a QoS 1 redelivery
+    // can cause is what `MAX_PORTIONS` guards against.
+    let options = SubscriptionOptions::new().at_least_once();
+
+    client
+        .subscribe(filter, options)
+        .await
+        .map(|_| ())
+        .map_err(|e| warn!("mqtt: subscribe to {topic_filter} failed: {e:?}"))
 }
 
 async fn publish<N: Transport>(
@@ -211,6 +532,18 @@ async fn publish<N: Transport>(
             Err(())
         }
     }
+}
+
+/// Formats into a fixed buffer and fails loudly if it did not fit.
+///
+/// `write!` into a `heapless::String` truncates, and a truncated discovery
+/// payload is one of the classic reasons an entity never appears in Home
+/// Assistant. Silence is the wrong failure here.
+fn fmt_into<const N: usize>(buffer: &mut String<N>, args: Arguments) -> Result<(), ()> {
+    buffer.clear();
+    buffer.write_fmt(args).map_err(|_| {
+        error!("mqtt: {N} byte buffer too small, payload would be truncated");
+    })
 }
 
 fn string(text: &str) -> Result<MqttString<'_>, ()> {

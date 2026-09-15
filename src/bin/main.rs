@@ -10,11 +10,13 @@
 use cat_feeder::config::{DEVICE_ID_LEN, device_id, load_config};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::motor::{LogMotor, MotorDriver};
+use cat_feeder::portions::{Added, MAX_PORTIONS};
 use cat_feeder::switch::{ClickSource, Switch};
+use cat_feeder::wiring::{FeedChannel, FeederStatus};
 use cat_feeder::{mqtt, switch_pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_net::{Runner, StackResources};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
@@ -51,10 +53,13 @@ pub extern "Rust" fn _esp_println_timestamp() -> u64 {
 }
 
 /// Portion requests, from every producer to the one task that owns the motor.
+static FEED: FeedChannel = Channel::new();
+
+/// What the feeder task is doing, read by `mqtt` for the state topic.
 ///
-/// Bounded on purpose. Producers use `try_send` and log the discard, so a stuck
-/// automation can never block the MQTT or clock task waiting for room.
-static FEED: Channel<CriticalSectionRawMutex, u8, 8> = Channel::new();
+/// The feeder writes it from the action it is about to take, so the state
+/// payload reports what the unit is acting on rather than what it was told.
+static STATUS: FeederStatus = FeederStatus::new();
 
 /// Debounced clicks, from the task that owns the switch to the feeder.
 ///
@@ -117,7 +122,6 @@ async fn main(spawner: Spawner) -> ! {
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
     spawner.spawn(feeder_task(LogMotor::new()).expect("failed to create feeder task"));
-    spawner.spawn(bench_feed_requests().expect("failed to create bench task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -151,7 +155,7 @@ async fn main(spawner: Spawner) -> ! {
         info!("wifi: connected, ip={}", v4.address);
     }
 
-    mqtt::run(stack, cfg, id.as_str()).await
+    mqtt::run(stack, cfg, id.as_str(), FEED.sender(), &STATUS).await
 }
 
 /// Owns the switch and nothing else.
@@ -192,7 +196,13 @@ async fn feeder_task(mut motor: LogMotor) {
     let mut feeder = Feeder::new();
 
     loop {
-        match feeder.action(now_ms()) {
+        let action = feeder.action(now_ms());
+
+        // Published by `mqtt`. Set from the action about to be taken, so the
+        // state topic never claims the unit is feeding while it waits for work.
+        STATUS.set(matches!(action, Action::Turning { .. }), feeder.is_jammed());
+
+        match action {
             Action::Idle => {
                 motor.brake();
 
@@ -206,7 +216,7 @@ async fn feeder_task(mut motor: LogMotor) {
                     }
                 };
 
-                feeder.request(portions);
+                log_clamp(feeder.request(portions));
                 if feeder.pending() == 0 {
                     continue;
                 }
@@ -219,16 +229,33 @@ async fn feeder_task(mut motor: LogMotor) {
             }
 
             Action::Turning { jam_timeout_ms } => {
-                // Absorb anything that arrived mid-turn without blocking, so
-                // the motor never stops between portions.
-                while let Ok(extra) = FEED.try_receive() {
-                    feeder.request(extra);
-                    info!("feed: pending={}", feeder.pending());
-                }
+                // A request arriving mid-turn must wake this loop, not sit in
+                // the queue until something else does. Draining the channel at
+                // the top of the loop is not enough: the loop then blocks for
+                // the whole jam budget, and with a real motor the request is
+                // only seen at the next click — by which time the portion has
+                // finished, the machine has gone idle and the motor has braked.
+                // That is the stop-and-restart the design forbids.
+                //
+                // Both receives are cancel-safe: the messages live in the
+                // channels, so the losing future can be dropped without losing
+                // anything. That is the whole reason clicks travel by channel.
+                let event = select3(
+                    CLICKS.receive(),
+                    FEED.receive(),
+                    Timer::after_millis(jam_timeout_ms as u64),
+                )
+                .await;
 
-                match select(CLICKS.receive(), Timer::after_millis(jam_timeout_ms as u64)).await {
-                    Either::First(()) => log_click(feeder.on_click(now_ms())),
-                    Either::Second(()) => {
+                match event {
+                    Either3::First(()) => log_click(feeder.on_click(now_ms())),
+                    Either3::Second(extra) => {
+                        // No `start`, no touching the motor: it is already
+                        // turning, and this only lengthens the same run.
+                        log_clamp(feeder.request(extra));
+                        info!("feed: pending={}", feeder.pending());
+                    }
+                    Either3::Third(()) => {
                         motor.brake();
                         feeder.on_timeout();
                         warn!("feed: no click for 5s, jammed; pending discarded");
@@ -256,6 +283,21 @@ fn log_start(portions: u8, switch_pressed: bool) {
     );
 }
 
+/// Says out loud when the hopper guard bit.
+///
+/// Reaching `MAX_PORTIONS` means something upstream is repeating itself — a
+/// stuck automation, or a QoS 1 redelivery — and the clamp is the only thing
+/// standing between that and an empty hopper. Dropping portions silently would
+/// hide the fault that caused it.
+///
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_clamp(added: Added) {
+    if let Added::Clamped { dropped } = added {
+        warn!("feed: clamped at {MAX_PORTIONS} portions, {dropped} dropped");
+    }
+}
+
 /// See [`log_start`] for why this is a separate function.
 #[inline(never)]
 fn log_click(outcome: ClickOutcome) {
@@ -265,21 +307,6 @@ fn log_click(outcome: ClickOutcome) {
         ClickOutcome::Counted { remaining } => info!("feed: click, {remaining} to go"),
         ClickOutcome::TooSoon => info!("feed: edge ignored, below 800ms minimum spacing"),
         ClickOutcome::NotTurning => {}
-    }
-}
-
-/// TEMPORARY bench harness: asks for one portion every 20 s.
-///
-/// Exists only so the feeding loop can be exercised before the MQTT `feed`
-/// subscription lands. **Delete this task when it does.**
-#[embassy_executor::task]
-async fn bench_feed_requests() {
-    loop {
-        Timer::after(Duration::from_secs(20)).await;
-        match FEED.try_send(1) {
-            Ok(()) => info!("bench: requested 1 portion"),
-            Err(_) => warn!("bench: feed queue full, request dropped"),
-        }
     }
 }
 
