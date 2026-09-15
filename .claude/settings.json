@@ -20,7 +20,9 @@
       "WebFetch(domain:espressif.com)",
       "Bash(awk -F'[\\(\\)]' '{t=$2+0; if\\(NR>1\\) printf \"%-64s \\(+%d ms\\)\\\\n\",$0,t-p; else print; p=t}')",
       "Bash(./dev/flash.sh *)",
-      "Bash(./dev/ap-password.sh *)"
+      "Bash(./dev/ap-password.sh *)",
+      "Bash(python3 -)",
+      "Edit(/.claude/skills/flash-and-verify/**)"
     ],
     "additionalDirectories": [
       "/Users/filippodeluca/Documents/development/personal/cat-feeder",

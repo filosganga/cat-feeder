@@ -259,6 +259,63 @@ and an interrupted write both read as *unconfigured* rather than as garbage
 credentials. A unit that believes a corrupt record sits trying to join a network
 that does not exist, and the only way back is the button.
 
+### Still to build — the plan
+
+Paused deliberately, not abandoned. The back half works: a record round-trips
+through flash and the boot path reads it. What is missing is everything that
+serves the form. Written out here because the API facts below cost an hour to
+establish and should not be rediscovered.
+
+**A new gated module, `setup.rs`, entered from the boot path instead of
+`seed_config` when there is no record.** It never returns — it reboots once a
+record is saved, so the normal path always starts from a clean boot.
+
+1. **Raise the access point.** Build `AccessPointConfig` with
+   `ap_ssid(id)`, `ap_password(AP_SECRET, id)` and `Wpa2Personal`, then
+   `esp_radio::wifi::new(wifi, ControllerConfig::default()
+   .with_initial_config(WifiConfig::AccessPoint(..)))`. There is **no separate
+   start call**: `set_config` calls `esp_wifi_start()` whenever the mode
+   changes, so applying the initial config brings the network up. Keep the
+   controller alive for as long as setup mode runs.
+2. **Bring up a second stack** on `interfaces.access_point`, which is an
+   ordinary embassy-net `Interface`. `Config::ipv4_static(StaticConfigV4 {
+   address: 192.168.4.1/24, gateway: None, dns_servers: empty })`, its own
+   `StackResources`, and the existing `net_task` to run it.
+3. **Serve DHCP**, or a phone joins and gets nothing. `edge-dhcp` is a codec,
+   not a server: `Server::handle_request` takes a parsed `Packet` and returns
+   one to send, and the packets are moved by an embassy-net `UdpSocket` bound
+   to port 67. Hand out a small pool from 192.168.4.2 upward.
+4. **Serve the form** on TCP 80. `provisioning::parse_head` reads the request
+   line and `Content-Length`; keep reading until the body is that long.
+   - `GET /` (and anything else) → the page.
+   - `POST /save` → `provisioning::record_from_form`. On `Ok`, `store.save`,
+     answer with a "saved, restarting" page, wait for it to flush, then
+     `esp_hal::system::software_reset()`. On `Err`, re-render the page with the
+     message and the fields still filled in — a `FormError` naming the field is
+     there for exactly this.
+
+**The form's field names must match `record_from_form`:** `wifi_ssid`,
+`wifi_password`, `mqtt_host`, `mqtt_port`, `mqtt_user`, `mqtt_password`.
+
+**`mqtt_host` is IP-only.** `mqtt.rs` parses it with `Ipv4Addr::from_str` and
+there is no resolver, so the form must reject a hostname with a clear message
+rather than accepting one that can never connect. `HOST_LEN` is 64 to leave
+room for DNS later.
+
+**No timeout.** A unit in setup mode stays there until someone configures it.
+Rebooting out of it would only return to setup mode, and a unit that gives up
+while you are fetching your phone is worse than one that waits.
+
+Then the reset button: GPIO10, debounced like `switch.rs`, held for a few
+seconds so a brush cannot wipe a working feeder; on release, `store.erase()`
+and `software_reset()`.
+
+**Verifying this needs a phone.** The console can show the access point
+starting, a station associating, and a request arriving, but joining the network
+and submitting the form is not something `dev/flash.sh` can do. Expect a round
+or two of iteration on the parts only a real client exercises — captive-portal
+probes, keep-alive, and browsers that open several connections at once.
+
 ## MQTT contract
 
 Broker: Mosquitto (HA add-on / Docker), port 1883, user/pass. Dev broker runs
@@ -531,14 +588,24 @@ down, it could not have raised the alarm either.
    point. Independent of steps 3, 6 and 8 — see *Provisioning* above.
    - ✅ the flash record: format, CRC, and every single-bit flip and
      interrupted write rejected (`provisioning.rs`, host-tested)
-   - ✅ the setup form: `x-www-form-urlencoded` and just enough HTTP
+   - ✅ *parsing* a submitted form: `x-www-form-urlencoded` into a record, and
+     enough HTTP to read a request line and its `Content-Length`. Nothing
+     serves it yet — see the access point item below
    - ✅ setup network credentials, and `dev/ap-password.sh` to match
    - ✅ SHA-256 (`sha256.rs`), pinned to NIST vectors and padding boundaries
    - ✅ reading and writing the `nvs` partition (`store.rs`, `esp-storage`
      **0.9** not 0.10 — 0.10 requires an esp-hal 1.2 release candidate).
      Verified: found at 0x9000, seeded, and read back across a full reflash
    - ✅ the boot decision, and `Config` borrowing a record instead of `env!()`
-   - ⬜ access point + DHCP server (`edge-dhcp` 0.8) + the form over TCP
+   - ⬜ access point + DHCP server (`edge-dhcp` 0.8, added) + the form over TCP.
+     Verified against the pinned sources before writing it: `interfaces.
+     access_point` is an ordinary embassy-net `Interface`; the AP needs no
+     explicit start, because `set_config` calls `esp_wifi_start()` whenever the
+     mode changes, so `wifi::new` with an `AccessPoint` config brings it up;
+     the stack takes `Config::ipv4_static`; and `esp_hal::system::
+     software_reset()` is the reboot after saving.
+     **Final verification needs a phone** — joining the network and submitting
+     the form is not something the bench scripts can do.
    - ⬜ the reset button on GPIO10
    - ⬜ retire build-time credentials once setup mode works. `cfg.toml` keeps
      `ap_secret` and nothing else, and the Wi-Fi password stops being compiled

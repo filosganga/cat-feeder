@@ -9,6 +9,7 @@
 - [Step 6 — the Zero boards](#step-6--the-zero-boards)
 - [Step 7 — Home Assistant](#step-7--home-assistant)
 - [Step 8 — retiring the old PCBs](#step-8--retiring-the-old-pcbs)
+- [Step 9 — provisioning](#step-9--provisioning)
 
 ## How to read this file
 
@@ -17,9 +18,11 @@ triggers them, and the failure signatures worth recognising. The exact wording
 is a proposal: implement it as written so this file stays usable as an
 acceptance test, or change both the code and this file together.
 
-Only step 1 has been observed on hardware. The rest are contracts, not
-transcripts. When you first reach a step, replace its expected block with what
-the console actually printed.
+Steps marked *observed* carry real transcripts. The rest are contracts, not
+recordings: when you first reach one, replace its expected block with what the
+console actually printed. Steps 3 (the motor itself), 6 (flashing the Zeros),
+8 and the access point half of 9 are the ones still unobserved, all of them
+waiting on hardware or a phone.
 
 Every application line is formatted `LEVEL (ms) - message`, for example
 `INFO (261) - Embassy initialized!`. The number is milliseconds since boot,
@@ -595,3 +598,54 @@ likely to differ between a bench hub and an assembled one.
 Watch the boot banner's `rst:` line on the first feed after assembly. A reset
 the moment the motor starts is the 220 µF capacitor, not the firmware. See
 [troubleshooting.md](troubleshooting.md).
+
+## Step 9 — provisioning
+
+Partly built. What runs today is the flash record and the boot decision:
+
+```
+INFO (285) - store: nvs at 0x9000, 24576 bytes
+INFO (289) - store: no record yet
+INFO (293) - setup: would raise cat-feeder-db0260 / DAKS-2W9X-NVQG
+INFO (342) - store: seeded from cfg.toml
+```
+
+and on the next boot, including after a full reflash:
+
+```
+INFO (290) - store: configured for fdlgrm via 192.168.68.108:1883
+```
+
+**That second line is the test.** Configuration lives in the `nvs` partition and
+`espflash` rewrites only the app partition, so a unit keeps its credentials
+across every `cargo run`. If it says `no record yet` twice in a row, the write
+is failing — check `store: nvs at ...` reports a partition at all.
+
+`setup: would raise ...` is the temporary stand-in for setup mode. Cross-check
+that password against `./dev/ap-password.sh`, which derives it independently:
+they must match exactly, or the sticker on the unit is wrong.
+
+`store: seeded from cfg.toml` is also temporary, and disappears when setup mode
+lands — see roadmap step 9.
+
+### When the access point is built
+
+Not written yet. What it must show:
+
+```
+INFO - store: no record yet
+INFO - setup: access point cat-feeder-db0260 up, browse to 192.168.4.1
+INFO - setup: station connected
+INFO - setup: GET /
+INFO - setup: POST /save, saving
+INFO - store: saved
+INFO - setup: restarting
+```
+
+then a clean boot straight into `store: configured for ...`.
+
+**This one cannot be verified from the bench alone.** Joining the network and
+submitting the form needs a phone in someone's hand; the console only shows the
+device's half. Watch particularly for what a real browser does and a test client
+does not: captive-portal probe requests to odd paths, several connections at
+once, and connections opened and dropped without a request.

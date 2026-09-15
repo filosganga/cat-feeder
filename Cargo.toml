@@ -52,6 +52,11 @@ esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32c6", "log-04"] }
 # candidate. 0.9 wants `~1.1.0-rc.0`, which the 1.1.2 pinned above satisfies.
 # Check that requirement before bumping this.
 esp-storage = { version = "0.9.0", features = ["esp32c6"] }
+
+# DHCP server for setup mode: a phone joining the unit's access point needs
+# an address before it can reach the form. Protocol codec only — the packets
+# are moved by an embassy-net UdpSocket here, so no edge-nal adapter.
+edge-dhcp = { version = "0.8.0", default-features = false }
 # The traits esp-storage's FlashStorage implements. Its own dependency, but not
 # re-exported, so it has to be named here to bring Read/Storage into scope.
 embedded-storage = "0.3.1"
@@ -71,11 +76,6 @@ esp-backtrace = { version = "0.19.0", features = [
   "panic-handler",
   "println",
 ] }
-# The output interface is selected explicitly: the default `auto` feature picks
-# the wrong peripheral on the ESP32-C6-DEV-KIT-N8 because of its onboard USB hub,
-# and no log line ever reaches the serial monitor.
-# DEV-KIT: `uart`  (logs come out of the CH343 bridge port)
-# Zero:    `jtag-serial`  (native USB only, no bridge) — switch at roadmap step 6
 # The output interface is NOT listed here: it comes from the board feature,
 # because the dev kit needs `uart` and the Zero needs `jtag-serial`. See
 # `[features]` and `src/board.rs`.

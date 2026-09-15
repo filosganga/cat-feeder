@@ -7,9 +7,10 @@
 //! ## Which partition, and why it is free
 //!
 //! The default ESP-IDF partition table gives `nvs` 24 KB at 0x9000, and nothing
-//! else in this firmware uses it. esp-radio has an `NVS` symbol, but it is a
-//! 15-word array in RAM inside its ESP-IDF shim — `misc_nvs_restore` is a
-//! `todo!()` — not the flash partition. So no custom partition table is needed.
+//! else in this firmware uses it. Two things confirm that: esp-radio's `NVS`
+//! symbol is a 15-word array in RAM inside its ESP-IDF shim, not the partition
+//! (`misc_nvs_restore` is a `todo!()`), and it sets `nvs_enable: 0` in the
+//! init config it hands the blob. So no custom partition table is needed.
 //!
 //! The partition is found through the table rather than hardcoded, so a unit
 //! flashed with a different layout still works or fails loudly.
