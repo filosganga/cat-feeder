@@ -353,9 +353,14 @@ src/
                   count, brake, jam timeout
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
-  wiring.rs       the types tasks share: FeedChannel/FeedSender, FeederStatus
+  wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed
   config.rs       Config + load_config()
 build.rs          injects cfg.toml/.env values as env vars
+
+homeassistant/packages/cat_feeder.yaml
+                  the other half of the system: publishes time and schedule,
+                  the pause helper, the feed-all script. Tracked here and used
+                  unchanged on the Pi; install per dev/README.md
 ```
 
 Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
@@ -386,13 +391,15 @@ every shared handle and documents who writes each one.
    Still to do: the DRV8833 itself
 4. ✅ Wi-Fi + MQTT: connect, LWT, availability, discovery (button + switch +
    binary_sensor), subscriptions, manual and broadcast `feed`, `paused`, and a
-   state payload carrying the feeder's real flags. `schedule` and `time` are
-   subscribed and logged but not acted on — that is step 5
+   state payload carrying the feeder's real flags
 5. ✅ `schedule` + `time` handling, local clock, double-feed guard. Pure logic
    in `schedule.rs` with 32 host tests, and every rule verified on hardware by
    driving `feeder/time` from the broker
 6. Board feature for the Zero, flash the three production units
-7. Home Assistant automation publishing time + schedule; retire the old PCBs
+7. Home Assistant: ✅ automations publishing time (every minute) + schedule,
+   the pause helper and a feed-all script, in
+   `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
+   feed end to end. Still to do: retire the old PCBs
 
 Later (not now): physical feed button on a spare GPIO (so a manual feed works
 with the broker down), runtime Wi-Fi/broker provisioning, battery backup,

@@ -1,0 +1,176 @@
+# Home Assistant's half of the cat-feeder contract.
+#
+# The feeders have no RTC, no NTP and no flash. Everything they know arrives
+# from the broker as a retained message, and this file is what publishes it.
+# If Home Assistant stops, the feeders keep free-running on the last time and
+# schedule they heard; if a feeder reboots while Home Assistant is down, it
+# waits rather than guessing.
+#
+# Install: see "Home Assistant automations" in dev/README.md. The same file is
+# used for the local Docker stack and for the Raspberry Pi.
+#
+# ---------------------------------------------------------------------------
+# WHEN THE ZERO BOARDS ARRIVE, two lists below name the units and both need the
+# new device ids:
+#   * `units` in "Cat feeder: pause the schedule when away"
+#   * `entity_id` in "Cat feeder: warn when paused for days"
+# Everything else is per-unit by topic and needs no change.
+# ---------------------------------------------------------------------------
+
+# Whether the automatic schedule should run at all. Drag the blocks in the UI
+# rather than editing automations: a bank holiday is then one gesture, not a
+# code change.
+#
+# Defaults to every day, all day, so the feeders run normally until you say
+# otherwise.
+schedule:
+  cat_feeder_active:
+    name: Cat feeder active
+    icon: mdi:cat
+    monday: &all_day
+      - from: "00:00:00"
+        to: "24:00:00"
+    tuesday: *all_day
+    wednesday: *all_day
+    thursday: *all_day
+    friday: *all_day
+    saturday: *all_day
+    sunday: *all_day
+
+script:
+  cat_feeder_feed_all:
+    alias: "Cat feeder: feed every unit now"
+    description: >-
+      Publishes one broadcast so all three feeders turn at the same instant,
+      which is the requirement this whole project exists for. Feeding each unit
+      in turn would stagger them by the round trip.
+    mode: single
+    fields:
+      portions:
+        name: Portions
+        description: Portions per feeder.
+        default: 1
+        selector:
+          number:
+            min: 1
+            max: 10
+    sequence:
+      # Deliberately NOT retained. A retained feed command is replayed on every
+      # reconnect, and because manual feeds accumulate, a boot loop would empty
+      # the hopper.
+      - action: mqtt.publish
+        data:
+          topic: feeder/all/feed
+          retain: false
+          payload: "{{ portions | int(1) }}"
+
+automation:
+  - id: cat_feeder_publish_time
+    alias: "Cat feeder: publish the time"
+    description: >-
+      The only thing that tells the feeders what time it is. Every minute,
+      retained, so a feeder that reboots is told again within a minute.
+
+      Must be now(), never utcnow(). The firmware reads the wall-clock fields
+      and does not apply the offset, because slots are local times and the
+      feeders share a house with the broker. Publishing UTC would still look
+      valid while moving every meal by the offset. The feeder logs the offset
+      it received at startup, which is the only place that mistake shows up.
+    mode: single
+    triggers:
+      - trigger: time_pattern
+        minutes: "/1"
+      - trigger: homeassistant
+        event: start
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: feeder/time
+          retain: true
+          payload: "{{ now().isoformat() }}"
+
+  - id: cat_feeder_publish_schedule
+    alias: "Cat feeder: publish the schedule"
+    description: >-
+      Retained, so a rebooting feeder gets its meals back from the broker
+      rather than from flash. Republished on restart because it costs nothing
+      and covers a broker that was wiped.
+
+      Edit `meals` below to change feeding times, then reload automations. Up
+      to 8 slots; a longer list is rejected by the firmware whole rather than
+      truncated, and the unit keeps running the schedule it already had.
+    mode: single
+    variables:
+      meals: >-
+        [{"time":"08:00","portions":2},
+         {"time":"19:00","portions":2}]
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: cat_feeder_republish_schedule
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: feeder/schedule
+          retain: true
+          payload: "{{ meals | from_json | to_json }}"
+
+  - id: cat_feeder_pause_when_away
+    alias: "Cat feeder: pause the schedule when away"
+    description: >-
+      Pause stops the schedule, not the feeder: a manual feed still works while
+      paused, so a bowl can always be topped up by hand.
+
+      One publish per unit. There is deliberately no feeder/all/paused, because
+      two retained topics setting the same flag would race on reconnect with no
+      defined winner.
+    mode: single
+    variables:
+      units:
+        - db0260
+    triggers:
+      - trigger: state
+        entity_id: schedule.cat_feeder_active
+      - trigger: homeassistant
+        event: start
+    actions:
+      - repeat:
+          for_each: "{{ units }}"
+          sequence:
+            - action: mqtt.publish
+              data:
+                topic: "feeder/{{ repeat.item }}/paused"
+                # Retained: there is no flash, so a unit that reboots while
+                # paused must come back paused from the broker alone.
+                retain: true
+                # Pauses only when the helper is explicitly off. If it is
+                # unknown or unavailable the feeders keep running, because the
+                # failure that matters is cats not being fed.
+                payload: >-
+                  {{ 'ON' if is_state('schedule.cat_feeder_active', 'off') else 'OFF' }}
+
+  - id: cat_feeder_paused_too_long
+    alias: "Cat feeder: warn when paused for days"
+    description: >-
+      A feeder left paused is the one state where the cats do not eat and
+      nothing else alarms. It stays online, it answers, and its schedule
+      quietly never fires. This is the only thing watching for it.
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id:
+          - switch.cat_feeder_db0260_paused
+        to: "on"
+        for:
+          hours: 48
+    actions:
+      - action: persistent_notification.create
+        data:
+          notification_id: cat_feeder_paused_too_long
+          title: Cat feeder paused for two days
+          message: >-
+            {{ trigger.to_state.name }} has been paused since
+            {{ trigger.from_state.last_changed.strftime('%A %H:%M') }}.
+            Scheduled meals are being marked consumed without feeding.
+            Manual feeds still work.

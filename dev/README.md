@@ -58,6 +58,65 @@ Discovery needs no configuration. It is on by default with the prefix
 `homeassistant`, which is what the firmware publishes to, so feeders appear as
 devices on their own once they publish their config.
 
+## Home Assistant automations
+
+Discovery gives you the three entities. It does **not** give you the schedule:
+the feeders have no clock of their own, so until something publishes
+`feeder/time` they wait forever and never feed. That half lives in
+[`homeassistant/packages/cat_feeder.yaml`](../homeassistant/packages/cat_feeder.yaml),
+which is tracked in this repo and used unchanged on the Raspberry Pi.
+
+It is a Home Assistant *package*, so one file carries the automations, the
+schedule helper and the feed-all script together. Install it by copying it in
+and enabling packages:
+
+```sh
+mkdir -p dev/homeassistant/packages
+cp homeassistant/packages/cat_feeder.yaml dev/homeassistant/packages/
+```
+
+```yaml
+# dev/homeassistant/configuration.yaml, once
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+Then restart Home Assistant — `docker compose restart homeassistant` — and
+confirm the broker starts filling up, which takes at most a minute:
+
+```sh
+./dev/watch.sh 'feeder/time' 'feeder/schedule'
+```
+
+```
+feeder/time 2026-09-15T19:51:00.489888+02:00
+feeder/schedule [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
+```
+
+What the package sets up:
+
+| Automation | When | Publishes |
+|---|---|---|
+| publish the time | every minute, and on restart | `feeder/time`, retained |
+| publish the schedule | on restart, or the `cat_feeder_republish_schedule` event | `feeder/schedule`, retained |
+| pause when away | `schedule.cat_feeder_active` changes | `feeder/<id>/paused` per unit, retained |
+| warn when paused for days | a unit paused 48 hours | a notification, nothing on MQTT |
+
+Plus `script.cat_feeder_feed_all`, which publishes one `feeder/all/feed` so all
+three turn at the same instant rather than being staggered by three round
+trips.
+
+**`TZ: Europe/Rome` in `compose.yaml` is load-bearing.** Home Assistant owns the
+clock, the firmware reads the wall-clock fields and does not apply the offset,
+and the container defaults to UTC. Without that variable every meal lands an
+hour or two out while everything still looks healthy. The feeder prints the
+offset it received at startup — `clock: started, 2026-09-15T19:56:00+02:00` —
+which is the only place the mistake shows.
+
+To change feeding times, edit `meals` in the package, copy it in again, and
+restart. Verified end to end: a slot published this way fired at exactly its
+time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
+
 ## Everyday commands
 
 ```sh
