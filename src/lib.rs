@@ -28,6 +28,8 @@ pub mod board;
 #[cfg(target_os = "none")]
 pub mod config;
 #[cfg(target_os = "none")]
+pub mod motor;
+#[cfg(target_os = "none")]
 pub mod mqtt;
 #[cfg(target_os = "none")]
 pub mod switch;

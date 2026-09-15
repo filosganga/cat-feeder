@@ -11,6 +11,12 @@ use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
 /// anything the mechanism can produce and rejects contact bounce comfortably.
 pub const DEBOUNCE: Duration = Duration::from_millis(30);
 
+/// How often the level is sampled.
+const POLL: Duration = Duration::from_millis(5);
+
+/// Consecutive equal samples needed to accept a new level: [`DEBOUNCE`] worth.
+const STABLE_SAMPLES: u8 = 6;
+
 /// A source of switch clicks.
 ///
 /// This exists so the feeder logic can be exercised on the host with a fake,
@@ -28,12 +34,16 @@ pub const DEBOUNCE: Duration = Duration::from_millis(30);
     required to be Send; adding the bound would only constrain the fakes"
 )]
 pub trait ClickSource {
-    /// Resolves on the next debounced press.
-    async fn next_click(&mut self);
+    /// Resolves on the next debounced change of state, returning the settled
+    /// level: true for pressed.
+    ///
+    /// Transitions rather than presses, because the resting level matters as
+    /// much as the edges. The feeder needs to know whether the hub is sitting
+    /// on a detent before it starts, and a task watching only falling edges
+    /// cannot tell when the contact opened again.
+    async fn next_transition(&mut self) -> bool;
 
     /// Whether the switch is pressed right now.
-    ///
-    /// The feeder needs this to decide whether the align phase has to run.
     fn is_pressed(&self) -> bool;
 }
 
@@ -57,20 +67,43 @@ impl<'d> Switch<'d> {
 }
 
 impl ClickSource for Switch<'_> {
-    async fn next_click(&mut self) {
+    /// Sampled rather than interrupt-driven.
+    ///
+    /// `wait_for_any_edge` would be the idiomatic choice and may well be fine;
+    /// it was swapped out while chasing missing clicks that turned out to look
+    /// like an intermittent connection rather than a software fault. Polling was
+    /// kept because it is easier to reason about and cannot miss a transition
+    /// that happens while no future is armed.
+    ///
+    /// The cost is negligible. The hub changes state twice per 1.9 s at 8 rpm,
+    /// so a 5 ms sample is roughly 200 times faster than the signal, and the
+    /// resulting 0.24 degrees of angular uncertainty is far below anything the
+    /// mechanism cares about.
+    ///
+    /// Worth revisiting once the real hub is wired, if the idle wakeups ever
+    /// matter.
+    async fn next_transition(&mut self) -> bool {
+        let mut settled = self.input.is_low();
+        let mut candidate = settled;
+        let mut stable: u8 = 0;
+
         loop {
-            self.input.wait_for_falling_edge().await;
+            Timer::after(POLL).await;
 
-            // Let the contacts settle, then check the line actually stayed
-            // down. Bounce on release also produces falling edges, and this is
-            // what rejects them: after the window they read high again.
-            Timer::after(DEBOUNCE).await;
+            let level = self.input.is_low();
+            if level == candidate {
+                stable = stable.saturating_add(1);
+            } else {
+                candidate = level;
+                stable = 1;
+            }
 
-            if self.input.is_low() {
-                // Reported one debounce window after the true edge. That lag
-                // is constant, so braking on a click still parks the hub in
-                // the same place every time: ~1.4° of overshoot at 8 rpm.
-                return;
+            // Bounce never holds one level for a whole debounce window, so
+            // requiring a run of equal samples rejects it without needing to
+            // see the edges themselves.
+            if candidate != settled && stable >= STABLE_SAMPLES {
+                settled = candidate;
+                return settled;
             }
         }
     }

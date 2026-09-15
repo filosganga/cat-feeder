@@ -15,7 +15,8 @@
       "Bash(timeout * cargo *)",
       "Bash(timeout * ./dev/watch.sh *)",
       "WebFetch(domain:waveshare.com)",
-      "WebFetch(domain:espressif.com)"
+      "WebFetch(domain:espressif.com)",
+      "Bash(awk -F'[\\(\\)]' '{t=$2+0; if\\(NR>1\\) printf \"%-64s \\(+%d ms\\)\\\\n\",$0,t-p; else print; p=t}')"
     ],
     "additionalDirectories": [
       "/Users/filippodeluca/Documents/development/personal/cat-feeder",

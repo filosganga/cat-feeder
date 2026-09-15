@@ -11,13 +11,28 @@ log line appears.
 
 ## The loop
 
+**Use the scripts.** They encode the port, the flags and the log rendering, and
+they fail loudly on the mistakes that otherwise cost a whole run.
+
 ```sh
-cargo build                 # fast, catches the common case
-cargo run                   # build + espflash flash --monitor --chip esp32c6
+./dev/flash.sh                        # build, flash, capture 45 s
+./dev/flash.sh 90                     # ...capture 90 s instead
+./dev/capture.sh 60 'feed:|switch:'   # capture without reflashing, filtered
 ```
 
-`cargo run` works without extra flags because `.cargo/config.toml` sets both the
-target and the `espflash` runner. Exit the monitor with Ctrl+C.
+Both print every line annotated with the milliseconds since the previous one,
+which is what makes a feed cycle readable, and both keep the unfiltered log and
+print its path. They exit non-zero on a panic or on no application output at
+all, with an explanation of the likely cause.
+
+For an interactive session, `cargo run` also works and needs no flags, because
+`.cargo/config.toml` sets the target, the `espflash` runner and `ESPFLASH_PORT`.
+Exit the monitor with Ctrl+C.
+
+Do **not** hand-roll the espflash invocation. Two traps have cost real time:
+`--no-reset` loads a flash stub that halts the application so only the
+bootloader prints, and the default port is the wrong one of the two this board
+exposes. The scripts avoid both.
 
 ## Pick the port, every time
 
@@ -58,16 +73,19 @@ That MAC is the source of the `<id>` used in every MQTT topic.
 
 ## Running it unattended
 
-An agent must not start an interactive monitor, which never returns.
+An agent must not start an interactive monitor, which never returns. The
+scripts are already bounded and non-interactive, so they are safe to call
+directly:
 
 ```sh
-timeout 20 espflash monitor --non-interactive --port "$ESPFLASH_PORT"
-timeout 90 espflash flash --monitor --non-interactive --chip esp32c6 \
-  --port "$ESPFLASH_PORT" target/riscv32imac-unknown-none-elf/debug/cat-feeder
+./dev/flash.sh 60
+./dev/capture.sh 30 'mqtt:'
 ```
 
-`--non-interactive` skips the port picker and reset prompts. `timeout` bounds
-the capture, since the monitor otherwise runs forever.
+Captures that need a button pressed at the right moment cannot be automated.
+Start the capture in the background, tell the user what to press, and read the
+result when it finishes. Everything else, including boot sequences, MQTT
+behaviour and the jam timeout, runs with nobody at the bench.
 
 ## What a healthy boot looks like
 

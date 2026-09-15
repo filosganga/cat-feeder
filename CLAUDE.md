@@ -229,7 +229,12 @@ alarms. Keep `paused` visible in the state payload and as a switch in HA.
 - Generated with `esp-generate --chip esp32c6` with: `unstable-hal`, `alloc`,
   `wifi` (esp-radio), `embassy`, `log` + `esp-println`, `esp-backtrace`,
   board `esp32c6-wroom-1`. **No BLE, no probe-rs/defmt.**
-- `cargo run` = build + `espflash` + serial monitor.
+- `./dev/flash.sh [secs] [filter]` = build + flash + bounded capture, with each
+  line annotated by the gap since the previous one. `./dev/capture.sh` does the
+  same without reflashing. Prefer these over a hand-written `espflash` command:
+  they pin the right port and avoid `--no-reset`, which halts the application
+  so only the bootloader prints.
+- `cargo run` = build + `espflash` + interactive monitor, for driving by hand.
 - `espflash board-info` verifies the board/cable.
 - Tests of pure logic (portion accounting, schedule evaluation, double-feed
   guard) live behind `#[cfg(test)]` in modules that do **not** touch esp-hal,
@@ -315,8 +320,11 @@ not shared mutable statics.
 ## Roadmap
 
 1. ✅ Toolchain + blinky on the DEV-KIT
-2. Switch task: count clicks on the serial console (turn hub by hand)
-3. `Motor` + `feed(n)` with the RGB LED as fake motor, then with the DRV8833
+2. ✅ Switch task: debounced clicks on the console (bench button; still to
+   re-check against the real hub, where the contract is 4 clicks/revolution)
+3. `feed(n)`: ✅ state machine host-tested and verified on hardware with a
+   logging fake motor (align, 800 ms rejection, counting, jam, accumulation).
+   Still to do: the DRV8833 itself
 4. Wi-Fi + MQTT: ✅ connect, LWT, availability + mocked state. Still to do:
    discovery, subscriptions, manual `feed` command
 5. `schedule` + `time` handling, local clock, double-feed guard

@@ -8,10 +8,16 @@
 #![deny(clippy::large_stack_frames)]
 
 use cat_feeder::config::{DEVICE_ID_LEN, device_id, load_config};
+use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
+use cat_feeder::motor::{LogMotor, MotorDriver};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::{mqtt, switch_pin};
+use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
+use embassy_futures::select::{Either, select};
 use embassy_net::{Runner, StackResources};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
@@ -39,6 +45,36 @@ esp_bootloader_esp_idf::esp_app_desc!();
 /// Lives in the binary rather than the library so the linker cannot drop it.
 #[unsafe(no_mangle)]
 pub extern "Rust" fn _esp_println_timestamp() -> u64 {
+    esp_hal::time::Instant::now()
+        .duration_since_epoch()
+        .as_millis()
+}
+
+/// Portion requests, from every producer to the one task that owns the motor.
+///
+/// Bounded on purpose. Producers use `try_send` and log the discard, so a stuck
+/// automation can never block the MQTT or clock task waiting for room.
+static FEED: Channel<CriticalSectionRawMutex, u8, 8> = Channel::new();
+
+/// Debounced clicks, from the task that owns the switch to the feeder.
+///
+/// The switch gets its own task for a reason found the hard way: awaiting the
+/// GPIO edge inside a `select` alongside other work means the future is created
+/// and dropped repeatedly, and an edge arriving while no future is armed is
+/// lost. A dedicated task holds one `next_click` future at a time and never
+/// drops it, which is the shape that proved reliable on hardware.
+static CLICKS: Channel<CriticalSectionRawMutex, (), 4> = Channel::new();
+
+/// The switch's settled level, maintained by `switch_task`.
+///
+/// The feeder needs it to decide whether a run must align first, and a wrong
+/// answer is expensive: believing the hub is off a detent when it is on one
+/// spends a real quarter turn on alignment and dispenses a portion more than it
+/// counts.
+static SWITCH_PRESSED: AtomicBool = AtomicBool::new(false);
+
+/// Milliseconds since boot, the clock the feeder state machine runs on.
+fn now_ms() -> u64 {
     esp_hal::time::Instant::now()
         .duration_since_epoch()
         .as_millis()
@@ -80,6 +116,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
+    spawner.spawn(feeder_task(LogMotor::new()).expect("failed to create feeder task"));
+    spawner.spawn(bench_feed_requests().expect("failed to create bench task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -116,24 +154,132 @@ async fn main(spawner: Spawner) -> ! {
     mqtt::run(stack, cfg, id.as_str()).await
 }
 
-/// Roadmap step 2: count clicks on the console so the switch and the debounce
-/// can be checked by hand, before any motor exists.
+/// Owns the switch and nothing else.
+///
+/// Its only job is to hold a `next_click` future continuously and forward every
+/// debounced click. It must not await anything else, or an edge can arrive
+/// while no future is armed and be lost.
+///
+/// Also publishes the switch's resting level once at boot, which is the fastest
+/// way to spot a miswired button.
 #[embassy_executor::task]
 async fn switch_task(mut switch: Switch<'static>) {
+    let pressed = switch.is_pressed();
+    SWITCH_PRESSED.store(pressed, Ordering::Relaxed);
     info!(
-        "switch: waiting for clicks on GPIO11, currently {}",
-        if switch.is_pressed() {
-            "pressed"
-        } else {
-            "released"
-        }
+        "switch: watching GPIO11, currently {}",
+        if pressed { "pressed" } else { "released" }
     );
 
-    let mut clicks: u32 = 0;
     loop {
-        switch.next_click().await;
-        clicks += 1;
-        info!("switch: click {clicks}");
+        let pressed = switch.next_transition().await;
+        SWITCH_PRESSED.store(pressed, Ordering::Relaxed);
+
+        // Pressed means the contact just closed, which is the falling edge the
+        // feeder counts. The release half of the cycle only updates the level.
+        if pressed && CLICKS.try_send(()).is_err() {
+            warn!("switch: click dropped, feeder is not keeping up");
+        }
+    }
+}
+
+/// Owns the motor and decides nothing.
+///
+/// Every rule belongs to `feeder::Feeder`, which is pure and host-tested. This
+/// task performs the action it is told to and reports what happened.
+#[embassy_executor::task]
+async fn feeder_task(mut motor: LogMotor) {
+    let mut feeder = Feeder::new();
+
+    loop {
+        match feeder.action(now_ms()) {
+            Action::Idle => {
+                motor.brake();
+
+                // Watch clicks even while idle, so a hub turned by hand is
+                // visible rather than silently discarded.
+                let portions = match select(FEED.receive(), CLICKS.receive()).await {
+                    Either::First(portions) => portions,
+                    Either::Second(()) => {
+                        info!("feed: click while idle, hub turned by hand");
+                        continue;
+                    }
+                };
+
+                feeder.request(portions);
+                if feeder.pending() == 0 {
+                    continue;
+                }
+
+                let pressed = SWITCH_PRESSED.load(Ordering::Relaxed);
+                feeder.start(now_ms(), pressed);
+                motor.run_forward();
+
+                log_start(feeder.pending(), pressed);
+            }
+
+            Action::Turning { jam_timeout_ms } => {
+                // Absorb anything that arrived mid-turn without blocking, so
+                // the motor never stops between portions.
+                while let Ok(extra) = FEED.try_receive() {
+                    feeder.request(extra);
+                    info!("feed: pending={}", feeder.pending());
+                }
+
+                match select(CLICKS.receive(), Timer::after_millis(jam_timeout_ms as u64)).await {
+                    Either::First(()) => log_click(feeder.on_click(now_ms())),
+                    Either::Second(()) => {
+                        motor.brake();
+                        feeder.on_timeout();
+                        warn!("feed: no click for 5s, jammed; pending discarded");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Kept out of `feeder_task` and never inlined.
+///
+/// Every `info!` site contributes its formatting temporaries to the enclosing
+/// frame, and an async task's frame is allocated for the whole life of the
+/// future. Inlining these puts the task over the project's stack budget.
+#[inline(never)]
+fn log_start(portions: u8, switch_pressed: bool) {
+    info!(
+        "feed: start, portions={portions}{}",
+        if switch_pressed {
+            ""
+        } else {
+            ", needs aligning"
+        }
+    );
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_click(outcome: ClickOutcome) {
+    match outcome {
+        ClickOutcome::Aligned => info!("feed: aligned"),
+        ClickOutcome::Counted { remaining: 0 } => info!("feed: done"),
+        ClickOutcome::Counted { remaining } => info!("feed: click, {remaining} to go"),
+        ClickOutcome::TooSoon => info!("feed: edge ignored, below 800ms minimum spacing"),
+        ClickOutcome::NotTurning => {}
+    }
+}
+
+/// TEMPORARY bench harness: asks for one portion every 20 s.
+///
+/// Exists only so the feeding loop can be exercised before the MQTT `feed`
+/// subscription lands. **Delete this task when it does.**
+#[embassy_executor::task]
+async fn bench_feed_requests() {
+    loop {
+        Timer::after(Duration::from_secs(20)).await;
+        match FEED.try_send(1) {
+            Ok(()) => info!("bench: requested 1 portion"),
+            Err(_) => warn!("bench: feed queue full, request dropped"),
+        }
     }
 }
 

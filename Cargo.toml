@@ -90,6 +90,8 @@ rust-mqtt = { version = "0.5.1", default-features = false, features = [
   "log-level-info",
   "v5",
 ] }
+embassy-futures = "0.1.2"
+embassy-sync = "0.7"
 
 [build-dependencies]
 toml = "1"
