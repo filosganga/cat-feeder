@@ -22,6 +22,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
+use crate::indicator::Health;
 use crate::schedule::{Schedule, TimeSource, Wall};
 
 /// How many unread feed **requests** can be waiting before producers drop them.
@@ -104,6 +105,83 @@ impl FeederStatus {
     }
 }
 
+/// How far the unit has got towards being useful, for the LED.
+///
+/// Three facts that each used to live inside the one task that knew them:
+/// association in `wifi_task`, the broker connection inside `mqtt::run`, and
+/// clock trust inside `schedule_task`'s `LocalClock`. None of them could be
+/// observed from anywhere else, which is exactly why the states they describe
+/// were invisible without a serial console.
+///
+/// Atomics rather than a mutex, for the same reason as [`FeederStatus`]: read
+/// far more often than written, from tasks that must not block. `Relaxed` is
+/// enough — each flag is read on its own and nothing is ordered against it.
+///
+/// Deliberately **not** one shared value. Three separate flags mean three
+/// writers can never race to describe the same field, and the reader combines
+/// them in [`crate::indicator::Status::of`] where the priority is written down
+/// and tested.
+pub struct Connectivity {
+    link: AtomicBool,
+    broker: AtomicBool,
+    armed: AtomicBool,
+}
+
+impl Default for Connectivity {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Connectivity {
+    pub const fn new() -> Self {
+        Self {
+            link: AtomicBool::new(false),
+            broker: AtomicBool::new(false),
+            armed: AtomicBool::new(false),
+        }
+    }
+
+    /// Associated with the Wi-Fi network. Written by `wifi_task`.
+    pub fn set_link(&self, up: bool) {
+        self.link.store(up, Ordering::Relaxed);
+
+        // Losing the network necessarily loses the broker, and the MQTT task
+        // may take a while to notice. Clearing it here keeps the LED from
+        // reporting the second fault when the first one is the real answer.
+        if !up {
+            self.broker.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Connected to the broker. Written by `mqtt`.
+    pub fn set_broker(&self, up: bool) {
+        self.broker.store(up, Ordering::Relaxed);
+    }
+
+    /// The schedule is armed, i.e. the clock has had a *live* time. Written by
+    /// `schedule_task`.
+    ///
+    /// Not "has a time": a retained one starts the clock but leaves the
+    /// schedule holding, and a unit in that state will not feed. That is the
+    /// distinction the LED exists to make visible.
+    pub fn set_armed(&self, armed: bool) {
+        self.armed.store(armed, Ordering::Relaxed);
+    }
+
+    pub fn link(&self) -> bool {
+        self.link.load(Ordering::Relaxed)
+    }
+
+    pub fn broker(&self) -> bool {
+        self.broker.load(Ordering::Relaxed)
+    }
+
+    pub fn armed(&self) -> bool {
+        self.armed.load(Ordering::Relaxed)
+    }
+}
+
 /// When this unit last dispensed a scheduled meal, for the state payload.
 ///
 /// Scheduled feeds only. A manual feed arrives at the feeder task, which has no
@@ -157,6 +235,14 @@ pub struct Bus {
     pub schedule: Signal<CriticalSectionRawMutex, Schedule>,
     /// Written by `schedule`, read by `mqtt`.
     pub last_fed: LastFed,
+    /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
+    pub net: Connectivity,
+    /// The outside button is armed. Written by `button`, read by `indicator`.
+    ///
+    /// The gesture state itself stays inside the button task — this is only the
+    /// one bit the LED needs, so nothing else can reach in and change what a
+    /// press means.
+    pub button_armed: AtomicBool,
 }
 
 impl Default for Bus {
@@ -174,6 +260,29 @@ impl Bus {
             time: Signal::new(),
             schedule: Signal::new(),
             last_fed: LastFed::new(),
+            net: Connectivity::new(),
+            button_armed: AtomicBool::new(false),
+        }
+    }
+
+    /// Everything the LED is allowed to know, sampled in one place.
+    ///
+    /// Taken as a snapshot rather than read field by field inside the decision,
+    /// so the priority ladder cannot see one flag change underneath another and
+    /// report a state that never actually existed.
+    pub fn health(&self) -> Health {
+        Health {
+            button_armed: self.button_armed.load(Ordering::Relaxed),
+            // Always false today. Setup mode is roadmap step 9, and it is the
+            // one that will set it — there is no flag on the bus for it because
+            // an always-false atomic would read as live wiring when it is not.
+            setup: false,
+            link: self.net.link(),
+            broker: self.net.broker(),
+            armed: self.net.armed(),
+            paused: self.is_paused(),
+            feeding: self.status.feeding(),
+            jammed: self.status.jammed(),
         }
     }
 

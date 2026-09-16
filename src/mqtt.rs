@@ -190,6 +190,12 @@ pub async fn run(stack: Stack<'static>, cfg: Config, id: &str, bus: &'static Bus
         {
             warn!("mqtt: disconnected, retrying in 5s");
         }
+
+        // One place, covering every way out of a session — a failed TCP
+        // connect, a rejected CONNECT, a read error mid-stream. Clearing it
+        // inside `session` would mean finding all of them.
+        bus.net.set_broker(false);
+
         Timer::after(RECONNECT_DELAY).await;
     }
 }
@@ -237,6 +243,10 @@ async fn session(
         return Err(());
     }
     info!("mqtt: connected, id={client_id}");
+
+    // TCP plus CONNACK, which is the honest meaning of "reaching the broker".
+    // Cleared in `run` when this session ends, however it ends.
+    bus.net.set_broker(true);
 
     publish_discovery(&mut client, id).await?;
 

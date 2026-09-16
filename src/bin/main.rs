@@ -7,8 +7,13 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+use cat_feeder::button::{
+    BOOT_RESET_HOLD_MS, Button as ButtonGesture, Event as ButtonEvent, held_at_boot,
+};
 use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id, load_config};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
+use cat_feeder::indicator::{Indicator, Rgb, Status};
+use cat_feeder::led::Led;
 use cat_feeder::motor::{LogMotor, MotorDriver};
 use cat_feeder::portions::{Added, MAX_PORTIONS};
 use cat_feeder::provisioning::{DecodeError, Record, ap_password, ap_ssid};
@@ -16,7 +21,7 @@ use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skippe
 use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::wiring::{Bus, now_ms};
-use cat_feeder::{mqtt, switch_pin};
+use cat_feeder::{button_pin, led_pin, mqtt, switch_pin};
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, Either3, select, select3};
@@ -108,7 +113,24 @@ async fn main(spawner: Spawner) -> ! {
     let id = mk_static!(heapless::String<DEVICE_ID_LEN>, device_id());
     info!("board: {}, id={id}", cat_feeder::board::NAME);
 
-    let cfg = resolve_config(peripherals.FLASH, id);
+    // Before anything that can fail or hang, so the LED is already reporting
+    // while flash is read and the network comes up. A board with no working
+    // RMT still feeds cats, so this is a warning and not a panic.
+    match Led::new(peripherals.RMT, led_pin!(peripherals)) {
+        Ok(led) => {
+            spawner.spawn(indicator_task(led).expect("failed to create indicator task"));
+        }
+        Err(e) => warn!("led: unavailable ({e:?}), running without an indicator"),
+    }
+
+    // Before the record is read, so a wipe simply means the normal boot path
+    // finds nothing — no reboot needed, because nothing has been decided yet.
+    let button = Switch::new(button_pin!(peripherals));
+    let wipe = reset_held_at_boot(&button).await;
+
+    let cfg = resolve_config(peripherals.FLASH, id, wipe);
+
+    spawner.spawn(button_task(button).expect("failed to create button task"));
 
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
@@ -161,7 +183,7 @@ async fn main(spawner: Spawner) -> ! {
 /// lands, an unconfigured unit raises its own network and serves the form
 /// instead of quietly adopting whatever the binary was built with. Roadmap
 /// step 9.
-fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, id: &str) -> Config {
+fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, id: &str, wipe: bool) -> Config {
     let mut store = match Store::new(flash) {
         Ok(store) => store,
         Err(e) => {
@@ -174,6 +196,17 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, id: &str) -> Conf
 
     let (offset, len) = store.location();
     info!("store: nvs at {offset:#x}, {len} bytes");
+
+    if wipe {
+        match store.erase() {
+            // Note what this currently costs you: `seed_config` below writes
+            // the build-time credentials straight back, so today a wipe is
+            // visible only in the log. It becomes a real reset when setup mode
+            // lands and that fallback goes — roadmap step 9.
+            Ok(()) => warn!("store: erased by the boot button"),
+            Err(e) => warn!("store: erase failed ({e:?})"),
+        }
+    }
 
     stored_config(&mut store).unwrap_or_else(|| seed_config(&mut store, id))
 }
@@ -249,6 +282,114 @@ fn seed_config(store: &mut Store, id: &str) -> Config {
     cfg
 }
 
+/// Whether the button was held down through power-on, meaning "erase".
+///
+/// Costs one GPIO read on an ordinary boot: if the button is not already down
+/// there is nothing to wait for. Only a boot that starts with it held pays the
+/// three seconds, and that boot is asking for them.
+///
+/// Reset lives here rather than on a runtime gesture because it is the one
+/// irreversible thing this button can do. Separating it from feeding by hold
+/// duration alone would mean a beat too long on a working feeder wipes its
+/// credentials; requiring a power cycle means it cannot happen by accident at
+/// all. See `button.rs`.
+async fn reset_held_at_boot(button: &Switch<'static>) -> bool {
+    const INTERVAL_MS: u64 = 50;
+
+    if !button.is_pressed() {
+        return false;
+    }
+
+    info!("button: held at boot, keep holding to erase the configuration");
+
+    // One sample past the threshold, so the loop can only decide "yes" by
+    // actually observing the full duration.
+    let wanted = (BOOT_RESET_HOLD_MS / INTERVAL_MS) as usize;
+    let mut samples: heapless::Vec<bool, 128> = heapless::Vec::new();
+
+    for _ in 0..wanted {
+        let _ = samples.push(button.is_pressed());
+        Timer::after(Duration::from_millis(INTERVAL_MS)).await;
+    }
+
+    let held = held_at_boot(samples, INTERVAL_MS);
+    if !held {
+        info!("button: released too early, configuration kept");
+    }
+    held
+}
+
+/// Owns the outside button, and decides nothing.
+///
+/// Every rule belongs to `button::Button`, which is pure and host-tested.
+///
+/// **Polls levels rather than awaiting edges**, which is the opposite of
+/// `switch_task` and is deliberate. This loop has to service two sources — the
+/// level changing and time passing — and `Switch::next_transition` is not
+/// cancel-safe: it carries the debounce run in its own stack frame, so dropping
+/// it inside a `select` resets the debounce and re-reads the level as already
+/// settled, silently swallowing the transition. That is the same class of bug
+/// the hub switch got its own task to avoid.
+///
+/// Polling is free here. The button's shortest deadline is a two-second hold,
+/// so a 20 ms tick is a hundred times finer than anything it must resolve.
+#[embassy_executor::task]
+async fn button_task(button: Switch<'static>) {
+    const TICK: Duration = Duration::from_millis(20);
+    /// Consecutive equal samples before a level is believed: 40 ms.
+    const STABLE: u8 = 2;
+
+    let mut gesture = ButtonGesture::new();
+    let mut settled = button.is_pressed();
+    let mut candidate = settled;
+    let mut stable: u8 = 0;
+
+    info!("button: watching {}", cat_feeder::board::BUTTON_PIN);
+
+    loop {
+        Timer::after(TICK).await;
+        let now = now_ms();
+
+        let level = button.is_pressed();
+        if level == candidate {
+            stable = stable.saturating_add(1);
+        } else {
+            candidate = level;
+            stable = 1;
+        }
+
+        if candidate != settled && stable >= STABLE {
+            settled = candidate;
+            if let Some(event) = gesture.on_change(now, settled) {
+                on_button(event);
+            }
+        }
+
+        // Time-driven events: arming fires while the button is still held, and
+        // the window lapses with nothing pressed at all. Neither is an edge.
+        if let Some(event) = gesture.poll(now) {
+            on_button(event);
+        }
+
+        BUS.button_armed
+            .store(gesture.is_armed(), Ordering::Relaxed);
+    }
+}
+
+/// See [`log_start`] for why this is a separate, never-inlined function.
+#[inline(never)]
+fn on_button(event: ButtonEvent) {
+    match event {
+        ButtonEvent::Armed => info!("button: armed, tap to feed"),
+        ButtonEvent::Expired => info!("button: locked again"),
+        ButtonEvent::Locked => info!("button: tap ignored, hold 2s to arm first"),
+        ButtonEvent::Feed => match BUS.feed.try_send(1) {
+            Ok(()) => info!("button: feed 1"),
+            Err(_) => warn!("button: feed queue full, portion dropped"),
+        },
+    }
+}
+
 /// Owns the switch and nothing else.
 ///
 /// Its only job is to hold a `next_click` future continuously and forward every
@@ -262,7 +403,8 @@ async fn switch_task(mut switch: Switch<'static>) {
     let pressed = switch.is_pressed();
     SWITCH_PRESSED.store(pressed, Ordering::Relaxed);
     info!(
-        "switch: watching GPIO11, currently {}",
+        "switch: watching {}, currently {}",
+        cat_feeder::board::SWITCH_PIN,
         if pressed { "pressed" } else { "released" }
     );
 
@@ -275,6 +417,95 @@ async fn switch_task(mut switch: Switch<'static>) {
         if pressed && CLICKS.try_send(()).is_err() {
             warn!("switch: click dropped, feeder is not keeping up");
         }
+    }
+}
+
+/// Owns the RGB LED and decides nothing.
+///
+/// Every rule belongs to `indicator::Indicator`, which is pure and host-tested
+/// down to the blink timing. This task samples, renders, and writes.
+#[embassy_executor::task]
+async fn indicator_task(mut led: Led<'static>) {
+    led_selftest(&mut led).await;
+
+    let mut indicator = Indicator::new();
+    let mut shown: Option<Rgb> = None;
+    let mut said: Option<Status> = None;
+
+    loop {
+        let colour = indicator.poll(now_ms(), BUS.health());
+
+        // Only on a change. The tick is fast enough to render a 120 ms flash
+        // cleanly, which would otherwise mean ~40 pointless RMT transmissions a
+        // second for an LED that is dark most of its life.
+        if shown != Some(colour) {
+            led.set(colour).await;
+            shown = Some(colour);
+        }
+
+        if indicator.status() != said {
+            said = indicator.status();
+            log_indicator(said);
+        }
+
+        Timer::after(INDICATOR_TICK).await;
+    }
+}
+
+/// A red, green, blue sweep at power-on, naming each colour as it shows it.
+///
+/// Two jobs, and the second is why this is permanent rather than a diagnostic
+/// that got left in.
+///
+/// **It proves the LED works.** Dark is the healthy state, which means a dead
+/// LED, a broken solder joint or a wrong pin look exactly like a unit with
+/// nothing to report. A sweep at boot is the only moment that distinction is
+/// ever made, and it costs half a second.
+///
+/// **It pins the channel order.** The WS2812B datasheet says GRB; the dev kit's
+/// LED wanted RGB, and the whole palette came out inverted until a run of this
+/// found it. The two boards are not guaranteed to carry the same part, so run
+/// it on a Zero before trusting any colour there: read the three console lines
+/// against the board, and if they disagree, `led::wire_word` is the one place
+/// to fix it.
+///
+/// Full brightness rather than the dim palette, because naming a colour
+/// confidently is the entire point and a dim primary is harder to be sure of.
+async fn led_selftest(led: &mut Led<'static>) {
+    for (name, colour) in [
+        ("red", Rgb::new(60, 0, 0)),
+        ("green", Rgb::new(0, 60, 0)),
+        ("blue", Rgb::new(0, 0, 60)),
+    ] {
+        info!("led: selftest {name}");
+        led.set(colour).await;
+        Timer::after(SELFTEST_HOLD).await;
+    }
+}
+
+/// Long enough to name a colour, short enough not to be in the way.
+///
+/// Was two seconds while the channel order was in question. That is a long time
+/// to watch on every reflash, and 200 ms is still unmistakable when you know
+/// three colours are coming.
+const SELFTEST_HOLD: Duration = Duration::from_millis(200);
+
+/// How often the LED is re-rendered.
+///
+/// Has to divide a flash finely enough that its edges land where
+/// `indicator::Pattern` says they do. At 25 ms there are ~5 samples per 120 ms
+/// flash, so the worst-case edge error is well below anything an eye resolves.
+const INDICATOR_TICK: Duration = Duration::from_millis(25);
+
+/// See [`log_start`] for why this is a separate, never-inlined function.
+///
+/// Worth a console line of its own: it is how the LED's behaviour gets checked
+/// during bring-up, and how a blink code seen across the room can be confirmed
+/// against what the firmware believed it was showing.
+#[inline(never)]
+fn log_indicator(status: Option<Status>) {
+    if let Some(status) = status {
+        info!("led: {status:?}");
     }
 }
 
@@ -401,6 +632,11 @@ async fn schedule_task() {
             info!("schedule: {} slots", schedule.len());
             scheduler.set_schedule(schedule);
         }
+
+        // Armed means a *live* time has arrived, not merely that the clock is
+        // running. A unit holding on a retained time will not feed, and this is
+        // the only thing that says so outside the serial console.
+        BUS.net.set_armed(clock.is_trusted());
 
         // No trustworthy time means no schedule. A unit power-cycled while the
         // broker was down waits to be told; so does one handed only a retained
@@ -544,7 +780,9 @@ async fn wifi_task(mut controller: WifiController<'static>, ssid: &'static str) 
         match controller.connect_async().await {
             Ok(_) => {
                 info!("wifi: associated");
+                BUS.net.set_link(true);
                 let _ = controller.wait_for_disconnect_async().await;
+                BUS.net.set_link(false);
                 warn!("wifi: disconnected");
             }
             Err(e) => warn!("wifi: connect failed {e:?}"),

@@ -10,6 +10,7 @@
 - [Step 7 — Home Assistant](#step-7--home-assistant)
 - [Step 8 — retiring the old PCBs](#step-8--retiring-the-old-pcbs)
 - [Step 9 — provisioning](#step-9--provisioning)
+- [Step 10 — the status LED](#step-10--the-status-led)
 
 ## How to read this file
 
@@ -21,8 +22,8 @@ acceptance test, or change both the code and this file together.
 Steps marked *observed* carry real transcripts. The rest are contracts, not
 recordings: when you first reach one, replace its expected block with what the
 console actually printed. Steps 3 (the motor itself), 6 (flashing the Zeros),
-8 and the access point half of 9 are the ones still unobserved, all of them
-waiting on hardware or a phone.
+8, the access point half of 9, and 10 are the ones still unobserved. All but
+10 wait on hardware or a phone; 10 only wants a bench session.
 
 Every application line is formatted `LEVEL (ms) - message`, for example
 `INFO (261) - Embassy initialized!`. The number is milliseconds since boot,
@@ -260,7 +261,7 @@ Observed, from a cold boot:
 INFO (270) - Embassy initialized!
 INFO (274) - board: devkit, id=db0260                                   (+4 ms)
 INFO (368) - wifi: connecting to <ssid>                                 (+3 ms)
-INFO (375) - switch: watching GPIO11, currently released                (+7 ms)
+INFO (375) - switch: watching GPIO2, currently released                 (+7 ms)
 INFO (1630) - wifi: associated                                          (+4 ms)
 INFO (11774) - wifi: connected, ip=192.168.68.123/24                    (+10144 ms)
 INFO (11780) - mqtt: connecting to 192.168.68.108:1883                  (+6 ms)
@@ -649,3 +650,115 @@ submitting the form needs a phone in someone's hand; the console only shows the
 device's half. Watch particularly for what a real browser does and a test client
 does not: captive-portal probe requests to odd paths, several connections at
 once, and connections opened and dropped without a request.
+
+## Step 10 — the status LED
+
+**Console half observed** on the dev kit. The LED itself still wants eyes on a
+board — see the table below.
+
+One line per status change, which is what makes a blink code seen across the
+room checkable against what the firmware believed it was showing:
+
+```
+INFO (401) - led: NoLink                                                  (+6 ms)
+INFO (1679) - wifi: associated                                            (+4 ms)
+INFO (1693) - led: NoBroker                                              (+14 ms)
+INFO (12764) - mqtt: connected, id=feeder_db0260                          (+7 ms)
+INFO (12777) - led: NoTime                                               (+13 ms)
+INFO (13590) - clock: started, 2026-09-16T09:14:00+02:00 (retained; waiting for a live time)
+INFO (59607) - clock: live time 2026-09-16T09:15:00+02:00, schedule armed (+46008 ms)
+INFO (59623) - led: Healthy                                               (+8 ms)
+```
+
+A normal boot passes through all four in that order, because the ladder reports
+the first thing to fix and the unit fixes them in sequence. Each `led:` line
+lands 8–15 ms after the event that caused it, which is the 25 ms indicator tick.
+
+**`led: NoTime` between `NoBroker` and `Healthy` is correct, not a fault**, and
+the transcript above shows why it is worth having. The clock *started* at
+13590 ms from a retained time, and the schedule only armed at 59607 ms when a
+live one arrived — **46 seconds of red ×3**, because Home Assistant publishes
+once a minute and this boot landed just after a tick.
+
+That window is the whole point of the feature. For those 46 seconds the unit was
+connected, correct, and would not have fed; before step 10 the only way to know
+was a serial console. It only indicates a fault if it *stays* — past about 90
+seconds, Home Assistant's publish-the-time automation is not running.
+
+### What to look at, not just read
+
+The whole point is the LED itself, so watch the board while the log scrolls.
+All of these were observed on the dev kit:
+
+| Check | How to provoke it | Expect |
+|---|---|---|
+| self-test | any boot | red, green, blue, two seconds each, named on the console |
+| ×1 — no Wi-Fi | turn the AP off, or set a wrong SSID | red, one flash every 3 s |
+| ×2 — no broker | point `mqtt_host` at an unused address | red, two flashes every 3 s |
+| ×3 — no time | boot and wait: it sits here until HA's next time tick | red, three flashes every 3 s |
+| healthy | a live `feeder/time` arrives | green ×2, then **dark and staying dark** |
+| paused | `feeder/<id>/paused` ← `ON` | amber, one flash every 5 s |
+| feeding | `feeder/<id>/feed` ← `1` | solid white for the turn |
+| fed cleanly | press the bench button **twice**, ~1 s apart | green ×2, then dark |
+| jammed | the same feed with no clicks at all | solid red, and it stays solid |
+
+Count the flashes rather than trusting the colour: one, two and three point at
+the router, the broker address and Home Assistant respectively, and that
+distinction is the entire diagnostic value.
+
+**Two presses, not one.** The hub rests with the switch open, so the first click
+aligns and only the second counts a portion — the log says `needs aligning`.
+Presses closer than 800 ms apart are discarded as motor-start bounce, so they
+have to be deliberate rather than a double-tap.
+
+### Testing anything below `NoTime` needs care
+
+`capture.sh` and `flash.sh` both **reset the board** when they open the serial
+port. A reset drops clock trust, so the unit returns to `NoTime` and stays there
+until Home Assistant's next once-a-minute publish — anywhere from 0 to 60
+seconds, and observed at 46 s in one run.
+
+`NoTime` outranks `Paused`, so during that window a paused unit shows red ×3 and
+not amber. That is the ladder working as tested, but it silently invalidates any
+test of `Paused`, `Feeding`, `Healthy` or `Jammed` begun straight after a flash —
+the first attempt at this walk was lost to exactly that.
+
+So drive those states **without a capture**, and watch the unit's own state topic
+instead of the console:
+
+```sh
+docker compose exec -T mosquitto mosquitto_sub -h localhost \
+  -u feeder -P feeder-dev -v -t 'feeder/<id>/state' -W 30 &
+docker compose exec -T mosquitto mosquitto_pub -h localhost \
+  -u feeder -P feeder-dev -t 'feeder/<id>/feed' -m 1
+```
+
+`{"feeding":true}` then `{"feeding":false,"jammed":false}` is a clean feed;
+`{"feeding":false,"jammed":true}` is the jam. `mosquitto_sub -W` exits 27 on
+timeout, which is not a failure.
+
+### Failure signatures
+
+- **Red and green swapped** — the channel order in `led::wire_word`. This
+  already happened once: the code sent GRB, which is what the WS2812B datasheet
+  specifies, and the dev kit's LED wanted **RGB**. Every red fault code rendered
+  green and the healthy confirmation rendered red.
+
+  It is easy to misread as something else, because the fault codes still blink
+  the right *count* and the jam still goes solid — only the hue is wrong, and
+  `led: Jammed` on the console looks perfectly healthy next to a green LED.
+  Trust the board over the log here.
+
+  **The two boards may not carry the same part**, so re-check on a Zero rather
+  than assuming. `led_selftest` in `main.rs` names each primary as it shows it
+  and settles it in one flash.
+- **Nothing at all, but `led:` lines appear** — the RMT channel is transmitting
+  into the wrong pin, or `Led::new` returned an error and the boot log has a
+  `led: unavailable` warning above.
+- **Flickering or wrong colours at random** — pulse timing outside the WS2812's
+  ±150 ns. Check the RMT clock is 80 MHz with divider 1, so one tick is 12.5 ns.
+- **Stuck on `led: Feeding` forever** — not an LED fault. `BUS.status` is not
+  being cleared, which means the feeder task is wedged.
+- **The green confirmation replaying every few seconds** — a boot loop, almost
+  certainly a brown-out on motor start. This is the intended reading of that
+  pattern, not a bug in the indicator.

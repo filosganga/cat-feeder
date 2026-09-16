@@ -102,7 +102,7 @@ I (198) boot: Disabling RNG early entropy source...
 INFO (261) - Embassy initialized!
 INFO (264) - board: devkit, id=db0260
 INFO (358) - wifi: connecting to <ssid>
-INFO (364) - switch: waiting for clicks on GPIO11, currently released
+INFO (364) - switch: watching GPIO2, currently released
 INFO (1621) - wifi: associated
 INFO (11643) - wifi: connected, ip=192.168.68.123/24
 INFO (11797) - mqtt: connected, id=feeder_<id>
@@ -129,9 +129,11 @@ for each roadmap step, the log lines that step must emit and the physical action
 that triggers them. Treat it as the acceptance test: implement the lines it
 names, then flash and read them back.
 
-Only step 1 has been observed on hardware. Every later step describes what the
-console *must* show, and the person who first reaches that step should correct
-the file with what it actually showed.
+Most steps carry real transcripts now. The ones still unobserved are 3 (the
+motor itself), 6 (flashing the Zeros), 8, the access point half of 9, and the
+visual half of 10 — every one of them waiting on hardware, a phone, or someone
+looking at the board. Those describe what the console *must* show, and whoever
+first reaches one should correct the file with what it actually showed.
 
 ## Rules
 

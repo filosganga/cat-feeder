@@ -17,12 +17,66 @@ same instant, coordinated by Home Assistant over MQTT.
 | 220 µF 16 V electrolytic | across 5 V/GND next to the DRV8833 (brown-out on motor start) |
 | 5 V from the feeder's original USB port | ≥1 A adapter. **No batteries in v1** |
 
+### The third feeder is a different brand
+
+Two of the three units are the same model. The third is a different brand,
+similar-looking but **not yet opened**, and the mechanical figures in the table
+above were measured on the matching pair only.
+
+Four of them are per-mechanism, not per-project, and every one is load-bearing
+somewhere in the firmware:
+
+| Figure | What breaks if it differs |
+|---|---|
+| 4 clicks per revolution | the portion-to-rotation contract in step 3 |
+| 1 click = 1 portion | every `portions` count, from the HA button to each schedule slot |
+| ~1.9 s per detent | the 800 ms minimum click spacing in `feeder.rs` sits in the gap between contact bounce and a real quarter turn |
+| a microswitch on the output hub at all | `switch.rs` assumes a pull-up and a falling edge — an optical or hall sensor is a different shape entirely |
+
+So the third unit needs these re-measured before it is wired, not assumed. If
+they differ, they stop being constants and become part of the per-unit record in
+flash, which is a real change: `feeder.rs` and `schedule.rs` are pure today
+precisely because these numbers are fixed at compile time.
+
+Worth opening it early rather than at assembly time, since the answer could
+change the shape of the code rather than just a number.
+
 Both boards are the same chip; only GPIO numbers differ. Keep the pin map in
 one place (`src/board.rs`) selected by a Cargo feature: `board-devkit`
 (default) / `board-zero`.
 
-Avoid strapping pins (GPIO 8, 9, 15) for I/O. GPIO 8 is the on-board RGB LED
-on both boards — use it as a "feeding" indicator.
+### Which pins are usable
+
+**The Zero is the binding constraint, and it is tighter than the dev kit.** Its
+pad map brings out GP0–GP9 and GP12–GP23, with GP16/GP17 appearing as `TX`/`RX`.
+**GPIO10 and GPIO11 are not brought out at all**, on neither the edge
+castellations nor the back pad row. Both were in the original pin map and both
+have moved; see `src/board.rs`, which is still the one place any number lives.
+
+Then subtract what is already spoken for:
+
+| Pin | Why not |
+|---|---|
+| GPIO4, GPIO5, GPIO8, GPIO9, GPIO15 | strapping, sampled at reset |
+| GPIO12, GPIO13 | native USB D−/D+; on the Zero, the only console there is |
+| GPIO8 | also the onboard WS2812, so already committed |
+
+That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23 on
+the back pads — thirteen usable against seven needed, so the display and the
+LED both fit with room left.
+
+Note the strapping list is five pins, not the three this file used to name:
+GPIO4 and GPIO5 are strapping on the C6 as well.
+
+"No alternate function" was the rule that first picked GPIO10 and GPIO11. It
+does not really apply here: on the C6 peripheral signals route through a GPIO
+matrix, so the labels on a pinout diagram are a convention rather than a
+restriction, and any pin outside that table will do.
+
+GPIO8 is the onboard WS2812 on both boards. On the Zero it is *also* on the
+back pad row, so an external WS2812 wired there sits in parallel on the same
+data line and shows the same colour — an indicator outside a closed case for no
+extra pin and no firmware change. See roadmap step 10.
 
 ### Motor control (DRV8833)
 
@@ -36,20 +90,19 @@ Feeding = run forward until N falling edges on the switch, then brake. Stop
 **on** the edge, so the hub always parks in the same position. Safety
 timeout: if no click within 5 s while running → stop, report `jammed`.
 
-Switch: **GPIO11**, internal pull-up enabled in software
+Switch: **GPIO2**, internal pull-up enabled in software
 (`InputConfig::default().with_pull(Pull::Up)`), other contact to GND. No
 external resistor. Idle reads high, pressed reads low, so a press is a
 **falling** edge. Debounce 30 ms in software (8 rpm → one edge every ~1.9 s,
 bouncing is trivial to filter).
 
-GPIO11 is on the DEV-KIT's J1 header, third pin in from 5V
-(`5V · GPIO3 · GPIO2 · GPIO11`). It and GPIO10 are the only header pins with no
-alternate function at all, which is why the switch gets one of them.
+GPIO2 is on the DEV-KIT's J1 header, which reads `5V · GPIO3 · GPIO2 · GPIO11`,
+so moving the bench jumper off the old GPIO11 is a shift of one position.
 
-⚠️ The nearest ground, J1 pin 15, sits **directly beside 5V**. A ground jumper
-off by one position puts 5 V through the switch onto GPIO11 and destroys the
-pin. Either double-check that jumper or take a ground from the J3 header, which
-has no 5 V neighbour.
+⚠️ The nearest ground, J1 pin 15, sits **directly beside 5V**, and so does
+GPIO3, which the reset button now uses. A ground jumper off by one position
+puts 5 V onto a signal pin and destroys it. Either double-check that jumper or
+take a ground from the J3 header, which has no 5 V neighbour.
 
 ### Edges, never levels
 
@@ -199,7 +252,7 @@ and serves a form. **Partly built** — see roadmap step 9 for what runs today.
            ├── valid   → station mode, connect, run normally
            └── missing → access point, serve the form, save, reboot
 
-  reset button (GPIO10) held → erase the record, reboot   (lands in "missing")
+  reset button (GPIO3) held → erase the record, reboot    (lands in "missing")
 ```
 
 **One way in, not two.** The button erases rather than signalling, so "no valid
@@ -214,9 +267,9 @@ the outside of the case rather than a flash-empty check alone.
 
 ### The button is not the hub switch
 
-GPIO11 is the rotor microswitch, inside the mechanism and unreachable once
-assembled. The reset button is a separate part on **GPIO10** — the other header
-pin with no alternate function — and goes somewhere you can press it.
+GPIO2 is the rotor microswitch, inside the mechanism and unreachable once
+assembled. The reset button is a separate part on **GPIO3**, and goes somewhere
+you can press it.
 
 ### The setup network
 
@@ -306,9 +359,102 @@ room for DNS later.
 Rebooting out of it would only return to setup mode, and a unit that gives up
 while you are fetching your phone is worse than one that waits.
 
-Then the reset button: GPIO10, debounced like `switch.rs`, held for a few
-seconds so a brush cannot wipe a working feeder; on release, `store.erase()`
-and `software_reset()`.
+The reset button is already built — see *The outside button* below. It erases at
+power-on rather than at runtime, so by the time setup mode exists the "no valid
+record" state is reachable without any further work.
+
+### Credentials: getting them out of the binary
+
+**Specified, not built.** The goal is one mechanism that serves development and
+production, with the Wi-Fi password never compiled into the firmware at all.
+
+The temptation is to keep `seed_config` and formalise it — cfg.toml supplies
+defaults, flash is seeded at first boot, the reset button wipes. It works, and
+the dev loop is pleasant. But it makes compiled-in credentials permanent, which
+is the exact thing this step exists to remove, and it leaves a release binary
+carrying a Wi-Fi password for a house it may never be installed in.
+
+**Write the record from the host instead.** `provisioning::Record::encode` is
+pure and already host-tested, so the same code the firmware uses can produce the
+bytes on a laptop, and `espflash` can put them straight into the `nvs`
+partition — the one `espflash` otherwise never touches, which is exactly why
+configuration already survives a reflash.
+
+```sh
+./dev/provision.sh            # cfg.toml -> record -> flash, once per board
+cargo run                     # forever after; credentials are already there
+```
+
+Three pieces:
+
+1. **`examples/mkrecord.rs`**, built for the **host**, not the board. An example
+   rather than a second `[[bin]]`, because `[[bin]]` is the firmware and is
+   board-targeted; examples compile for the host since `provisioning.rs` sits
+   above the gate in `lib.rs`. It reads `cfg.toml` with the `toml` crate — a
+   dev-dependency, mirroring the existing build-dependency — and writes
+   `MAX_RECORD_LEN` bytes, padded with `0xFF` so the image is deterministic and
+   matches what erased flash looks like around it.
+2. **`dev/provision.sh`** — build the record, then
+   `espflash write-bin 0x9000 record.bin`. That version of `espflash` takes an
+   address only, with no `--partition` flag, so 0x9000 is written in the script.
+   It is the default table's `nvs` offset and the firmware prints its own answer
+   at boot (`store: nvs at 0x9000, 24576 bytes`), so the two can be checked
+   against each other rather than assumed.
+3. **The deletions**, exactly as roadmap step 9 already lists them:
+   `seed_config`, `load_config`, `Config::to_record`, `parse_u16`, the key loop
+   and CI placeholders in `build.rs`, and the six credential lines in
+   `cfg.toml.example`. `cfg.toml` keeps the credentials, but only as input to
+   `provision.sh` — they never reach a compiler. `ap_secret` stays build-time,
+   because it is a salt rather than a credential and the firmware must derive
+   the same AP password the sticker shows.
+
+**Sequencing, and the one thing that blocks.** Pieces 1 and 2 are independently
+useful and can land immediately: they make the dev loop *faster* than it is
+today, because a provisioned board keeps its credentials across every reflash
+and nothing has to be re-seeded. Piece 3 cannot land until setup mode exists,
+because deleting the fallback leaves an unprovisioned unit with nowhere to go.
+
+**What this also buys.** The same script provisions the three Zeros without ever
+raising an access point or typing on a phone, which makes step 6 a good deal
+less tedious, and it is the natural way to re-provision a unit whose Wi-Fi
+password changed while it is still on the bench.
+
+**To verify:** provision a board, reflash the application, and look for
+`store: configured for ...` with **no** `store: seeded from cfg.toml` line after
+it. That single absent line is the whole proof.
+
+### The outside button
+
+GPIO3, outside the case, distinct from the hub microswitch on GPIO2 which is
+sealed inside the mechanism. Two runtime gestures and one boot gesture, all in
+`button.rs` as pure logic.
+
+| Gesture | Effect |
+|---|---|
+| hold 2 s | **arm**. LED blinks cyan twice a second |
+| tap while armed | feed one portion, and refresh the window |
+| tap while locked | nothing, but says so on the console |
+| nothing for 10 s | locks again |
+| **held through power-on, 3 s** | erase the record |
+
+**The adversary is cats, not clumsiness.** A button on the outside of a cat
+feeder that dispenses food when pressed is a button cats will learn to press —
+food is the strongest reinforcer there is and a cat has all day to experiment.
+That is the whole reason for arming, and it is why a tap alone does nothing.
+**Recess the button** as well: needing a fingertip defeats a paw outright, and
+mechanical protection cannot be got round by a lucky sequence.
+
+**Reset is a boot gesture on purpose.** Sharing one button between feeding and
+erasing means separating them by hold duration, and the failure mode writes
+itself: hold a beat too long on a working feeder and its credentials are gone,
+with three units already screwed into place. Requiring a power cycle means it
+cannot happen by accident at all. It costs one GPIO read on an ordinary boot —
+only a boot that begins with the button held waits the three seconds.
+
+Arming outranks every fault on the LED. The case that settles it: the broker is
+down, which is precisely when manual feeding matters, and being re-told the
+network is out is less useful than seeing that the tap will land. Whatever it
+hides is still there ten seconds later.
 
 **Verifying this needs a phone.** The console can show the access point
 starting, a station associating, and a request arriving, but joining the network
@@ -408,6 +554,54 @@ to each unit's topic.
 A feeder left paused is the one failure mode where cats do not eat and nothing
 alarms. Keep `paused` visible in the state payload and as a switch in HA.
 
+## The RGB LED
+
+The onboard WS2812 on GPIO8 is the unit's second output channel, and the only
+one that survives the network being the broken thing. Full reasoning is in
+`indicator.rs`'s module docs; the rules that matter from outside:
+
+| State | LED |
+|---|---|
+| jammed | **solid** red |
+| feeding | **solid** white |
+| button armed | cyan, one flash every 0.5 s |
+| setup mode (step 9) | blue, one flash every 2 s |
+| no Wi-Fi | red ×1 every 3 s |
+| no broker | red ×2 every 3 s |
+| no trusted time | red ×3 every 3 s |
+| paused | amber ×1 every 5 s |
+| healthy | green ×2, **then dark indefinitely** |
+
+Three things here are decisions rather than taste:
+
+- **Dark is healthy.** If lit were the normal state, lit would carry no
+  information and nobody would look at it. The cost — dark no longer separates
+  healthy from dead — is mostly paid back by a brown-out reboot replaying the
+  green confirmation, so a boot loop reads as a repeating double flash.
+- **Faults are counted, not coloured.** One, two and three point at the router,
+  the broker address, and Home Assistant's publish automation — three different
+  fixes. Counting flashes works across a dark room and for a colour-blind
+  reader; distinguishing amber from orange through a diffuser does not.
+- **Solid means the mechanism, blinking means the network.** That is what keeps
+  a jam unambiguous without a fourth count nobody could count.
+
+Green flashes on *entering* the healthy state, so it also marks a feed
+finishing cleanly and a dropped connection coming back.
+
+**The wire order is RGB, not the GRB the WS2812B datasheet specifies.** That is
+empirical, from the dev kit: sending GRB inverted the whole palette, so every
+red fault code blinked green and the healthy confirmation flashed red — with the
+console still cheerfully logging `led: Jammed` next to a green LED. The two
+boards are not guaranteed to carry the same part, so the power-on sweep names
+each primary as it shows it and settles the question on a Zero in one flash.
+`led::wire_word` is the single place to change it.
+
+**Getting it outside the case costs nothing.** On the Zero, GPIO8 is on the
+back pad row as well as being the onboard LED's DIN. An external WS2812 wired
+there sits in parallel on the same data line — both parts latch the first 24
+bits and show the same colour. No second pin, no second RMT channel, no
+firmware change, which is why `led.rs` sends 24 bits and not 48.
+
 ## Toolchain
 
 - Rust stable + `riscv32imac-unknown-none-elf` (RISC-V — no espup needed).
@@ -482,8 +676,13 @@ src/
   feeder.rs       owns motor + switch; FEED queue, align, 800 ms spacing,
                   count, brake, jam timeout
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
+  button.rs       pure logic: what a press of the outside button means
+  indicator.rs    pure logic: what the LED shows, the priority ladder, the
+                  blink timing
+  led.rs          the WS2812 itself, over RMT. Colours in, bits out
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
-  wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed
+  wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed,
+                  Connectivity
   provisioning.rs pure logic: the flash record, setup-network credentials,
                   the setup form and just enough HTTP
   sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
@@ -498,8 +697,9 @@ homeassistant/packages/cat_feeder.yaml
 
 Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
 `feeder` (owns the motor), `schedule` (owns the clock, ticks once a second and
-re-aligns). They communicate through the one `wiring::Bus` static, which names
-every shared handle and documents who writes each one.
+re-aligns), `indicator` (owns the LED). They communicate through the one
+`wiring::Bus` static, which names every shared handle and documents who writes
+each one.
 
 ## Conventions
 
@@ -534,8 +734,10 @@ every shared handle and documents who writes each one.
 6. ✅ Board feature: `board-devkit` (default) / `board-zero`, selecting the pin
    map, the board name and `esp-println`'s interface (`uart` vs `jtag-serial`).
    Both variants build and lint; the dev kit path is verified on hardware.
-   Still to do: flash the three production units, and confirm GPIO11 exists on
-   the Zero's pad map before wiring one
+   The Zero's pad map has now been checked, and it cost the two pins the design
+   had picked: **GPIO10 and GPIO11 are not brought out on that board**, so the
+   switch moved to GPIO2 and the reset button to GPIO3, on both boards rather
+   than diverging. Still to do: flash the three production units
 7. ✅ Home Assistant: automations publishing time (every minute) + schedule,
    the pause helper and a feed-all script, in
    `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
@@ -580,9 +782,9 @@ INFO - clock: live time 2026-09-15T21:46:00+02:00, schedule armed
 The consequence to know about: a unit that reboots while Home Assistant is down
 but the broker is up will **not feed at all** until Home Assistant returns.
 That is deliberate, and the same rule as *power-cycled and no broker → wait,
-never guess*. It is only visible on the console, so a unit stuck at
-`schedule holding` is silent to Home Assistant — though if Home Assistant is
-down, it could not have raised the alarm either.
+never guess*. Home Assistant cannot be told — it is the thing that is down — so
+this used to be visible only on a serial console. It is now **three red flashes
+on the LED**, which is the whole reason step 10 exists.
 
 9. Provisioning: credentials from flash, setup over the unit's own access
    point. Independent of steps 3, 6 and 8 — see *Provisioning* above.
@@ -606,7 +808,12 @@ down, it could not have raised the alarm either.
      software_reset()` is the reboot after saving.
      **Final verification needs a phone** — joining the network and submitting
      the form is not something the bench scripts can do.
-   - ⬜ the reset button on GPIO10
+   - ✅ the reset button on GPIO3, as a **boot** gesture rather than a runtime
+     one — see *The outside button*. Erases today; becomes a true reset when the
+     fallback below goes, since `seed_config` currently writes it straight back
+   - ⬜ `examples/mkrecord.rs` + `dev/provision.sh`, writing the record from the
+     host — specified in *Credentials: getting them out of the binary*. Can land
+     before setup mode and makes the dev loop faster on its own
    - ⬜ retire build-time credentials once setup mode works. `cfg.toml` keeps
      `ap_secret` and nothing else, and the Wi-Fi password stops being compiled
      into the binary at all. To delete, together:
@@ -622,6 +829,35 @@ down, it could not have raised the alarm either.
      `Config` stays; it is what the rest of the firmware consumes. Only its
      source changes, which is what `load_config()` was a seam for.
 
+10. Status LED. Independent of every other step. See *The RGB LED* above.
+    - ✅ the pure layer: priority ladder, patterns and blink timing, 19 host
+      tests in `indicator.rs`, including counting the flashes back out of a
+      rendered pattern so the LED cannot claim a code it does not show
+    - ✅ the WS2812 over RMT (`led.rs`), hand-written rather than pulling in
+      `esp-hal-smartled`, which pins to HAL versions the way `esp-storage` does
+    - ✅ the three facts the LED needed that no other task could see —
+      association, the broker connection and clock trust — lifted onto
+      `wiring::Connectivity`
+    - ✅ verified on the dev kit, by eye: the power-on sweep, red ×1/×2/×3,
+      amber for paused, and solid red for a jam. Each `led:` line lands 6–20 ms
+      after the event that caused it, and the state topic confirms the feed and
+      jam transitions independently of the console.
+      Solid white and the green ×2 confirmation were not separately eyeballed
+      and do not need to be: white is `(16,16,16)`, so no channel order can
+      change it, and that green is the same one the sweep shows correctly
+    - ✅ a red/green/blue sweep at power-on (`led_selftest` in `main.rs`). Kept,
+      not a leftover: with dark as the healthy state, a dead LED otherwise looks
+      exactly like a unit with nothing to report, and this is the only moment
+      that distinction is made
+    - ⬜ tune the palette once a unit is in a kitchen. The constants in
+      `indicator.rs` are dim on purpose but were picked by eye, and green reads
+      much brighter than blue at the same number
+    - ⬜ an external WS2812 on the Zero's GPIO8 pad, in parallel with the
+      onboard one. Needs no firmware change — see *The RGB LED*
+    - ⬜ wire `Health::setup` when step 9's access point lands. It is the one
+      field `Bus::health()` hardcodes to `false`, and it is hardcoded rather
+      than kept as an always-false atomic so it cannot read as live wiring
+
 Steps 3, 6 and 8 wait on hardware rather than on code:
 
 | Blocked step | Waiting for |
@@ -630,8 +866,44 @@ Steps 3, 6 and 8 wait on hardware rather than on code:
 | 6, flashing the three Zeros | the boards |
 | 8, retiring the PCBs | 3 and 6 |
 
-Later (not now): a short press on the GPIO10 button feeding one portion, so a
-manual feed works with the broker down; battery backup; buzzer.
+Later (not now): a short press on the GPIO3 button feeding one portion, so a
+manual feed works with the broker down; battery backup.
+
+**A display, if a part can be found that fits.** The original LCD window is
+40 × 18 mm, which points at a 0.91" 128×32 I²C OLED — roughly a 38 × 12 mm
+module, two pins, a 512-byte framebuffer, and two lines of about 21 characters.
+The common 0.96" 128×64 is the wrong shape: its module is near enough square at
+27 mm tall and will not go in.
+
+What sells it is setup mode. A unit currently cannot tell you the password of
+the network it just raised, which is the whole reason for the salted derivation,
+`dev/ap-password.sh` and printing stickers before first power-on. A screen says
+it directly:
+
+```text
+cat-feeder-db0260        no broker           waiting for time
+DAKS-2W9X-NVQG           192.168.68.108      HA not publishing
+```
+
+The salt is still needed — it is what stops a stranger deriving the password
+from the MAC in the beacon — but the sticker drops from required to backup.
+
+It does not make the LED redundant: at 0.91" you read a screen standing at the
+feeder, while the LED answers *is anything wrong* from the doorway. Three things
+to settle first: OLED burn-in over years of showing `next 08:00` (blank it, and
+wake on the GPIO3 button — which then collides with short-press-to-feed above,
+so those need splitting), that the same blanking handles night glare, and that
+the split stays the same as everywhere else in this codebase — a pure layer
+deciding *what to show*, host-tested, and a gated task that pushes pixels.
+
+**Dropped, after investigation: sound.** The feeder's `cicalino` turned out to
+be a *loudspeaker*, not a buzzer — mylar cone, `SPK+`/`SPK−` on the original
+board, and a `Play\REC` button on the front for recording a voice clip. So it
+cannot be driven from a GPIO at all (8 Ω would ask for ~400 mA) and would want
+a transistor at minimum or an I²S Class-D amp for anything better. The argument
+that the cats are already conditioned to it dies with that discovery: a recorded
+clip is not cheaply reproducible, the conditioning breaks either way, and cats
+relearn a food cue in days. Not worth the parts.
 
 Also later: a configured feeder timezone (`Europe/Rome`) so the unit can apply
 the offset itself and work out DST, instead of assuming it shares a timezone
