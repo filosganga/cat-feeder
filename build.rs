@@ -23,37 +23,35 @@ fn is_embedded_target() -> bool {
     std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none")
 }
 
-/// Reads `cfg.toml` and exposes its values to the firmware as `env!()` vars.
+/// Exposes `ap_secret` from `cfg.toml` to the firmware as an `env!()` var.
 ///
-/// Keeping credentials here rather than in the source means they stay out of
-/// git, and it is the seam a later runtime-provisioning version plugs into:
-/// only `config::load_config` changes, not its callers.
+/// **One value, and deliberately only one.** Wi-Fi and broker credentials used
+/// to be compiled in from here; they are not any more. They reach a unit either
+/// through `dev/provision.sh`, which writes them straight into the `nvs`
+/// partition without a compiler, or through the setup form over the unit's own
+/// access point. A release binary therefore carries no network credentials at
+/// all — see *Credentials: getting them out of the binary* in CLAUDE.md.
+///
+/// `ap_secret` stays because it is not a credential: it salts the per-unit
+/// setup password, and the firmware has to derive the same string that
+/// `dev/ap-password.sh` prints on a sticker. There is nowhere else it could
+/// live that both sides can read.
 fn inject_config() {
     println!("cargo:rerun-if-changed=cfg.toml");
 
     let path = std::path::Path::new("cfg.toml");
     if !path.exists() {
-        // cfg.toml is git-ignored, so CI never has one. Build with obvious
-        // placeholders there so compilation, clippy and fmt are still checked;
-        // the resulting binary is not meant to be flashed.
+        // cfg.toml is git-ignored, so CI never has one. A placeholder salt
+        // still builds, lints and tests; the binary is not meant to be flashed,
+        // and with no credentials compiled in there is nothing to leak by it.
         if std::env::var_os("CI").is_some() {
-            println!("cargo:warning=cfg.toml missing; building with placeholder credentials");
-            for (key, value) in [
-                ("WIFI_SSID", "ci-placeholder"),
-                ("WIFI_PASSWORD", "ci-placeholder"),
-                ("MQTT_HOST", "127.0.0.1"),
-                ("MQTT_USER", "ci-placeholder"),
-                ("MQTT_PASSWORD", "ci-placeholder"),
-                ("MQTT_PORT", "1883"),
-                ("AP_SECRET", "ci-placeholder"),
-            ] {
-                println!("cargo:rustc-env=CFG_{key}={value}");
-            }
+            println!("cargo:warning=cfg.toml missing; building with a placeholder ap_secret");
+            println!("cargo:rustc-env=CFG_AP_SECRET=ci-placeholder");
             return;
         }
 
-        // Locally, fail loudly. A firmware built with placeholder credentials
-        // would flash fine and then fail to join Wi-Fi for no visible reason.
+        // Locally, fail loudly. A firmware built with a placeholder salt would
+        // flash fine and then show a setup password that no sticker matches.
         panic!(
             "\n\n  cfg.toml is missing.\n  \
              Copy the template and fill it in:\n\n      \
@@ -64,40 +62,19 @@ fn inject_config() {
     let text = std::fs::read_to_string(path).expect("failed to read cfg.toml");
     let table: toml::Table = text.parse().expect("cfg.toml is not valid TOML");
 
-    for key in [
-        "wifi_ssid",
-        "wifi_password",
-        "mqtt_host",
-        "mqtt_user",
-        "mqtt_password",
-        // Salts the setup network's password. Not a network credential; see
-        // "Provisioning" in CLAUDE.md for why it stays a build-time value.
-        "ap_secret",
-    ] {
-        let value = table
-            .get(key)
-            .unwrap_or_else(|| panic!("cfg.toml is missing `{key}`"))
-            .as_str()
-            .unwrap_or_else(|| panic!("cfg.toml: `{key}` must be a string"));
+    let value = table
+        .get("ap_secret")
+        .unwrap_or_else(|| panic!("cfg.toml is missing `ap_secret`"))
+        .as_str()
+        .unwrap_or_else(|| panic!("cfg.toml: `ap_secret` must be a string"));
 
-        // A newline would silently truncate the value in the emitted env var.
-        assert!(
-            !value.contains('\n'),
-            "cfg.toml: `{key}` must not contain a newline"
-        );
+    // A newline would silently truncate the value in the emitted env var.
+    assert!(
+        !value.contains('\n'),
+        "cfg.toml: `ap_secret` must not contain a newline"
+    );
 
-        println!("cargo:rustc-env=CFG_{}={}", key.to_uppercase(), value);
-    }
-
-    let port = table
-        .get("mqtt_port")
-        .unwrap_or_else(|| panic!("cfg.toml is missing `mqtt_port`"))
-        .as_integer()
-        .unwrap_or_else(|| panic!("cfg.toml: `mqtt_port` must be an integer"));
-
-    let port = u16::try_from(port).unwrap_or_else(|_| panic!("cfg.toml: `mqtt_port` out of range"));
-
-    println!("cargo:rustc-env=CFG_MQTT_PORT={port}");
+    println!("cargo:rustc-env=CFG_AP_SECRET={value}");
 }
 
 fn linker_be_nice() {

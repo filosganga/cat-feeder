@@ -128,6 +128,47 @@ means another monitor still holds it. Only one process can own a serial port.
   the 8 MB flash, so this is a symptom of a debug build bloating rather than a
   real limit. `[profile.dev]` already sets `opt-level = "s"` for that reason.
 
+## Flash writes that seem not to stick
+
+Two separate traps, both of which look like "the write silently failed".
+
+### The board rewrote it between your two commands
+
+`espflash erase-region` and `write-bin` **hard-reset the chip when they finish**
+(`--after hard-reset` is the default). The board then boots whatever firmware is
+already on it — which is not necessarily the firmware you are about to flash.
+
+This cost real time once. The sequence was:
+
+```sh
+espflash erase-region 0x9000 0x1000     # record gone...
+./dev/flash.sh                          # ...and back again
+```
+
+The erase worked. The reset then booted the *old* firmware, which still had
+`seed_config`, and it wrote `cfg.toml` into flash within 350 ms — long before
+the new binary was built, let alone flashed. The new firmware booted and found
+a perfectly valid record.
+
+The giveaway is that the record is *valid and current*, not corrupt. A failed
+write leaves `store: no record yet`; a rewrite leaves
+`store: configured for ...` with values you recognise.
+
+**So: flash the new firmware first, then erase.** Whatever is running is what
+gets a chance to write. `seed_config` is gone, so nothing in the current
+firmware rewrites flash at boot — but anything added later that does will
+recreate this exactly.
+
+### `write-bin` does not erase
+
+NOR flash can only clear bits, so writing a record over an existing one ANDs the
+two together. `FDR2` written over `FDR1` becomes `FDR0`, and the firmware
+reports `store: no record yet` — which reads as the write having failed rather
+than as corruption.
+
+`dev/provision.sh` erases the sector first, which is why that step is in the
+script and must not be tidied away as redundant.
+
 ## The board resets
 
 Read the `rst:` line in the boot banner. A healthy power-on shows:

@@ -635,6 +635,25 @@ the moment the motor starts is the 220 µF capacitor, not the firmware. See
 
 ## Step 9 — provisioning
 
+### Putting a board into setup mode
+
+Needed constantly while building setup mode, and the order matters:
+
+```sh
+./dev/flash.sh 5                                    # 1. new firmware FIRST
+espflash erase-region --port "$ESPFLASH_PORT" 0x9000 0x1000
+./dev/capture.sh 15                                 # 2. then look
+```
+
+**Flash before erasing, not after.** `erase-region` hard-resets the chip, so
+the board boots immediately — and it boots whatever was already on it. Erasing
+first and flashing second gives the *old* firmware a window to write flash, and
+that is exactly how a supposedly-erased record came back. See
+[troubleshooting.md](troubleshooting.md).
+
+`./dev/provision.sh` puts a record back when you want the board feeding again.
+
+
 Partly built. What runs today is the flash record and the boot decision:
 
 ```

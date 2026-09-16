@@ -951,7 +951,20 @@ on the LED**, which is the whole reason step 10 exists.
      **0.9** not 0.10 — 0.10 requires an esp-hal 1.2 release candidate).
      Verified: found at 0x9000, seeded, and read back across a full reflash
    - ✅ the boot decision, and `Config` borrowing a record instead of `env!()`
-   - ⬜ access point + DHCP server (`edge-dhcp` 0.8, added) + the form over TCP.
+   - ✅ **build-time credentials retired.** `build.rs` now injects one value,
+     `ap_secret`, and nothing else; `seed_config`, `load_config`,
+     `Config::to_record` and `parse_u16` are gone. Verified directly: `strings`
+     on the ELF finds no occurrence of the Wi-Fi password. Deleting the fallback
+     was safe only because `dev/provision.sh` exists — an unconfigured board
+     always has a route back over USB — and doing it now is what makes setup
+     mode reachable at all, since `seed_config` used to refill flash on every
+     empty boot
+   - ✅ setup mode entered from the boot path (`setup.rs`), the access point
+     raised, and the LED showing it. **`AccessPointConfig::default()` is an
+     *open* network**, so `Wpa2Personal` is set explicitly — without it the
+     salted password protects nothing and the setup session, the one where the
+     home Wi-Fi password is typed, is readable by anyone in range
+   - ⬜ DHCP server (`edge-dhcp` 0.8, added) + the form over TCP.
      Verified against the pinned sources before writing it: `interfaces.
      access_point` is an ordinary embassy-net `Interface`; the AP needs no
      explicit start, because `set_config` calls `esp_wifi_start()` whenever the

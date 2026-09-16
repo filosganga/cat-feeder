@@ -237,6 +237,11 @@ pub struct Bus {
     pub last_fed: LastFed,
     /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
     pub net: Connectivity,
+    /// This unit is in setup mode, serving its own network.
+    ///
+    /// Set once, by the boot path, and never cleared: setup mode is left by
+    /// rebooting, not by changing its mind.
+    pub setup: AtomicBool,
     /// The outside button is armed. Written by `button`, read by `indicator`.
     ///
     /// The gesture state itself stays inside the button task — this is only the
@@ -261,6 +266,7 @@ impl Bus {
             schedule: Signal::new(),
             last_fed: LastFed::new(),
             net: Connectivity::new(),
+            setup: AtomicBool::new(false),
             button_armed: AtomicBool::new(false),
         }
     }
@@ -273,10 +279,7 @@ impl Bus {
     pub fn health(&self) -> Health {
         Health {
             button_armed: self.button_armed.load(Ordering::Relaxed),
-            // Always false today. Setup mode is roadmap step 9, and it is the
-            // one that will set it — there is no flag on the bus for it because
-            // an always-false atomic would read as live wiring when it is not.
-            setup: false,
+            setup: self.setup.load(Ordering::Relaxed),
             link: self.net.link(),
             broker: self.net.broker(),
             armed: self.net.armed(),

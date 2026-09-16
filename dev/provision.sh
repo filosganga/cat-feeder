@@ -62,6 +62,15 @@ echo "building the record..."
 cargo run --quiet --example mkrecord --target "$HOST_TARGET" -- \
   --out "$RECORD" "$@"
 
+# Both espflash commands below hard-reset the chip when they finish, so the
+# board boots between them and again at the end. That is harmless today because
+# nothing in the firmware writes flash at boot — setup mode only saves a record
+# when a form is submitted. If that ever changes, this script has a race in it.
+#
+# The same reset is why erasing a record and *then* flashing new firmware does
+# not work: the old firmware gets a boot in which to write flash back. Flash
+# first, erase second.
+#
 # Erase before writing, and not as a precaution: `write-bin` does NOT erase, and
 # NOR flash can only clear bits. Writing a new record over an old one ANDs the
 # two together — which was found the hard way, because `FDR2` written over

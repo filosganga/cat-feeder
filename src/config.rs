@@ -1,21 +1,23 @@
-//! Build-time configuration.
+//! What this unit runs on.
 //!
-//! Values come from `cfg.toml`, injected as environment variables by
-//! `build.rs`. They are compiled into the binary, so changing `cfg.toml`
-//! requires a rebuild rather than only a reflash.
+//! [`Config`] comes from the record in flash and nowhere else. There is no
+//! build-time fallback: network credentials are not compiled into this binary,
+//! they are written to the `nvs` partition by `dev/provision.sh` or by the
+//! setup form. See *Credentials: getting them out of the binary* in CLAUDE.md.
 //!
-//! Everything goes through [`load_config`] so that a later runtime-provisioning
-//! version (captive portal, BLE) is a drop-in replacement for this module and
-//! nothing else has to change.
+//! The one build-time value left is [`AP_SECRET`], which salts the setup
+//! network's password. It is not a credential for any network — it exists so
+//! the firmware and `dev/ap-password.sh` derive the same per-unit string, and
+//! there is nowhere else both could read it from.
 
 use core::fmt::Write as _;
 
 use esp_hal::efuse::{self, InterfaceMacAddress};
+
 use heapless::String;
 
 use crate::feeder::Timings;
-use crate::portions::SCALE_UNCHANGED;
-use crate::provisioning::{DEFAULT_DETENT_MS, Record};
+use crate::provisioning::Record;
 
 /// Wi-Fi and broker settings.
 ///
@@ -55,48 +57,6 @@ impl Config {
             portion_scale_pct: record.portion_scale_pct(),
         }
     }
-
-    /// The same settings as a record, ready to be written to flash.
-    ///
-    /// Only used to seed a unit from `cfg.toml`; the setup form builds its
-    /// record directly from what was typed.
-    pub fn to_record(self) -> Option<Record> {
-        Some(Record {
-            wifi_ssid: String::try_from(self.wifi_ssid).ok()?,
-            wifi_password: String::try_from(self.wifi_password).ok()?,
-            mqtt_host: String::try_from(self.mqtt_host).ok()?,
-            mqtt_port: self.mqtt_port,
-            mqtt_user: String::try_from(self.mqtt_user).ok()?,
-            mqtt_password: String::try_from(self.mqtt_password).ok()?,
-            // `cfg.toml` carries no mechanical figures, and this path is on its
-            // way out anyway — `dev/provision.sh` is what writes a calibrated
-            // record. Defaults here would be overwritten by a real
-            // provisioning run, not relied upon.
-            detent_ms: crate::provisioning::DEFAULT_DETENT_MS,
-            portion_scale_pct: crate::portions::SCALE_UNCHANGED,
-        })
-    }
-}
-
-/// The configuration this firmware was built with.
-///
-/// Still the source for `ap_secret`, which is deliberately build-time. For
-/// Wi-Fi and broker settings this is now only a seed: see the boot path in
-/// `main.rs`.
-pub const fn load_config() -> Config {
-    Config {
-        wifi_ssid: env!("CFG_WIFI_SSID"),
-        wifi_password: env!("CFG_WIFI_PASSWORD"),
-        mqtt_host: env!("CFG_MQTT_HOST"),
-        mqtt_port: parse_u16(env!("CFG_MQTT_PORT")),
-        mqtt_user: env!("CFG_MQTT_USER"),
-        mqtt_password: env!("CFG_MQTT_PASSWORD"),
-        // cfg.toml carries no mechanical figures into the binary; they reach a
-        // unit through `dev/provision.sh`. A board running on this fallback is
-        // unprovisioned, so the reference mechanism is the only honest guess.
-        timings: Timings::from_detent(DEFAULT_DETENT_MS),
-        portion_scale_pct: SCALE_UNCHANGED,
-    }
 }
 
 /// Salts the setup network's password. Not a network credential.
@@ -118,26 +78,4 @@ pub fn device_id() -> String<DEVICE_ID_LEN> {
     // Cannot fail: three bytes as hex is exactly DEVICE_ID_LEN characters.
     let _ = write!(id, "{:02x}{:02x}{:02x}", bytes[3], bytes[4], bytes[5]);
     id
-}
-
-/// Parses a decimal `u16` at compile time, so a bad port in `cfg.toml` fails
-/// the build rather than the boot.
-const fn parse_u16(text: &str) -> u16 {
-    let bytes = text.as_bytes();
-    assert!(!bytes.is_empty(), "mqtt_port must not be empty");
-
-    let mut value: u32 = 0;
-    let mut i = 0;
-    while i < bytes.len() {
-        let digit = bytes[i];
-        assert!(
-            digit >= b'0' && digit <= b'9',
-            "mqtt_port must be decimal digits"
-        );
-        value = value * 10 + (digit - b'0') as u32;
-        assert!(value <= u16::MAX as u32, "mqtt_port is out of range");
-        i += 1;
-    }
-
-    value as u16
 }

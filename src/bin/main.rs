@@ -10,13 +10,13 @@
 use cat_feeder::button::{
     BOOT_RESET_HOLD_MS, Button as ButtonGesture, Event as ButtonEvent, held_at_boot,
 };
-use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id, load_config};
+use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
 use cat_feeder::motor::{LogMotor, MotorDriver};
 use cat_feeder::portions::{Added, MAX_CLICKS};
-use cat_feeder::provisioning::{DecodeError, Record, ap_password, ap_ssid};
+use cat_feeder::provisioning::{DecodeError, Record};
 use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
 use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
@@ -37,7 +37,7 @@ use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::{
     Config as WifiConfig, ControllerConfig, Interface, WifiController, sta::StationConfig,
 };
-use log::{info, warn};
+use log::{error, info, warn};
 
 extern crate alloc;
 
@@ -128,7 +128,14 @@ async fn main(spawner: Spawner) -> ! {
     let button = Switch::new(button_pin!(peripherals));
     let wipe = reset_held_at_boot(&button).await;
 
-    let cfg = resolve_config(peripherals.FLASH, id, wipe);
+    // No usable record means setup mode, and setup mode never returns. It is
+    // entered before any task that assumes a network, because there is not
+    // going to be one.
+    let Some(cfg) = resolve_config(peripherals.FLASH, wipe) else {
+        BUS.setup.store(true, Ordering::Relaxed);
+        spawner.spawn(button_task(button).expect("failed to create button task"));
+        cat_feeder::setup::run(peripherals.WIFI, id, AP_SECRET).await
+    };
 
     spawner.spawn(button_task(button).expect("failed to create button task"));
 
@@ -172,25 +179,27 @@ async fn main(spawner: Spawner) -> ! {
     mqtt::run(stack, cfg, id.as_str(), &BUS).await
 }
 
-/// Decides which credentials this unit runs on.
+/// Decides which credentials this unit runs on, or that there are none.
 ///
-/// Flash is the source of truth. A unit that has been set up keeps its
-/// credentials across every reflash, because `espflash` rewrites only the app
-/// partition — which is what makes `cargo run` bearable during development.
+/// Flash is the only source. A unit that has been set up keeps its credentials
+/// across every reflash, because `espflash` rewrites only the app partition —
+/// which is what makes `cargo run` bearable during development.
 ///
-/// **The seed-from-`cfg.toml` path below is temporary.** It exists so the flash
-/// store can be exercised before the access point is built. Once setup mode
-/// lands, an unconfigured unit raises its own network and serves the form
-/// instead of quietly adopting whatever the binary was built with. Roadmap
-/// step 9.
-fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, id: &str, wipe: bool) -> Config {
+/// `None` means setup mode. There is deliberately **no build-time fallback**
+/// any more: credentials compiled into the binary were what roadmap step 9 set
+/// out to remove, and `dev/provision.sh` writes a record over USB without a
+/// compiler — so an unconfigured board is never stranded. It either gets a
+/// record from the host or asks for one over its own network.
+fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Option<Config> {
     let mut store = match Store::new(flash) {
         Ok(store) => store,
         Err(e) => {
             // Without the partition there is nowhere to keep credentials, so
-            // the unit can only run on what it was built with.
-            warn!("store: no nvs partition ({e:?}), using build-time config");
-            return load_config();
+            // this unit cannot be configured by either route. That is a build
+            // or flashing fault rather than a runtime condition, and setup mode
+            // would be a lie — it could not save what it was given.
+            error!("store: no nvs partition ({e:?}); this unit cannot be configured");
+            return None;
         }
     };
 
@@ -199,28 +208,25 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, id: &str, wipe: b
 
     if wipe {
         match store.erase() {
-            // Note what this currently costs you: `seed_config` below writes
-            // the build-time credentials straight back, so today a wipe is
-            // visible only in the log. It becomes a real reset when setup mode
-            // lands and that fallback goes — roadmap step 9.
             Ok(()) => warn!("store: erased by the boot button"),
             Err(e) => warn!("store: erase failed ({e:?})"),
         }
     }
 
-    stored_config(&mut store).unwrap_or_else(|| seed_config(&mut store, id))
+    stored_config(&mut store)
 }
 
 /// The credentials already in flash, if there are any worth using.
 ///
-/// Its own function, never inlined, because a `Record` is 284 bytes and the
-/// moves in and out of one do not get elided at this optimisation level. Three
-/// of them in a single frame is past the stack budget this crate denies on.
+/// Its own function, never inlined, because a `Record` is a few hundred bytes
+/// and the moves in and out of one do not get elided at this optimisation
+/// level. Three of them in a single frame is past the stack budget this crate
+/// denies on.
 #[allow(
     clippy::large_stack_frames,
-    reason = "a Record is 284 bytes and decoding one cannot avoid building it by \
-    value; a few copies land in one frame. This runs once, at boot, on main's own \
-    task rather than nested inside an async frame that is held for the life of the \
+    reason = "a Record is a few hundred bytes and decoding one cannot avoid building \
+    it by value; a few copies land in one frame. This runs once, at boot, on main's \
+    own task rather than nested inside an async frame held for the life of the \
     program. Verified on hardware: no stack overflow, and esp-backtrace would say so."
 )]
 #[inline(never)]
@@ -233,53 +239,22 @@ fn stored_config(store: &mut Store) -> Option<Config> {
             );
             Some(Config::from_record(mk_static!(Record, record)))
         }
+        // Every path below lands in setup mode rather than guessing. A unit
+        // that believes a half-written record sits trying to join a network
+        // that does not exist, with no way back but the button.
         Ok(_) => {
-            warn!("store: record is unusable, re-seeding");
+            warn!("store: record is unusable, going to setup");
             None
         }
         Err(StoreError::Record(DecodeError::NotConfigured)) => {
-            info!("store: no record yet");
+            info!("store: no record yet, going to setup");
             None
         }
         Err(e) => {
-            warn!("store: unreadable ({e:?}), re-seeding");
+            warn!("store: unreadable ({e:?}), going to setup");
             None
         }
     }
-}
-
-/// **TEMPORARY.** Writes the build-time config into flash so an unprovisioned
-/// unit has something to connect with.
-///
-/// This is what setup mode replaces: an unconfigured unit should raise its own
-/// network and ask, not quietly adopt whatever the binary was built with. It
-/// exists now so the flash store can be exercised before the access point
-/// exists. Roadmap step 9.
-#[allow(
-    clippy::large_stack_frames,
-    reason = "a Record is 284 bytes and decoding one cannot avoid building it by \
-    value; a few copies land in one frame. This runs once, at boot, on main's own \
-    task rather than nested inside an async frame that is held for the life of the \
-    program. Verified on hardware: no stack overflow, and esp-backtrace would say so."
-)]
-#[inline(never)]
-fn seed_config(store: &mut Store, id: &str) -> Config {
-    info!(
-        "setup: would raise {} / {}",
-        ap_ssid(id),
-        ap_password(AP_SECRET, id)
-    );
-
-    let cfg = load_config();
-    match cfg.to_record() {
-        Some(record) => match store.save(&record) {
-            Ok(()) => info!("store: seeded from cfg.toml"),
-            Err(e) => warn!("store: could not save ({e:?})"),
-        },
-        None => warn!("store: cfg.toml values do not fit a record"),
-    }
-
-    cfg
 }
 
 /// Whether the button was held down through power-on, meaning "erase".

@@ -143,4 +143,9 @@ first reaches one should correct the file with what it actually showed.
   line you saw.
 - `ESP_LOG` in `.cargo/config.toml` is read at **build time**. Changing the log
   level needs a rebuild, not just a reflash.
+- **Flash new firmware before erasing flash regions, never after.** Both
+  `espflash erase-region` and `write-bin` hard-reset the chip, so the board
+  boots whatever is currently on it and can rewrite what you just erased. This
+  has already cost one debugging session; see
+  [references/troubleshooting.md](references/troubleshooting.md).
 - If the console contradicts the code, trust the console.
