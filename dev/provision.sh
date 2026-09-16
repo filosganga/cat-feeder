@@ -17,8 +17,8 @@
 #
 #   store: configured for <ssid> via <host>:<port>
 #
-# with no "seeded from cfg.toml" line after it. That absent line is the proof
-# the credentials came from flash and not from the binary.
+# An unprovisioned board says "no record yet, going to setup" instead and raises
+# its own Wi-Fi network. There is no third outcome: nothing is compiled in.
 
 set -euo pipefail
 
@@ -89,6 +89,5 @@ espflash write-bin --port "$PORT" "$NVS_OFFSET" "$RECORD"
 
 echo
 echo "done. Reflash the application and look for:"
-echo "    store: configured for ... "
-echo "and NOT:"
-echo "    store: seeded from cfg.toml"
+echo "    store: configured for ..."
+echo "If it says \"no record yet, going to setup\" the write did not land."

@@ -654,32 +654,37 @@ that is exactly how a supposedly-erased record came back. See
 `./dev/provision.sh` puts a record back when you want the board feeding again.
 
 
-Partly built. What runs today is the flash record and the boot decision:
+Partly built, and **observed**. A provisioned board, on every boot including
+after a full reflash:
 
 ```
-INFO (285) - store: nvs at 0x9000, 24576 bytes
-INFO (289) - store: no record yet
-INFO (293) - setup: would raise cat-feeder-db0260 / DAKS-2W9X-NVQG
-INFO (342) - store: seeded from cfg.toml
+INFO (289) - store: nvs at 0x9000, 24576 bytes
+INFO (294) - store: configured for fdlgrm via 192.168.68.108:1883
 ```
 
-and on the next boot, including after a full reflash:
+An unprovisioned one raises its own network instead:
 
 ```
-INFO (290) - store: configured for fdlgrm via 192.168.68.108:1883
+INFO (293) - store: no record yet, going to setup
+INFO (298) - setup: raising cat-feeder-db0260
+INFO (303) - setup: password DAKS-2W9X-NVQG
+INFO (308) - setup: then browse to http://192.168.4.1
+INFO (1228) - setup: access point up
 ```
 
-**That second line is the test.** Configuration lives in the `nvs` partition and
-`espflash` rewrites only the app partition, so a unit keeps its credentials
-across every `cargo run`. If it says `no record yet` twice in a row, the write
+**There is no third outcome**, because there is no build-time fallback left.
+`configured for ...` or `going to setup`, and nothing in between.
+
+Configuration lives in the `nvs` partition and `espflash` rewrites only the app
+partition, so a provisioned unit keeps its credentials across every `cargo run`.
+A board that says `going to setup` twice after a `provision.sh` means the write
 is failing — check `store: nvs at ...` reports a partition at all.
 
-`setup: would raise ...` is the temporary stand-in for setup mode. Cross-check
-that password against `./dev/ap-password.sh`, which derives it independently:
-they must match exactly, or the sticker on the unit is wrong.
+Cross-check the password against `./dev/ap-password.sh <id>`, which derives it
+independently: they must match exactly, or the sticker on the unit is wrong.
 
-`store: seeded from cfg.toml` is also temporary, and disappears when setup mode
-lands — see roadmap step 9.
+The SSID appearing in a phone's Wi-Fi list is the whole of slice 1, and has been
+confirmed. Joining it does nothing yet — DHCP is slice 2.
 
 ### When the access point is built
 

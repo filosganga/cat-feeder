@@ -88,9 +88,10 @@ not the same model can run one binary:
 ./dev/provision.sh --detent-ms 900 --portion-scale 133
 ```
 
-The firmware still falls back to compiling `cfg.toml` in when a board has no
-record. That fallback goes once setup mode lands; `store: seeded from cfg.toml`
-on the console is what tells you a board is running on it.
+**Nothing is compiled in.** A board with no record does not fall back to
+anything — it raises its own Wi-Fi network and asks to be configured. The
+console says `store: configured for ...` or `store: no record yet, going to
+setup`, and there is no third answer.
 
 A healthy boot looks like this:
 
@@ -138,9 +139,10 @@ documented in [dev/README.md](dev/README.md).
 ## Setting up a feeder
 
 > **Partly built.** The pieces below marked *works today* are in and tested.
-> The access point itself is not, so for now a unit is set up over USB with
-> `./dev/provision.sh`, or falls back to credentials compiled in from
-> `cfg.toml`. Roadmap step 9 in [CLAUDE.md](CLAUDE.md) tracks the rest.
+> A unit with no record now raises its setup network, but it does not serve the
+> form yet — so for now a board is configured over USB with
+> `./dev/provision.sh`. Roadmap step 9 in [CLAUDE.md](CLAUDE.md) tracks the
+> rest.
 
 The plan is that a feeder is set up from a phone, with no laptop and no
 toolchain, because the case that actually hurts is not first boot — it is the
@@ -274,7 +276,8 @@ src/
   mqtt.rs         connection, last will, discovery, commands, state
   store.rs        reads and writes the record in the nvs partition
   wiring.rs       what the tasks share
-  config.rs       build-time config and the MAC-derived device id
+  config.rs       Config from the flash record, and the MAC-derived device id
+  setup.rs        setup mode: the unit's own network and the form
 
 build.rs          reads cfg.toml into the build
 dev/              local Mosquitto and Home Assistant, plus the scripts

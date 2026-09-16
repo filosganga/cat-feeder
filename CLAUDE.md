@@ -239,11 +239,11 @@ loop {
   re-aligned on every `time` message. Offline → keep running on the last
   received schedule/time. Power-cycled and no broker → wait, never guess.
 - **No batteries, no sleep modes, no USB detection** in v1.
-- Wi-Fi + MQTT credentials come from **build-time config** (`cfg.toml`,
-  git-ignored, loaded via `build.rs` → `env!()`), read through a `Config`
-  struct / `load_config()`. That seam is being used now: see *Provisioning*
-  below, which replaces the source of those values without changing anything
-  that consumes them. `ap_secret` stays build-time either way.
+- **Wi-Fi + MQTT credentials come from flash and nowhere else.** They are not
+  compiled into the binary: `dev/provision.sh` writes a record over USB, or the
+  setup form writes one over the unit's own access point. `Config` is what the
+  firmware consumes either way. The one build-time value left is `ap_secret`,
+  which salts the setup password and is not a credential for any network.
 - Device id = derived from the MAC. One binary flashes all units.
 - **Never double-feed.** A missed meal is preferable to a double one. Three
   mechanisms in `schedule.rs`, each covering a failure the others cannot see:
@@ -332,9 +332,10 @@ through flash and the boot path reads it. What is missing is everything that
 serves the form. Written out here because the API facts below cost an hour to
 establish and should not be rediscovered.
 
-**A new gated module, `setup.rs`, entered from the boot path instead of
-`seed_config` when there is no record.** It never returns — it reboots once a
-record is saved, so the normal path always starts from a clean boot.
+**A gated module, `setup.rs`, entered from the boot path when there is no
+usable record.** It never returns — it reboots once a record is saved, so the
+normal path always starts from a clean boot. Slice 1 is built; the remaining
+slices are 3 and 4 below.
 
 1. **Raise the access point.** Build `AccessPointConfig` with
    `ap_ssid(id)`, `ap_password(AP_SECRET, id)` and `Wpa2Personal`, then
@@ -382,9 +383,9 @@ record" state is reachable without any further work.
 goal is one mechanism that serves development and production, with the Wi-Fi
 password never compiled into the firmware at all.
 
-The temptation is to keep `seed_config` and formalise it — cfg.toml supplies
-defaults, flash is seeded at first boot, the reset button wipes. It works, and
-the dev loop is pleasant. But it makes compiled-in credentials permanent, which
+The temptation was to keep `seed_config` and formalise it — cfg.toml supplies
+defaults, flash is seeded at first boot, the reset button wipes. It worked, and
+the dev loop was pleasant. But it makes compiled-in credentials permanent, which
 is the exact thing this step exists to remove, and it leaves a release binary
 carrying a Wi-Fi password for a house it may never be installed in.
 
@@ -434,16 +435,12 @@ Three pieces:
    because it is a salt rather than a credential and the firmware must derive
    the same AP password the sticker shows.
 
-**Sequencing, and the one thing that blocks.** Pieces 1 and 2 are done and
-verified on the dev kit — provisioned, reflashed, and still reading
-`store: configured for ...` with no `seeded from cfg.toml` after it. Piece 3
-cannot land until setup mode exists, because deleting the fallback leaves an
-unprovisioned unit with nowhere to go.
-
-Until then both paths coexist: a provisioned board uses its record, and an
-unprovisioned one still falls back to `cfg.toml`. The absent `seeded from
-cfg.toml` line is the only thing that distinguishes them, which is why it is
-the documented check.
+**All three pieces are done.** The deletions were planned to wait until setup
+mode worked, on the reasoning that removing the fallback would strand an
+unprovisioned unit. That ordering predates `provision.sh`: with a USB route to
+write a record, nothing can strand itself, and the deletions had to come *first*
+because `seed_config` refilled flash on every empty boot and made setup mode
+unreachable.
 
 **What this also buys.** The same script provisions the three Zeros without ever
 raising an access point or typing on a phone, which makes step 6 a good deal
@@ -451,8 +448,16 @@ less tedious, and it is the natural way to re-provision a unit whose Wi-Fi
 password changed while it is still on the bench.
 
 **To verify:** provision a board, reflash the application, and look for
-`store: configured for ...` with **no** `store: seeded from cfg.toml` line after
-it. That single absent line is the whole proof.
+`store: configured for ...`. An unprovisioned board says
+`store: no record yet, going to setup` instead and raises its own network —
+there is no third outcome, because there is no fallback left.
+
+That the Wi-Fi password is genuinely absent from the binary is checkable
+directly rather than by reading code:
+
+```sh
+strings target/riscv32imac-unknown-none-elf/debug/cat-feeder | grep -c "<your wifi password>"
+```
 
 ### Per-unit mechanical timing
 
@@ -974,28 +979,21 @@ on the LED**, which is the whole reason step 10 exists.
      **Final verification needs a phone** — joining the network and submitting
      the form is not something the bench scripts can do.
    - ✅ the reset button on GPIO3, as a **boot** gesture rather than a runtime
-     one — see *The outside button*. Erases today; becomes a true reset when the
-     fallback below goes, since `seed_config` currently writes it straight back
+     one — see *The outside button*. Now a true reset: with the fallback gone,
+     erasing drops the unit into setup mode rather than being silently refilled
    - ✅ `examples/mkrecord.rs` + `dev/provision.sh`, writing the record from the
      host. Verified on the dev kit: provisioned, reflashed, still configured
      from flash. See *Credentials: getting them out of the binary*
    - ✅ `FDR2`: the record now also carries the two per-unit mechanical figures,
      so one binary can drive three different mechanisms. Stored and round-tripped;
      `feeder.rs` does not consume them yet, which needs the bench measurements
-   - ⬜ retire build-time credentials once setup mode works. `cfg.toml` keeps
-     `ap_secret` and nothing else, and the Wi-Fi password stops being compiled
-     into the binary at all. To delete, together:
-     - `seed_config` in `main.rs` (marked TEMPORARY), and the build-time
-       fallback beside it — with no credentials to fall back on, a missing
-       `nvs` partition means the unit cannot be provisioned either, so that
-       becomes a loud error rather than a quiet default
-     - `load_config`, `Config::to_record` and `parse_u16` in `config.rs`
-       (`parse_u16` exists only for the port)
-     - the key loop, port parsing and CI placeholders in `build.rs`
-     - the six credential lines in `cfg.toml` and `cfg.toml.example`
+     A missing `nvs` partition is now a loud error rather than a quiet
+     fallback: with no credentials to fall back on, such a unit cannot be
+     configured by either route, and setup mode would be a lie because it could
+     not save what it was given.
 
-     `Config` stays; it is what the rest of the firmware consumes. Only its
-     source changes, which is what `load_config()` was a seam for.
+     `cfg.toml` keeps its credential lines, but only as input to
+     `dev/provision.sh` — they never reach a compiler.
 
 10. Status LED. Independent of every other step. See *The RGB LED* above.
     - ✅ the pure layer: priority ladder, patterns and blink timing, 19 host

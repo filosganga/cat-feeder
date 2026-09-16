@@ -11,7 +11,7 @@
 //!            ├── valid   → station mode, connect, run normally
 //!            └── missing → access point, serve the form, save, reboot
 //!
-//!   reset button held → erase the record, reboot  (lands in "missing")
+//!   reset button held through power-on → erase the record  (lands in "missing")
 //! ```
 //!
 //! There is exactly one way into setup, which is why the button erases rather

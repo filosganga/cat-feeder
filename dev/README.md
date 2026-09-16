@@ -181,11 +181,12 @@ when something does not connect:
 ```
 
 A provisioned board reads them from flash on every boot and keeps them across
-reflashes — the console says `store: configured for ...`. A board with no
-record falls back to values compiled in by `build.rs`, and says
-`store: seeded from cfg.toml`. On that fallback, changing `cfg.toml` needs
-`cargo build` rather than only a reflash; after provisioning it needs
-`./dev/provision.sh` and no rebuild at all.
+reflashes — the console says `store: configured for ...`. Changing any of them
+is `./dev/provision.sh` again, with no rebuild.
+
+A board with **no** record does not fall back to anything: it says
+`store: no record yet, going to setup` and raises its own Wi-Fi network.
+Nothing is compiled into the binary, so there is no third outcome.
 
 ## When the ESP32 cannot connect
 
@@ -200,11 +201,9 @@ docker compose logs -f mosquitto
   address changed, the ESP32 is on a different network, or macOS is blocking
   incoming connections. Check that the Mac and the feeder are on the same
   subnet, and confirm the port is open with `nc -z <lan ip> 1883`.
-- **`New connection` then `not authorised`.** Credentials are wrong. Check
-  which source the board is on: `store: configured for ...` means it is running
-  on what is in flash, so re-run `./dev/provision.sh`; `store: seeded from
-  cfg.toml` means it is on the compiled-in fallback, so the edit needs a
-  `cargo build`.
+- **`New connection` then `not authorised`.** Credentials are wrong. They come
+  from flash, so fix `cfg.toml` and re-run `./dev/provision.sh` — a rebuild
+  changes nothing.
 - **Connects and drops in a loop.** Two units are using the same client id, so
   each kicks the other off. The id derives from the MAC, so this means the
   derivation is broken rather than the network.
