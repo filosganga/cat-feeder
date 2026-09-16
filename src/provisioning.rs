@@ -26,6 +26,10 @@
 //! record will sit trying to join a network that does not exist, with no way in
 //! but the button. The magic catches blank flash and the CRC catches the rest.
 
+use core::fmt::Write as _;
+use core::net::Ipv4Addr;
+use core::str::FromStr as _;
+
 use heapless::String;
 
 /// 802.11 caps an SSID at 32 bytes.
@@ -354,6 +358,82 @@ pub enum FormError {
     BadPort,
     /// A field that cannot be blank was blank.
     Blank(&'static str),
+    /// The broker address was not a literal IPv4 address.
+    ///
+    /// **This firmware has no resolver.** `mqtt.rs` parses `mqtt_host` with
+    /// `Ipv4Addr::from_str` and gives up if that fails, so a hostname typed
+    /// here would be stored, survive a reboot, and leave the unit retrying a
+    /// connection it can never make — with the console the only place saying
+    /// why. Refusing it at the form is the one moment somebody is standing
+    /// there able to fix it.
+    NotAnIp(&'static str),
+}
+
+/// What to call a form field when talking to a person.
+///
+/// The variants above carry the *form* field name, because that is what the
+/// HTML needs in order to put the message beside the right input. A person
+/// reading the page wants the label instead.
+fn label(field: &str) -> &'static str {
+    match field {
+        "wifi_ssid" => "The Wi-Fi network name",
+        "wifi_password" => "The Wi-Fi password",
+        "mqtt_host" => "The broker address",
+        "mqtt_port" => "The broker port",
+        "mqtt_user" => "The broker username",
+        "mqtt_password" => "The broker password",
+        // `decode_value` reports "field" and "percent"/"utf-8" rather than a
+        // name, because it does not know which field it is decoding.
+        _ => "That field",
+    }
+}
+
+impl core::fmt::Display for FormError {
+    /// The sentence shown on the form. Written for whoever is holding the
+    /// phone, so it says what to do rather than what went wrong internally.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Missing(field) => write!(f, "{} is missing.", label(field)),
+            Self::TooLong(field) => write!(f, "{} is too long for this firmware.", label(field)),
+            Self::BadEncoding(_) => write!(f, "That form could not be decoded. Try again."),
+            Self::BadPort => write!(f, "The broker port must be a number from 1 to 65535."),
+            Self::Blank(field) => write!(f, "{} cannot be empty.", label(field)),
+            Self::NotAnIp(field) => write!(
+                f,
+                "{} must be an IP address such as 192.168.1.10. This firmware has no DNS, so a name will not work.",
+                label(field)
+            ),
+        }
+    }
+}
+
+/// A string with the four characters that would break an HTML attribute
+/// replaced by their entities.
+///
+/// Wrapping rather than allocating, because the page is written straight into
+/// the response buffer and there is nowhere to put a second copy.
+///
+/// This is about **correctness before safety**. An SSID may legitimately
+/// contain `&` or `"`, and an unescaped `"` ends the `value="..."` attribute
+/// early: the field silently loses the rest of its contents, and the person
+/// re-typing it has no idea why. That the same escaping also stops an SSID
+/// closing a tag is a second reason, not the first one.
+#[derive(Debug, Clone, Copy)]
+pub struct Escaped<'a>(pub &'a str);
+
+impl core::fmt::Display for Escaped<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for ch in self.0.chars() {
+            match ch {
+                '&' => f.write_str("&amp;")?,
+                '<' => f.write_str("&lt;")?,
+                '>' => f.write_str("&gt;")?,
+                '"' => f.write_str("&quot;")?,
+                _ => f.write_char(ch)?,
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Builds a record from an `application/x-www-form-urlencoded` body.
@@ -381,10 +461,17 @@ pub fn record_from_form(body: &str, previous: Option<&Record>) -> Result<Record,
         return Err(FormError::BadPort);
     }
 
+    let mqtt_host = required(body, "mqtt_host")?;
+    // No resolver on this device, so a name is not a thing that can be tried
+    // later — see `FormError::NotAnIp`.
+    if Ipv4Addr::from_str(&mqtt_host).is_err() {
+        return Err(FormError::NotAnIp("mqtt_host"));
+    }
+
     let record = Record {
         wifi_ssid: required(body, "wifi_ssid")?,
         wifi_password: field(body, "wifi_password")?.unwrap_or_default(),
-        mqtt_host: required(body, "mqtt_host")?,
+        mqtt_host,
         mqtt_port,
         mqtt_user: field(body, "mqtt_user")?.unwrap_or_default(),
         mqtt_password: field(body, "mqtt_password")?.unwrap_or_default(),
@@ -825,7 +912,7 @@ mod tests {
     fn form_encoding_is_decoded() {
         // A password of `p@ss word+1%` as a browser would send it.
         let body = "wifi_ssid=My+Network&wifi_password=p%40ss+word%2B1%25\
-                    &mqtt_host=broker.local&mqtt_port=1883";
+                    &mqtt_host=10.0.0.1&mqtt_port=1883";
         let record = record_from_form(body, None).unwrap();
 
         assert_eq!(record.wifi_ssid.as_str(), "My Network");
@@ -836,7 +923,7 @@ mod tests {
     fn a_multibyte_character_survives_decoding() {
         // Decoding has to assemble the bytes before checking UTF-8, or an
         // accented SSID comes back as an encoding error.
-        let body = "wifi_ssid=Caff%C3%A8&mqtt_host=h&mqtt_port=1883";
+        let body = "wifi_ssid=Caff%C3%A8&mqtt_host=10.0.0.1&mqtt_port=1883";
         assert_eq!(
             record_from_form(body, None).unwrap().wifi_ssid.as_str(),
             "Caffè"
@@ -845,7 +932,7 @@ mod tests {
 
     #[test]
     fn an_open_network_needs_no_password() {
-        let body = "wifi_ssid=Open&wifi_password=&mqtt_host=h&mqtt_port=1883";
+        let body = "wifi_ssid=Open&wifi_password=&mqtt_host=10.0.0.1&mqtt_port=1883";
         let record = record_from_form(body, None).unwrap();
 
         assert!(record.wifi_password.is_empty());
@@ -855,7 +942,7 @@ mod tests {
     #[test]
     fn the_fields_that_cannot_be_blank_are_rejected() {
         assert_eq!(
-            record_from_form("wifi_ssid=&mqtt_host=h&mqtt_port=1883", None),
+            record_from_form("wifi_ssid=&mqtt_host=10.0.0.1&mqtt_port=1883", None),
             Err(FormError::Blank("wifi_ssid"))
         );
         assert_eq!(
@@ -863,7 +950,7 @@ mod tests {
             Err(FormError::Blank("mqtt_host"))
         );
         assert_eq!(
-            record_from_form("mqtt_host=h&mqtt_port=1883", None),
+            record_from_form("mqtt_host=10.0.0.1&mqtt_port=1883", None),
             Err(FormError::Missing("wifi_ssid"))
         );
     }
@@ -873,11 +960,11 @@ mod tests {
         // Quietly falling back to 1883 would hide a typo until the unit failed
         // to connect, with nothing on the form to show for it.
         for body in [
-            "wifi_ssid=s&mqtt_host=h",
-            "wifi_ssid=s&mqtt_host=h&mqtt_port=",
-            "wifi_ssid=s&mqtt_host=h&mqtt_port=0",
-            "wifi_ssid=s&mqtt_host=h&mqtt_port=99999",
-            "wifi_ssid=s&mqtt_host=h&mqtt_port=1883x",
+            "wifi_ssid=s&mqtt_host=10.0.0.1",
+            "wifi_ssid=s&mqtt_host=10.0.0.1&mqtt_port=",
+            "wifi_ssid=s&mqtt_host=10.0.0.1&mqtt_port=0",
+            "wifi_ssid=s&mqtt_host=10.0.0.1&mqtt_port=99999",
+            "wifi_ssid=s&mqtt_host=10.0.0.1&mqtt_port=1883x",
         ] {
             assert_eq!(
                 record_from_form(body, None),
@@ -890,7 +977,7 @@ mod tests {
     #[test]
     fn an_oversized_field_is_refused_not_truncated() {
         let long = core::iter::repeat_n('x', SSID_LEN + 1).collect::<std::string::String>();
-        let body = std::format!("wifi_ssid={long}&mqtt_host=h&mqtt_port=1883");
+        let body = std::format!("wifi_ssid={long}&mqtt_host=10.0.0.1&mqtt_port=1883");
 
         assert_eq!(
             record_from_form(&body, None),
@@ -900,11 +987,101 @@ mod tests {
     }
 
     #[test]
+    fn a_hostname_is_refused_because_there_is_no_resolver() {
+        // The failure this prevents is the quiet one: a name would be stored,
+        // survive the reboot, and leave the unit retrying a connection it can
+        // never make, with the console the only place that says why.
+        for host in [
+            "broker.local",
+            "homeassistant",
+            "mqtt.example.com",
+            "192.168.1",
+            "192.168.1.256",
+            "1.2.3.4.5",
+            "::1",
+            " 192.168.1.10",
+        ] {
+            let body = std::format!("wifi_ssid=s&mqtt_host={host}&mqtt_port=1883");
+            assert_eq!(
+                record_from_form(&body, None),
+                Err(FormError::NotAnIp("mqtt_host")),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dotted_quad_is_accepted() {
+        for host in ["192.168.1.10", "10.0.0.1", "127.0.0.1", "0.0.0.0"] {
+            let body = std::format!("wifi_ssid=s&mqtt_host={host}&mqtt_port=1883");
+            assert_eq!(
+                record_from_form(&body, None).unwrap().mqtt_host.as_str(),
+                host
+            );
+        }
+    }
+
+    #[test]
+    fn the_port_is_judged_before_the_host() {
+        // Both are wrong here. Reporting the port first is what the form shows,
+        // and swapping the order would change the message under someone's
+        // fingers for no reason.
+        assert_eq!(
+            record_from_form("wifi_ssid=s&mqtt_host=nope&mqtt_port=0", None),
+            Err(FormError::BadPort)
+        );
+    }
+
+    #[test]
+    fn every_form_error_says_something_a_person_can_act_on() {
+        // Rendered into the page, so it must name the field in words rather
+        // than echo the HTML input name at somebody.
+        let cases = [
+            (FormError::Missing("wifi_ssid"), "Wi-Fi network name"),
+            (FormError::Blank("mqtt_host"), "broker address"),
+            (FormError::TooLong("wifi_password"), "Wi-Fi password"),
+            (FormError::NotAnIp("mqtt_host"), "192.168.1.10"),
+            (FormError::BadPort, "65535"),
+            (FormError::BadEncoding("utf-8"), "could not be decoded"),
+        ];
+        for (error, expected) in cases {
+            let rendered = std::format!("{error}");
+            assert!(
+                rendered.contains(expected),
+                "{error:?} rendered as {rendered:?}, wanted {expected:?}"
+            );
+            assert!(rendered.ends_with('.'), "{rendered:?} is not a sentence");
+            // The raw form field name must not leak into the page.
+            assert!(!rendered.contains('_'), "{rendered:?} leaks a field name");
+        }
+    }
+
+    #[test]
+    fn a_quote_in_an_ssid_cannot_end_the_attribute_early() {
+        // The bug this prevents is not exotic: the field silently loses
+        // everything after the quote and the person re-typing it never learns
+        // why.
+        let rendered = std::format!("{}", Escaped("Bob\"s <net> & co"));
+        assert_eq!(rendered, "Bob&quot;s &lt;net&gt; &amp; co");
+        assert!(!rendered.contains('"'));
+        assert!(!rendered.contains('<'));
+    }
+
+    #[test]
+    fn escaping_leaves_an_ordinary_ssid_alone() {
+        // Including the characters a Wi-Fi name really does contain. Escaping
+        // an apostrophe or a space would show mojibake on the form.
+        for plain in ["My Network", "Caffe\u{300}", "it's-5GHz_2", ""] {
+            assert_eq!(std::format!("{}", Escaped(plain)), plain);
+        }
+    }
+
+    #[test]
     fn a_broken_percent_escape_is_an_error() {
         for body in [
-            "wifi_ssid=a%&mqtt_host=h&mqtt_port=1883",
-            "wifi_ssid=a%4&mqtt_host=h&mqtt_port=1883",
-            "wifi_ssid=a%zz&mqtt_host=h&mqtt_port=1883",
+            "wifi_ssid=a%&mqtt_host=10.0.0.1&mqtt_port=1883",
+            "wifi_ssid=a%4&mqtt_host=10.0.0.1&mqtt_port=1883",
+            "wifi_ssid=a%zz&mqtt_host=10.0.0.1&mqtt_port=1883",
         ] {
             assert!(matches!(
                 record_from_form(body, None),

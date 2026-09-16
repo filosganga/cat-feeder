@@ -131,10 +131,14 @@ async fn main(spawner: Spawner) -> ! {
     // No usable record means setup mode, and setup mode never returns. It is
     // entered before any task that assumes a network, because there is not
     // going to be one.
-    let Some(cfg) = resolve_config(peripherals.FLASH, wipe) else {
-        BUS.setup.store(true, Ordering::Relaxed);
-        spawner.spawn(button_task(button).expect("failed to create button task"));
-        cat_feeder::setup::run(spawner, peripherals.WIFI, id, AP_SECRET).await
+    let cfg = match resolve_config(peripherals.FLASH, wipe) {
+        Boot::Configured(cfg) => cfg,
+        Boot::Setup(store) => {
+            BUS.setup.store(true, Ordering::Relaxed);
+            spawner.spawn(button_task(button).expect("failed to create button task"));
+            cat_feeder::setup::run(spawner, peripherals.WIFI, id, AP_SECRET, store).await
+        }
+        Boot::Unconfigurable => halt_unconfigurable().await,
     };
 
     spawner.spawn(button_task(button).expect("failed to create button task"));
@@ -185,12 +189,15 @@ async fn main(spawner: Spawner) -> ! {
 /// across every reflash, because `espflash` rewrites only the app partition —
 /// which is what makes `cargo run` bearable during development.
 ///
-/// `None` means setup mode. There is deliberately **no build-time fallback**
-/// any more: credentials compiled into the binary were what roadmap step 9 set
-/// out to remove, and `dev/provision.sh` writes a record over USB without a
-/// compiler — so an unconfigured board is never stranded. It either gets a
-/// record from the host or asks for one over its own network.
-fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Option<Config> {
+/// [`Boot::Setup`] means setup mode. There is deliberately **no build-time
+/// fallback** any more: credentials compiled into the binary were what roadmap
+/// step 9 set out to remove, and `dev/provision.sh` writes a record over USB
+/// without a compiler — so an unconfigured board is never stranded. It either
+/// gets a record from the host or asks for one over its own network.
+///
+/// The `Store` travels into setup mode rather than being dropped here, because
+/// the form has to write what it is given back to the same partition this read.
+fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Boot {
     let mut store = match Store::new(flash) {
         Ok(store) => store,
         Err(e) => {
@@ -199,7 +206,7 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Op
             // or flashing fault rather than a runtime condition, and setup mode
             // would be a lie — it could not save what it was given.
             error!("store: no nvs partition ({e:?}); this unit cannot be configured");
-            return None;
+            return Boot::Unconfigurable;
         }
     };
 
@@ -213,7 +220,35 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Op
         }
     }
 
-    stored_config(&mut store)
+    match stored_config(&mut store) {
+        Some(cfg) => Boot::Configured(cfg),
+        None => Boot::Setup(store),
+    }
+}
+
+/// What the boot path found in flash.
+enum Boot {
+    /// A usable record. Run normally.
+    Configured(Config),
+    /// Writable flash with nothing usable in it. Setup mode, carrying the
+    /// `Store` the form will save through.
+    Setup(Store),
+    /// No `nvs` partition at all, so there is nowhere a record could go.
+    Unconfigurable,
+}
+
+/// Stops, for a unit that cannot be configured by any route.
+///
+/// Deliberately **not** setup mode. With no partition to write, the form would
+/// raise a network, take somebody's Wi-Fi password, and fail at the last step —
+/// and the reset button could not help either, because there is nothing to
+/// erase. Saying so once and stopping is the honest answer; the fix is a build
+/// or flashing one, not something the firmware can do at runtime.
+async fn halt_unconfigurable() -> ! {
+    error!("store: refusing setup mode, because a record could not be saved");
+    loop {
+        Timer::after(Duration::from_secs(60)).await;
+    }
 }
 
 /// The credentials already in flash, if there are any worth using.

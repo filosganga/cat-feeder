@@ -1084,7 +1084,7 @@ on the LED**, which is the whole reason step 10 exists.
       feeder involved at all:
 
       ```sh
-      mosquitto_sub -h <pi> -u feeder -P <pass> -t 'feeder/time' -v
+      MQTT_HOST=<pi> ./dev/watch.sh 'feeder/time'
       ```
 
       A line a minute means the Pi's half is done. Silence means Home Assistant

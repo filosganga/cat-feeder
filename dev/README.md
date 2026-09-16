@@ -93,6 +93,45 @@ feeder/time 2026-09-15T19:51:00.489888+02:00
 feeder/schedule [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
 ```
 
+### The same thing on the Raspberry Pi
+
+The Pi runs Raspberry Pi OS with Docker, so it is the same shape as the stack
+above and the procedure is identical: copy the file into whatever directory is
+mounted as Home Assistant's `/config`, add the same `packages:` line, restart
+the container. It goes over **unchanged** — nothing in it names a host, which is
+why it is tracked in this repo rather than configured per machine.
+
+The same check works against the Pi by setting `MQTT_HOST` — and `MQTT_PASS`
+too, if the feeder user there has a different password from the dev stack's:
+
+```sh
+MQTT_HOST=<pi> ./dev/watch.sh 'feeder/time' 'feeder/schedule'
+```
+
+A line a minute on `feeder/time` is what says the Pi's half is done, and no
+feeder has to be involved at all.
+
+Two things to check there that this compose file already gets right:
+
+- **The container's timezone.** `compose.yaml` sets `TZ: Europe/Rome`, and that
+  is load-bearing rather than cosmetic. Home Assistant publishes its own local
+  time and the feeders apply the wall-clock fields directly, without converting
+  — see *MQTT contract* in CLAUDE.md. Home Assistant left on UTC publishes
+  `+00:00`, every meal silently moves by the offset, and the payload still looks
+  entirely valid. A feeder prints what it was told at startup
+  (`clock: started, ...+02:00`) for exactly this reason: it turns an hour-long
+  error into the first line on the console.
+- **That Mosquitto listens on the LAN**, not just on loopback, or the feeders
+  cannot reach it even though the Pi's own `mosquitto_sub` works fine. The
+  compose file publishes 1883 on all interfaces for the same reason.
+
+⚠️ **Do not point one feeder at both stacks.** Every piece of persistent state
+in this design is a retained message, so a unit moved back to the Mac picks up
+whatever *that* broker last held — quite possibly a schedule from last week,
+which is indistinguishable from a current one. Each unit points at one broker,
+and changing it is a `./dev/provision.sh` run rather than something that can
+happen by accident.
+
 What the package sets up:
 
 | Automation | When | Publishes |
@@ -122,6 +161,7 @@ time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
 ```sh
 ./dev/watch.sh                          # tail feeder/# and homeassistant/#
 ./dev/watch.sh 'feeder/+/state'         # one filter instead
+MQTT_HOST=<pi> ./dev/watch.sh           # ...against the Pi's broker instead
 
 docker compose logs -f mosquitto        # connects, disconnects, auth failures
 docker compose logs -f homeassistant
