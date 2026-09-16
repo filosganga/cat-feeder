@@ -410,7 +410,7 @@ fn on_schedule(payload: &[u8], bus: &'static Bus) {
 
 /// Manual feeds accumulate: this forwards the count and never replaces it.
 ///
-/// The clamp to `MAX_PORTIONS` lives in the feeder, which is the only place
+/// The clamp to `MAX_CLICKS` lives in the feeder, which is the only place
 /// that knows how much is already pending.
 fn on_feed(payload: &[u8], bus: &'static Bus) {
     let Some(portions) = core::str::from_utf8(payload)
@@ -554,7 +554,7 @@ async fn subscribe<N: Transport>(
 
     // At most once would be enough for `feed`, but the retained `paused`,
     // `schedule` and `time` are worth a PUBACK. The duplicate a QoS 1 redelivery
-    // can cause is what `MAX_PORTIONS` guards against.
+    // can cause is what `MAX_CLICKS` guards against.
     let options = SubscriptionOptions::new().at_least_once();
 
     client

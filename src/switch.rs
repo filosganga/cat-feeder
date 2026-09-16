@@ -10,7 +10,7 @@ use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
 ///
 /// At 8 rpm a real click arrives every ~1900 ms, so 30 ms is far below
 /// anything the mechanism can produce and rejects contact bounce comfortably.
-pub const DEBOUNCE: Duration = Duration::from_millis(30);
+pub const DEBOUNCE: Duration = Duration::from_millis(crate::feeder::DEBOUNCE_MS);
 
 /// How often the level is sampled.
 const POLL: Duration = Duration::from_millis(5);

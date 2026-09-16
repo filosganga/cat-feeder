@@ -28,7 +28,7 @@ Three things matter, and only one of them is a number:
 | Figure | What breaks if it differs |
 |---|---|
 | 1 click = 1 portion | every `portions` count, from the HA button to each schedule slot |
-| the detent interval (~1.9 s here) | the 800 ms minimum click spacing and the 5 s jam timeout are both derived from it |
+| the detent interval (~1.9 s here) | the minimum click spacing and the jam timeout are both derived from it — see *Per-unit mechanical timing* |
 | a microswitch on the output hub at all | `switch.rs` assumes a pull-up and a falling edge — an optical or hall sensor is a different shape entirely |
 
 **Clicks per revolution is not on that list**, though it used to be. Nothing in
@@ -45,8 +45,8 @@ to be a switch. See *Per-unit mechanical timing* for where the number goes.
 by counting clicks into a measuring spoon — and compare it with the other two.
 `feeder/schedule` is one retained topic shared by all three, so `portions: 2`
 reaches every unit identically, and a mechanism that dispenses a different
-amount per click needs a per-unit scale. That is designed and half-built: see
-*Per-unit portion size*. What is needed from the bench is the ratio.
+amount per click needs a per-unit scale. That is built: see *Per-unit portion
+size*. What is needed from the bench is the ratio.
 
 Both boards are the same chip; only GPIO numbers differ. Keep the pin map in
 one place (`src/board.rs`) selected by a Cargo feature: `board-devkit`
@@ -95,7 +95,9 @@ extra pin and no firmware change. See roadmap step 10.
 
 Feeding = run forward until N falling edges on the switch, then brake. Stop
 **on** the edge, so the hub always parks in the same position. Safety
-timeout: if no click within 5 s while running → stop, report `jammed`.
+timeout: no click within the jam budget while running → stop, report `jammed`.
+That budget is derived from the unit's detent interval, 4750 ms on the reference
+mechanism.
 
 Switch: **GPIO2**, internal pull-up enabled in software
 (`InputConfig::default().with_pull(Pull::Up)`), other contact to GND. No
@@ -132,8 +134,8 @@ so the state machine is written so the starting level does not matter.
 Without the align phase, a run that starts with the switch free would make the
 first portion short of a full 90°.
 
-**Minimum spacing between clicks: ~800 ms, and it lives in `feeder.rs`, not in
-`switch.rs`.** Just after the motor starts, the hub is sitting right on an edge;
+**Minimum spacing between clicks is derived per unit — 760 ms on the reference
+mechanism — and it lives in `feeder.rs`, not in `switch.rs`.** Just after the motor starts, the hub is sitting right on an edge;
 a fraction of a turn can bounce the switch and produce a spurious falling edge
 at zero rotation. So inside the counting loop, an edge arriving less than 800 ms
 after the previous one, or after the motor started, is discarded. At 8 rpm a
@@ -450,7 +452,8 @@ it. That single absent line is the whole proof.
 
 ### Per-unit mechanical timing
 
-**Specified, not built**, and it depends on the record above.
+**Built and verified.** Changing a unit's calibration is a `provision.sh` flag,
+not a rebuild.
 
 Three units, and one of them a different brand, means the mechanical timings
 cannot stay compile-time constants. But they must not go in `cfg.toml` either:
@@ -466,7 +469,7 @@ bench is the **detent interval** — how long the motor takes to get from one
 click to the next. Both other constants follow from it, and today's
 hand-picked values are very close to what these ratios produce:
 
-| Constant | Rule | At 1900 ms | Today |
+| Constant | Rule | At 1900 ms | The old hand-picked value |
 |---|---|---|---|
 | minimum click spacing | interval × 0.4 | 760 ms | 800 ms |
 | jam timeout | interval × 2.5 | 4750 ms | 5000 ms |
@@ -475,23 +478,31 @@ That agreement is the argument for the ratios: they are not invented, they are
 what the working mechanism already implies. Deriving also keeps the property
 that matters — the spacing threshold has to sit in the empty middle between
 contact bounce (milliseconds) and a real detent — automatically, at any speed,
-instead of needing to be re-reasoned per unit.
+instead of needing to be re-reasoned per unit. `feeder.rs` pins both halves of
+that over every interval from 1 ms to 5 s: never within 4× the debounce, and
+never so wide that a real detent is rejected.
 
-Both need floors for a hypothetically fast mechanism: the spacing must stay well
-clear of the 30 ms debounce in `switch.rs`, or it would start rejecting real
-clicks.
+Both have floors for a hypothetically fast mechanism, expressed against
+`DEBOUNCE_MS` rather than picked freely. That constant now lives in `feeder.rs`,
+with `switch.rs` deriving its `Duration` from it — the gated module depending on
+the pure one, rather than two copies of 30.
 
-**This does not make `feeder.rs` impure.** The constants become parameters on
-`Feeder::new`, which is a change in signature rather than in shape — and the
-tests get better for it, because they can then exercise a fast mechanism and a
-slow one instead of only the one that happens to be on the bench.
+**It did not make `feeder.rs` impure.** `Timings` and the scale are parameters
+on `Feeder::new`, a change in signature rather than in shape, and the tests got
+better for it: they now exercise a fast mechanism and a slow one instead of only
+the one on the bench.
 
-Two consequences to plan for: `Record` grows fields, so the magic goes from
-`FDR1` to `FDR2` and older records are refused as unconfigured (nothing is
-deployed, so this costs nothing now); and `provision.sh` takes a per-unit
-override, with `cfg.toml` supplying only the default — which is where the
-instinct to put it in `cfg.toml` ends up being right, just as *input to the
-tool* rather than as something a compiler ever sees.
+The console says what a unit was calibrated for, once at boot, because a feeder
+behaving oddly is either mis-measured or mis-provisioned and nothing else tells
+them apart:
+
+```
+INFO - feeder: clicks >760 ms apart, jam after 4750 ms, portions x100%
+```
+
+Verified end to end: `./dev/provision.sh --detent-ms 900 --portion-scale 133`
+and the same binary comes back with `clicks >360 ms apart, jam after 2250 ms,
+portions x133%`.
 
 ```sh
 ./dev/provision.sh                      # the cfg.toml default
@@ -500,8 +511,7 @@ tool* rather than as something a compiler ever sees.
 
 ### Per-unit portion size
 
-**Specified and half-built**, in the same record as the timing above. The pure
-part is `portions::clicks_for`, tested; nothing calls it yet.
+**Built**, in the same record as the timing above.
 
 `feeder/schedule` is one retained topic shared by all three units, so a slot
 saying `portions: 2` reaches every feeder as the same request. The feeders are
@@ -516,12 +526,15 @@ becomes four clicks at 133%, or two at 67%.
 **Portions are the contract; clicks are the mechanism.** Everything arriving
 from outside speaks portions — the Home Assistant button, `feeder/<id>/feed`,
 `feeder/all/feed`, every schedule slot — and `clicks_for` is the single place
-they become clicks. Everything downstream of it counts clicks, `MAX_PORTIONS`
+they become clicks. Everything downstream of it counts clicks, `MAX_CLICKS`
 included, which is correct for a cap whose job is protecting the hopper: what
 empties a hopper is clicks, not intentions.
 
-That does leave `MAX_PORTIONS` named for the wrong thing once this lands. Rename
-it with the wiring, not before, so the change is one commit rather than two.
+`MAX_PORTIONS` is now `MAX_CLICKS`, and **raised from 10 to 16**. Ten was the
+old portion cap and the two happened to be the same number; once a scale exists
+they are not. A unit at 150% asked for ten portions wants fifteen clicks, and
+clamping back to ten would silently under-feed the one unit most likely to need
+a scale in the first place.
 
 Two rules worth knowing before reading the code:
 
@@ -600,7 +613,7 @@ are the same number:
 | Constant | Value | Limits |
 |---|---|---|
 | `MAX_SLOTS` (`schedule.rs`) | 8 | **meals per day** |
-| `MAX_PORTIONS` (`portions.rs`) | 10 | portions owed at once, so portions per meal |
+| `MAX_CLICKS` (`portions.rs`) | 16 | clicks owed at once, so the most one meal can turn |
 | `FEED_DEPTH` (`wiring.rs`) | 8 | unread feed **requests** in the channel |
 
 Two meals a day is the usual case, but three, four or five are ordinary and all
@@ -608,8 +621,10 @@ fire. A schedule with more than `MAX_SLOTS` entries is rejected whole rather
 than truncated, because a silently shortened one drops meals with nothing to
 show for it, and the unit keeps running the schedule it already had.
 
-`MAX_PORTIONS` caps a single meal, not the day: eight meals of ten portions is
-80 portions, because the queue drains between them. `FEED_DEPTH` counts
+`MAX_CLICKS` caps a single meal, not the day, because the queue drains between
+them. It counts clicks rather than portions: `portions::clicks_for` runs first,
+in `Feeder::request`, so a unit with a portion scale is capped on what it
+actually dispenses. `FEED_DEPTH` counts
 messages rather than portions — one `feed 3` occupies one of the eight — and
 only matters when producers outrun the feeder task.
 
@@ -645,7 +660,7 @@ Home Assistant MQTT discovery: on connect, publish **retained** config to
 row mean three portions, even if they land while the motor is already running:
 `mqtt` forwards the count into the `FEED` queue and the feeder task absorbs it
 into `pending` without stopping, as described in *The feeder task owns the
-motor*. `MAX_PORTIONS` is 10, clamped with a warning, so a stuck automation
+motor*. `MAX_CLICKS` is 16, clamped with a warning, so a stuck automation
 cannot empty the hopper. There is no "default portion size" — every feed path
 states its own count, the button as `1` and each schedule slot as its own
 `portions`.

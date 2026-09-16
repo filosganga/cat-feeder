@@ -29,7 +29,7 @@ use crate::schedule::{Schedule, TimeSource, Wall};
 ///
 /// Requests, not portions: one `feed 3` occupies one of these. Nothing to do
 /// with `schedule::MAX_SLOTS`, which is meals per day and happens to be the
-/// same number, nor with `portions::MAX_PORTIONS`, which caps a single meal.
+/// same number, nor with `portions::MAX_CLICKS`, which caps a single meal.
 ///
 /// Bounded on purpose: producers use `try_send`, so a stuck automation can
 /// never block the MQTT or schedule task waiting for room.

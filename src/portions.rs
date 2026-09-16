@@ -12,12 +12,23 @@
 //! - A jam discards whatever is outstanding, because feeding a queue into a
 //!   jammed mechanism is worse than losing a meal.
 
-/// Most portions that can ever be outstanding at once.
+/// Most **clicks** that can ever be outstanding at once.
 ///
 /// A cap rather than a guess: Home Assistant's quality-of-service level 1 may
 /// deliver the same publish twice, and an automation stuck in a loop would
 /// otherwise keep the motor running until the hopper is empty.
-pub const MAX_PORTIONS: u8 = 10;
+///
+/// Clicks, not portions, because clicks are what empty a hopper — a cap on
+/// intentions would not protect anything. [`clicks_for`] runs before this, in
+/// `Feeder::request`.
+///
+/// **Raised from 10 to 16 when the portion scale landed.** Ten was the old
+/// portion cap and the two happened to be the same number; once a scale exists
+/// they are not. A unit at 150% asked for ten portions wants fifteen clicks,
+/// and clamping that back to ten would silently under-feed the one unit most
+/// likely to need the scale in the first place. Sixteen leaves headroom without
+/// letting a stuck automation run the hopper dry.
+pub const MAX_CLICKS: u8 = 16;
 
 /// A [`portion_scale`](clicks_for) that changes nothing.
 pub const SCALE_UNCHANGED: u16 = 100;
@@ -68,7 +79,7 @@ pub fn clicks_for(portions: u8, scale_pct: u16) -> u8 {
     let scaled = (portions as u32 * scale_pct as u32 + 50) / 100;
 
     // Never zero, never wrapped. The upper clamp only bites on absurd scales,
-    // and `Pending::add` caps the queue at MAX_PORTIONS anyway.
+    // and `Pending::add` caps the queue at MAX_CLICKS anyway.
     scaled.clamp(1, u8::MAX as u32) as u8
 }
 
@@ -94,7 +105,7 @@ impl Pending {
         Self { count: 0 }
     }
 
-    /// Adds a request to the outstanding total, saturating at [`MAX_PORTIONS`].
+    /// Adds a request to the outstanding total, saturating at [`MAX_CLICKS`].
     ///
     /// Never replaces the current total. That is the whole point: a request
     /// arriving mid-feed must add to what is already owed.
@@ -104,7 +115,7 @@ impl Pending {
         }
 
         let wanted = self.count.saturating_add(portions);
-        let capped = wanted.min(MAX_PORTIONS);
+        let capped = wanted.min(MAX_CLICKS);
         let dropped = wanted - capped;
         self.count = capped;
 
@@ -247,9 +258,9 @@ mod tests {
     #[test]
     fn clamps_at_the_cap_and_reports_what_was_dropped() {
         let mut pending = Pending::new();
-        assert_eq!(pending.add(MAX_PORTIONS), Added::All);
+        assert_eq!(pending.add(MAX_CLICKS), Added::All);
         assert_eq!(pending.add(3), Added::Clamped { dropped: 3 });
-        assert_eq!(pending.count(), MAX_PORTIONS);
+        assert_eq!(pending.count(), MAX_CLICKS);
     }
 
     #[test]
@@ -259,10 +270,10 @@ mod tests {
         assert_eq!(
             pending.add(u8::MAX),
             Added::Clamped {
-                dropped: u8::MAX - MAX_PORTIONS
+                dropped: u8::MAX - MAX_CLICKS
             }
         );
-        assert_eq!(pending.count(), MAX_PORTIONS);
+        assert_eq!(pending.count(), MAX_CLICKS);
     }
 
     #[test]
@@ -271,7 +282,7 @@ mod tests {
         for _ in 0..10 {
             pending.add(u8::MAX);
         }
-        assert_eq!(pending.count(), MAX_PORTIONS);
+        assert_eq!(pending.count(), MAX_CLICKS);
     }
 
     #[test]

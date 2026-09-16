@@ -13,7 +13,9 @@ use core::fmt::Write as _;
 use esp_hal::efuse::{self, InterfaceMacAddress};
 use heapless::String;
 
-use crate::provisioning::Record;
+use crate::feeder::Timings;
+use crate::portions::SCALE_UNCHANGED;
+use crate::provisioning::{DEFAULT_DETENT_MS, Record};
 
 /// Wi-Fi and broker settings.
 ///
@@ -29,6 +31,11 @@ pub struct Config {
     pub mqtt_port: u16,
     pub mqtt_user: &'static str,
     pub mqtt_password: &'static str,
+    /// This unit's mechanical timings, derived from its measured detent
+    /// interval. See `feeder::Timings`.
+    pub timings: Timings,
+    /// How much this unit dispenses per click. See `portions::clicks_for`.
+    pub portion_scale_pct: u16,
 }
 
 impl Config {
@@ -41,6 +48,11 @@ impl Config {
             mqtt_port: record.mqtt_port,
             mqtt_user: record.mqtt_user.as_str(),
             mqtt_password: record.mqtt_password.as_str(),
+            // Through the accessors, which clamp. A nonsensical figure must not
+            // stop a unit reaching the broker — that would leave the button as
+            // the only way to re-provision it.
+            timings: Timings::from_detent(record.detent_ms()),
+            portion_scale_pct: record.portion_scale_pct(),
         }
     }
 
@@ -79,6 +91,11 @@ pub const fn load_config() -> Config {
         mqtt_port: parse_u16(env!("CFG_MQTT_PORT")),
         mqtt_user: env!("CFG_MQTT_USER"),
         mqtt_password: env!("CFG_MQTT_PASSWORD"),
+        // cfg.toml carries no mechanical figures into the binary; they reach a
+        // unit through `dev/provision.sh`. A board running on this fallback is
+        // unprovisioned, so the reference mechanism is the only honest guess.
+        timings: Timings::from_detent(DEFAULT_DETENT_MS),
+        portion_scale_pct: SCALE_UNCHANGED,
     }
 }
 

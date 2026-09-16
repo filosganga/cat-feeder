@@ -15,7 +15,7 @@ use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
 use cat_feeder::motor::{LogMotor, MotorDriver};
-use cat_feeder::portions::{Added, MAX_PORTIONS};
+use cat_feeder::portions::{Added, MAX_CLICKS};
 use cat_feeder::provisioning::{DecodeError, Record, ap_password, ap_ssid};
 use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
 use cat_feeder::store::{Store, StoreError};
@@ -134,7 +134,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
-    spawner.spawn(feeder_task(LogMotor::new()).expect("failed to create feeder task"));
+    spawner.spawn(feeder_task(LogMotor::new(), cfg).expect("failed to create feeder task"));
     spawner.spawn(schedule_task().expect("failed to create schedule task"));
 
     let station = WifiConfig::Station(
@@ -514,8 +514,9 @@ fn log_indicator(status: Option<Status>) {
 /// Every rule belongs to `feeder::Feeder`, which is pure and host-tested. This
 /// task performs the action it is told to and reports what happened.
 #[embassy_executor::task]
-async fn feeder_task(mut motor: LogMotor) {
-    let mut feeder = Feeder::new();
+async fn feeder_task(mut motor: LogMotor, cfg: Config) {
+    let mut feeder = Feeder::new(cfg.timings, cfg.portion_scale_pct);
+    log_calibration(cfg);
 
     loop {
         let action = feeder.action(now_ms());
@@ -592,6 +593,23 @@ async fn feeder_task(mut motor: LogMotor) {
             }
         }
     }
+}
+
+/// What this unit was calibrated for, once at boot.
+///
+/// Worth a line: these come from the record in flash and differ per unit, so a
+/// feeder behaving oddly is either mis-measured or mis-provisioned, and this is
+/// the only place that distinction is visible.
+///
+/// See [`log_start`] for why it is a separate, never-inlined function — adding
+/// this `info!` inline put `feeder_task` over the crate's stack budget, which
+/// is exactly what `deny(clippy::large_stack_frames)` is there to catch.
+#[inline(never)]
+fn log_calibration(cfg: Config) {
+    info!(
+        "feeder: clicks >{} ms apart, jam after {} ms, portions x{}%",
+        cfg.timings.min_click_spacing_ms, cfg.timings.jam_timeout_ms, cfg.portion_scale_pct
+    );
 }
 
 /// Kept out of `feeder_task` and never inlined.
@@ -743,7 +761,7 @@ fn log_skipped(minute_of_day: u16, why: Skipped) {
 
 /// Says out loud when the hopper guard bit.
 ///
-/// Reaching `MAX_PORTIONS` means something upstream is repeating itself — a
+/// Reaching `MAX_CLICKS` means something upstream is repeating itself — a
 /// stuck automation, or a QoS 1 redelivery — and the clamp is the only thing
 /// standing between that and an empty hopper. Dropping portions silently would
 /// hide the fault that caused it.
@@ -752,7 +770,7 @@ fn log_skipped(minute_of_day: u16, why: Skipped) {
 #[inline(never)]
 fn log_clamp(added: Added) {
     if let Added::Clamped { dropped } = added {
-        warn!("feed: clamped at {MAX_PORTIONS} portions, {dropped} dropped");
+        warn!("feed: clamped at {MAX_CLICKS} portions, {dropped} dropped");
     }
 }
 
