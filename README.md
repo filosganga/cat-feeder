@@ -4,9 +4,12 @@ Replacement electronics for three commercial automatic cat feeders, so all
 three dispense at the same instant.
 
 The original board in each feeder is removed. The mechanics are kept: a 5 V
-geared motor and a microswitch on the output hub, where one click is one
-portion. An ESP32-C6 running Rust firmware drives the motor and takes its
+geared motor and a microswitch on the output hub, which clicks once per portion
+dispensed. An ESP32-C6 running Rust firmware drives the motor and takes its
 orders from Home Assistant over MQTT.
+
+Home Assistant asks for *portions*; each unit turns as many *clicks* as its own
+mechanism needs, because the three feeders are not all the same model.
 
 There is no real-time clock and no NTP. Home Assistant publishes the time and
 the feeding schedule as retained MQTT messages, and each feeder keeps them in
@@ -132,9 +135,9 @@ documented in [dev/README.md](dev/README.md).
 ## Setting up a feeder
 
 > **Partly built.** The pieces below marked *works today* are in and tested.
-> The access point itself is not, so for now a unit still takes its credentials
-> from `cfg.toml` at build time. Roadmap step 9 in [CLAUDE.md](CLAUDE.md) tracks
-> the rest.
+> The access point itself is not, so for now a unit is set up over USB with
+> `./dev/provision.sh`, or falls back to credentials compiled in from
+> `cfg.toml`. Roadmap step 9 in [CLAUDE.md](CLAUDE.md) tracks the rest.
 
 The plan is that a feeder is set up from a phone, with no laptop and no
 toolchain, because the case that actually hurts is not first boot — it is the
@@ -266,6 +269,7 @@ src/
   led.rs          the onboard WS2812, over RMT
   motor.rs        MotorDriver, the DRV8833, and a logging stand-in
   mqtt.rs         connection, last will, discovery, commands, state
+  store.rs        reads and writes the record in the nvs partition
   wiring.rs       what the tasks share
   config.rs       build-time config and the MAC-derived device id
 

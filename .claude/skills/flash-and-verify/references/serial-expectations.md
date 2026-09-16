@@ -93,15 +93,20 @@ presses.
 
 ```
 INFO - Embassy initialized!
-INFO - switch: waiting for clicks on GPIO<n>
-INFO - switch: click 1
-INFO - switch: click 2
+INFO - switch: watching GPIO2, currently released
+INFO - feed: click while idle, nothing was feeding
+INFO - feed: click while idle, nothing was feeding
 ```
 
+**`switch_task` does not log each click**, and never did in this shape: it
+forwards clicks into a channel and the feeder reports them. With nothing being
+fed, every press surfaces as `feed: click while idle` from `feeder_task`, which
+is what makes an unexpected edge visible rather than silently dropped.
+
 - **Every press counts, however fast.** Two presses 200 ms apart must produce
-  two clicks. If the second is swallowed, the spacing rule has been put
+  two lines. If the second is swallowed, the spacing rule has been put
   in the switch stream instead of the feeder.
-- One press giving several clicks means the 30 ms debounce is not working. Log
+- One press giving several lines means the 30 ms debounce is not working. Log
   raw edges at `debug` to see the bounce.
 - Clicks with nothing touching the button mean the input is floating, so the
   internal pull-up is not enabled.
@@ -131,12 +136,17 @@ the motor, with no driver wired. Then with the DRV8833 connected.
 Action: trigger a two-portion feed.
 
 ```
-INFO - feed: start, portions=2
+INFO - feed: start, portions=2, needs aligning
+INFO - motor: forward
 INFO - feed: aligned
-INFO - feed: click 1/2
-INFO - feed: click 2/2
-INFO - feed: done, portions=2, elapsed=3.9s
+INFO - feed: click, 1 to go
+INFO - feed: done
+INFO - motor: brake
 ```
+
+`portions=2` is what was *asked for*; the count that follows is in clicks, which
+differ on a unit with a portion scale. `needs aligning` appears only when the
+hub started off a detent, and the align click is not one of the counted ones.
 
 Checks:
 
@@ -214,8 +224,7 @@ edge, which is the normal resting position, and watch the first click:
 INFO - feed: start, portions=1
 INFO - feed: aligned
 DEBUG - feed: edge ignored, below 760ms minimum spacing
-INFO - feed: click 1/1
-INFO - feed: done, portions=1, elapsed=1.9s
+INFO - feed: done
 ```
 
 A feed that completes in well under a second has counted the startup bounce as a
@@ -237,8 +246,8 @@ read. The motor must **not** stop between portions:
 INFO - feed: start, portions=1
 INFO - feed: aligned
 INFO - feed: pending=2
-INFO - feed: click 1/1
-INFO - feed: click 1/1
+INFO - feed: click, 1 to go
+INFO - feed: done
 INFO - feed: done, elapsed=3.9s
 ```
 
@@ -251,9 +260,10 @@ Jam path, forced by holding the hub still:
 ```
 INFO - feed: start, portions=3
 INFO - feed: aligned
-INFO - feed: click 1/3
+INFO - feed: click, 2 to go
 WARN - feed: no click for 5s, jammed
-INFO - feed: motor braked, 2 pending portions discarded
+INFO - motor: brake
+WARN - feed: no click for 4750ms, jammed; pending discarded
 ```
 
 The motor must stop. A jam that leaves the motor energised is a fire risk, not a
@@ -535,7 +545,7 @@ free-runs. Power-cycle with the broker still down and confirm it waits rather
 than guessing a time:
 
 ```
-INFO - clock: no time received, waiting
+INFO - clock: no trusted time yet, schedule holding
 ```
 
 Finally, power-cycle while paused. The unit must come back paused from the

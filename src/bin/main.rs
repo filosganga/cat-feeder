@@ -589,7 +589,10 @@ async fn feeder_task(mut motor: LogMotor, cfg: Config) {
                     Either3::Third(()) => {
                         motor.brake();
                         feeder.on_timeout();
-                        warn!("feed: no click for 5s, jammed; pending discarded");
+                        // The configured budget, not the literal 5s this used
+                        // to claim and not the `jam_timeout_ms` above, which is
+                        // whatever was *left* when the wait started.
+                        log_jam(cfg.timings.jam_timeout_ms);
                     }
                 }
             }
@@ -772,8 +775,22 @@ fn log_skipped(minute_of_day: u16, why: Skipped) {
 #[inline(never)]
 fn log_clamp(added: Added) {
     if let Added::Clamped { dropped } = added {
-        warn!("feed: clamped at {MAX_CLICKS} portions, {dropped} dropped");
+        // Clicks, not portions. The scale is applied before the cap, so on a
+        // unit calibrated away from 100% these are not the same number and the
+        // old wording named the wrong one.
+        warn!("feed: clamped at {MAX_CLICKS} clicks, {dropped} dropped");
     }
+}
+
+/// Says how long the mechanism was given before being called stuck.
+///
+/// The budget is per unit, so a literal here would state a figure the firmware
+/// is not using — on the one line that explains a meal not happening.
+///
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_jam(jam_timeout_ms: u64) {
+    warn!("feed: no click for {jam_timeout_ms}ms, jammed; pending discarded");
 }
 
 /// See [`log_start`] for why this is a separate function.

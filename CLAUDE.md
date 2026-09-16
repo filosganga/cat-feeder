@@ -179,10 +179,11 @@ clock and no executor and is fully host-tested. The task asks what to do, does
 it, and reports back. It decides nothing.
 
 ```rust
-// producers: FEED.try_send(2)
+// producers send *portions*: FEED.try_send(2)
 static FEED: Channel<CriticalSectionRawMutex, u8, 8> = Channel::new();
 
-let mut feeder = Feeder::new();
+// Both from this unit's record in flash: one binary, three mechanisms.
+let mut feeder = Feeder::new(cfg.timings, cfg.portion_scale_pct);
 loop {
     match feeder.action(now_ms()) {
         Action::Idle => {
@@ -804,13 +805,15 @@ persistent state in this design lives in the broker's retained messages.
 
 ```
 src/
-  main.rs         wiring: peripherals, tasks, executor
+  bin/main.rs     wiring: peripherals, tasks, executor
   board.rs        pin map per board (feature-gated)
   motor.rs        Motor { run_forward(), brake() } over two Output pins + nSLEEP
   switch.rs       debounced click stream (async), 30 ms; reports every edge
   feeder.rs       owns motor + switch; FEED queue, align, per-unit spacing,
                   count, brake, jam timeout, portions -> clicks
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
+  portions.rs     pure logic: the pending-click counter, its cap, and the
+                  per-unit portions -> clicks conversion
   button.rs       pure logic: what a press of the outside button means
   indicator.rs    pure logic: what the LED shows, the priority ladder, the
                   blink timing
@@ -821,8 +824,11 @@ src/
   provisioning.rs pure logic: the flash record, setup-network credentials,
                   the setup form and just enough HTTP
   sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
-  config.rs       Config + load_config()
-build.rs          injects cfg.toml/.env values as env vars
+  store.rs        reads and writes the record in the nvs partition
+  config.rs       Config, from a flash record or the build-time fallback
+build.rs          injects cfg.toml values as env vars (the fallback; on its way out)
+examples/mkrecord.rs
+                  host-only: builds a provisioning record for dev/provision.sh
 
 homeassistant/packages/cat_feeder.yaml
                   the other half of the system: publishes time and schedule,

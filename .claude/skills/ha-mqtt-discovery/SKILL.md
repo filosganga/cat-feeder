@@ -37,12 +37,20 @@ accumulate, a boot loop would empty the hopper.
 
 The button always sends `1`. Pressing it three times means three portions, even
 when the presses land while the motor is still running. So `feed` adds to a
-pending-portions counter that the `feeder` task drains; it never replaces the
-count and never drops a command because the feeder is busy.
+pending counter that the `feeder` task drains; it never replaces the count and
+never drops a command because the feeder is busy.
 
-Cap the counter at 10 portions and log a warning when clamping. Two things make
-that cap matter: a stuck Home Assistant automation, and MQTT QoS 1, which is
-allowed to deliver the same publish twice.
+**Every topic here speaks portions; the feeder counts clicks.** The three units
+are not all the same model, so each carries a portion scale in its record and
+`Feeder::request` converts. A slot saying `portions: 2` therefore reaches all
+three identically and each turns as far as its own mechanism needs. Nothing on
+the MQTT side has to know about this — but it is why `portions` in a payload is
+not necessarily the number of clicks a given unit will make.
+
+Cap the counter at `MAX_CLICKS` (16) and log a warning when clamping. The cap
+counts clicks rather than portions, because clicks are what empty a hopper.
+Two things make it matter: a stuck Home Assistant automation, and MQTT QoS 1,
+which is allowed to deliver the same publish twice.
 
 There is no default portion size. Every feed path states its own count — the
 button as `1`, each schedule slot as its own `portions`.
