@@ -46,6 +46,9 @@ Nothing has run on a production board yet. All of the above was verified on the
 Waveshare ESP32-C6-DEV-KIT-N8, with a bench button standing in for the hub
 microswitch and log lines standing in for the motor.
 
+The three Zeros and the Raspberry Pi 5 are on the bench; the DRV8833 is the only
+part still outstanding, and it is what blocks driving a real motor.
+
 ## Hardware
 
 Per feeder:

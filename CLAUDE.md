@@ -1013,13 +1013,41 @@ on the LED**, which is the whole reason step 10 exists.
       field `Bus::health()` hardcodes to `false`, and it is hardcoded rather
       than kept as an always-false atomic so it cannot read as live wiring
 
-Steps 3, 6 and 8 wait on hardware rather than on code:
+11. Move the broker and Home Assistant to the Raspberry Pi 5. The Pi has
+    arrived. Today both run in Docker on the Mac, which is why the feeders point
+    at a laptop that is not always on.
+    - ⬜ Mosquitto and Home Assistant on the Pi, with
+      `homeassistant/packages/cat_feeder.yaml` copied over unchanged — it is
+      tracked here precisely so it can be
+    - ⬜ repoint the feeders. **This is a re-provision, not a rebuild**:
+      `mqtt_host` lives in each unit's flash record, so it is
+      `./dev/provision.sh` once per unit with the Pi's address, and no compile
+    - ⬜ give the Pi a static address or a DHCP reservation first. There is no
+      resolver in the firmware — `mqtt.rs` parses `mqtt_host` with
+      `Ipv4Addr::from_str` — so an address that moves takes all three feeders
+      off the air with no way back but re-provisioning each one
+    - ⬜ decide what happens to the Mac stack. Keeping it is fine; two brokers
+      with the same retained topics are not, so a feeder should point at one or
+      the other, never be moved back and forth casually
 
-| Blocked step | Waiting for |
+### What is waiting on what
+
+| Step | Waiting for |
 |---|---|
-| 3, the DRV8833 and the clicks-per-revolution contract | the part |
-| 6, flashing the three Zeros | the boards |
-| 8, retiring the PCBs | 3 and 6 |
+| 3, the DRV8833 and the detent interval | the part |
+| 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
+| 8, retiring the PCBs | 3, and the third feeder being opened |
+| 11, the Pi | nothing; the Pi has arrived |
+
+**Both the Pi 5 and the three Zeros are now on the bench.** The only part still
+outstanding is the DRV8833, which blocks step 3 and therefore step 8.
+
+The next thing with no blocker in front of it is **step 6**: solder jumpers to
+one Zero and flash it. Pins are `board.rs` and *Which pins are usable* above —
+GPIO2 switch, GPIO3 button, GPIO8 LED, and note GPIO10/GPIO11 do not exist on
+that board. Watch the power-on sweep: it must show red, then green, then blue.
+If red and green swap, that board's WS2812 wants GRB and `led::wire_word` is the
+one line to change, possibly per board.
 
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
 manual feed works with the broker down; battery backup.
