@@ -103,8 +103,8 @@ INFO - switch: click 2
 
 ### The real hub belongs to step 3, not here
 
-The four-clicks-per-revolution contract is checked in
-[step 3](#step-3--motor-and-feedn), with the motor driving.
+The detent interval is measured in [step 3](#step-3--motor-and-feedn), with the
+motor driving.
 
 The hub *can* be back-driven by hand, but the gear reduction makes it hard
 enough that turning it steadily through a full revolution is an awkward and
@@ -140,35 +140,51 @@ Checks:
 - With the LED standing in for the motor, the LED is on for the same interval
   the motor would run.
 
-### Four clicks per revolution
+### Measuring the detent interval
 
-The mechanical contract, and the right place for it. The hub can be back-driven
-by hand, but the gear reduction makes turning it steadily through a revolution
-awkward enough that the result is not worth trusting. Let the motor do it.
+**The one number worth taking off a bench**, and the only mechanical figure the
+firmware needs. Everything else follows from it: the minimum click spacing is
+interval × 0.4 and the jam timeout is interval × 2.5, so measuring it wrong
+mis-sets both.
 
-Action: mark the hub, then trigger a **four**-portion feed.
+The hub can be back-driven by hand, but the gear reduction makes turning it
+steadily impossible, so a hand-turned interval is meaningless. Let the motor do
+it, at the speed the mechanism actually runs at.
+
+Action: trigger a **four**-portion feed and read the timestamps.
 
 ```
-INFO - feed: start, portions=4
-INFO - feed: click, 3 to go
-INFO - feed: click, 2 to go
-INFO - feed: click, 1 to go
-INFO - feed: done
+INFO (1000) - feed: start, portions=4
+INFO (2900) - feed: click, 3 to go                (+1900 ms)
+INFO (4800) - feed: click, 2 to go                (+1900 ms)
+INFO (6700) - feed: click, 1 to go                (+1900 ms)
+INFO (8600) - feed: done                          (+1900 ms)
 ```
 
-The mark must come back to where it started, one full revolution, in about
-7.6 s. Then:
+The gaps between consecutive clicks **are** the interval. Take several and use
+the typical value, not the first — the first gap includes the align phase if the
+hub started off a detent.
 
-- **Mark short of a full turn** — more than four detents per revolution. Every
-  portion is smaller than intended and the whole schedule under-feeds.
-- **Mark past the start** — fewer than four, or an edge is being missed.
-- **Right place, wrong time** — count the seconds. Four portions much faster
-  than 7.6 s means bounce is being counted as detents, and the 800 ms rejection
-  is not doing its job.
+- **Gaps that vary a lot** — mechanical, not firmware. A sticky hub or a switch
+  mounted so it triggers at an inconsistent point.
+- **One gap much shorter than the rest** — bounce counted as a detent, and the
+  minimum-spacing rejection is set too low for this mechanism.
+- **Gaps far from 1.9 s** — fine, and exactly why this is measured rather than
+  assumed. That is the number that goes in the record for this unit.
 
-Repeat it three or four times without stopping. The mark must return to the
-same place every revolution, not drift, since a drift of a fraction of a detent
-per turn compounds into a missed meal over a day.
+Record it per unit. See *Per-unit mechanical timing* in `CLAUDE.md`.
+
+### A stable count per revolution
+
+Not a contract — nothing in the firmware counts revolutions, and clicks per
+revolution is not a figure anything depends on. It is a way to catch clicks
+being **missed or doubled**, which the interval alone will not show.
+
+Mark the hub and run feeds until the mark returns to its starting position,
+noting how many clicks that took. Repeat three or four times without stopping.
+Whatever the count is, it must be the *same* count every turn and the mark must
+return to the same place, because a drift of a fraction of a detent per turn
+compounds into a missed meal over a day.
 
 ### The align phase
 
@@ -593,8 +609,8 @@ monitors open, one per unit.
 No serial output belongs to this step; it is screwdriver work. The console check
 is simply that a feeder still behaves after being reassembled, so run step 3's
 `feed(n)` checks again on the real mechanism once each unit is in its case —
-especially the four-clicks-per-revolution contract, which is the thing most
-likely to differ between a bench hub and an assembled one.
+especially the detent interval, which is the thing most likely to differ between
+a bench hub and an assembled one, and which is per-unit anyway.
 
 Watch the boot banner's `rst:` line on the first feed after assembly. A reset
 the moment the motor starts is the 220 µF capacitor, not the firmware. See

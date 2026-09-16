@@ -12,8 +12,8 @@ same instant, coordinated by Home Assistant over MQTT.
 | Waveshare ESP32-C6-DEV-KIT-N8-M | **dev board only** (breadboard, pin headers). WROOM-1 module, 8 MB flash |
 | Waveshare ESP32-C6-Zero ×3 | **production boards**, one per feeder. Bare C6FH8, 8 MB flash |
 | DRV8833 breakout (black 10-pin) | H-bridge. `nSLEEP`/`ULT` **must be driven high** or the motor won't run |
-| Motor DRF-W500CA, 5 V, 8 rpm | geared reducer → stops dead on brake, no coasting past a detent; ~1.9 s per 90°. Back-drivable by hand, but stiff enough that turning the hub is a poor way to test anything |
-| Microswitch on output hub | **4 clicks per revolution, 1 click = 1 portion** |
+| Motor DRF-W500CA, 5 V, 8 rpm | geared reducer → stops dead on brake, no coasting past a detent; ~1.9 s between detents. Back-drivable by hand, but stiff enough that turning the hub is a poor way to test anything |
+| Microswitch on output hub | **1 click = 1 portion.** That is the entire contract |
 | 220 µF 16 V electrolytic | across 5 V/GND next to the DRV8833 (brown-out on motor start) |
 | 5 V from the feeder's original USB port | ≥1 A adapter. **No batteries in v1** |
 
@@ -23,23 +23,31 @@ Two of the three units are the same model. The third is a different brand,
 similar-looking but **not yet opened**, and the mechanical figures in the table
 above were measured on the matching pair only.
 
-Four of them are per-mechanism, not per-project, and every one is load-bearing
-somewhere in the firmware:
+Three things matter, and only one of them is a number:
 
 | Figure | What breaks if it differs |
 |---|---|
-| 4 clicks per revolution | the portion-to-rotation contract in step 3 |
 | 1 click = 1 portion | every `portions` count, from the HA button to each schedule slot |
-| ~1.9 s per detent | the 800 ms minimum click spacing in `feeder.rs` sits in the gap between contact bounce and a real quarter turn |
+| the detent interval (~1.9 s here) | the 800 ms minimum click spacing and the 5 s jam timeout are both derived from it |
 | a microswitch on the output hub at all | `switch.rs` assumes a pull-up and a falling edge — an optical or hall sensor is a different shape entirely |
 
-So the third unit needs these re-measured before it is wired, not assumed. If
-they differ, they stop being constants and become part of the per-unit record in
-flash, which is a real change: `feeder.rs` and `schedule.rs` are pure today
-precisely because these numbers are fixed at compile time.
+**Clicks per revolution is not on that list**, though it used to be. Nothing in
+the firmware counts revolutions; it was only ever a way to work out the detent
+interval from the motor's rpm. Measure the interval directly and the revolution
+count tells you nothing more. It keeps one small use as a bench check — a full
+turn should give a *stable* count, whatever that count is, which catches clicks
+being missed or doubled — but that is a check, not a contract.
 
-Worth opening it early rather than at assembly time, since the answer could
-change the shape of the code rather than just a number.
+So the third unit needs the detent interval measured, and the switch confirmed
+to be a switch. See *Per-unit mechanical timing* for where the number goes.
+
+**One question to answer while it is open**, because it is cheap now and
+awkward later: does a click dispense the *same amount of food* as on the other
+two? `feeder/schedule` is a single retained topic shared by all three units, so
+a slot saying `portions: 2` means two clicks everywhere. If this mechanism
+dispenses a noticeably different amount per click, that needs either a per-unit
+portion scale in the record or per-unit schedule topics — both real changes, and
+both much easier to design before two units are assembled around the assumption.
 
 Both boards are the same chip; only GPIO numbers differ. Keep the pin map in
 one place (`src/board.rs`) selected by a Cargo feature: `board-devkit`
@@ -423,6 +431,56 @@ password changed while it is still on the bench.
 `store: configured for ...` with **no** `store: seeded from cfg.toml` line after
 it. That single absent line is the whole proof.
 
+### Per-unit mechanical timing
+
+**Specified, not built**, and it depends on the record above.
+
+Three units, and one of them a different brand, means the mechanical timings
+cannot stay compile-time constants. But they must not go in `cfg.toml` either:
+that is build-time, so per-unit values there mean **a different binary per
+unit**, and one binary flashing every unit is what makes the MAC-derived device
+id worth having.
+
+The record in flash is the right home. It is already per-unit, already written
+by `provision.sh`, and already read before anything else at boot.
+
+**Measure one number, derive the rest.** The only thing worth observing on a
+bench is the **detent interval** — how long the motor takes to get from one
+click to the next. Both other constants follow from it, and today's
+hand-picked values are very close to what these ratios produce:
+
+| Constant | Rule | At 1900 ms | Today |
+|---|---|---|---|
+| minimum click spacing | interval × 0.4 | 760 ms | 800 ms |
+| jam timeout | interval × 2.5 | 4750 ms | 5000 ms |
+
+That agreement is the argument for the ratios: they are not invented, they are
+what the working mechanism already implies. Deriving also keeps the property
+that matters — the spacing threshold has to sit in the empty middle between
+contact bounce (milliseconds) and a real detent — automatically, at any speed,
+instead of needing to be re-reasoned per unit.
+
+Both need floors for a hypothetically fast mechanism: the spacing must stay well
+clear of the 30 ms debounce in `switch.rs`, or it would start rejecting real
+clicks.
+
+**This does not make `feeder.rs` impure.** The constants become parameters on
+`Feeder::new`, which is a change in signature rather than in shape — and the
+tests get better for it, because they can then exercise a fast mechanism and a
+slow one instead of only the one that happens to be on the bench.
+
+Two consequences to plan for: `Record` grows fields, so the magic goes from
+`FDR1` to `FDR2` and older records are refused as unconfigured (nothing is
+deployed, so this costs nothing now); and `provision.sh` takes a per-unit
+override, with `cfg.toml` supplying only the default — which is where the
+instinct to put it in `cfg.toml` ends up being right, just as *input to the
+tool* rather than as something a compiler ever sees.
+
+```sh
+./dev/provision.sh                      # the cfg.toml default
+./dev/provision.sh --detent-ms 900      # the odd one out
+```
+
 ### The outside button
 
 GPIO3, outside the case, distinct from the hub microswitch on GPIO2 which is
@@ -720,11 +778,16 @@ each one.
 2. ✅ Switch task: debounced clicks on the console, on a bench button
 3. `feed(n)`: ✅ state machine host-tested and verified on hardware with a
    logging fake motor (align, 800 ms rejection, counting, jam, accumulation).
-   Still to do: the DRV8833, and with it the **4 clicks per revolution**
-   contract. That check belongs here rather than in step 2: the hub can be
-   back-driven by hand, but the gear reduction makes turning it steadily
-   through a revolution awkward enough that the count is not worth trusting.
-   The motor does it in one command, at the speed the mechanism actually sees
+   Still to do: the DRV8833, and with it the one measurement that matters —
+   the **detent interval**, the time from one click to the next under power.
+   That belongs here rather than in step 2: the hub can be back-driven by hand,
+   but the gear reduction makes turning it steadily impossible, so a hand-turned
+   interval is meaningless. The motor gives it at the speed the mechanism
+   actually runs at.
+   Clicks per revolution is no longer part of this. Nothing counts revolutions;
+   it was only a way to infer the interval from rpm, and the interval is
+   measured directly. A full turn giving a *stable* count is still worth
+   checking once, as a way to catch missed or doubled clicks
 4. ✅ Wi-Fi + MQTT: connect, LWT, availability, discovery (button + switch +
    binary_sensor), subscriptions, manual and broadcast `feed`, `paused`, and a
    state payload carrying the feeder's real flags

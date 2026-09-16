@@ -22,7 +22,7 @@
       "Bash(./dev/flash.sh *)",
       "Bash(./dev/ap-password.sh *)",
       "Bash(python3 -)",
-      "Edit(/.claude/skills/flash-and-verify/**)"
+      "Edit(/.claude/skills//**)"
     ],
     "additionalDirectories": [
       "/Users/filippodeluca/Documents/development/personal/cat-feeder",

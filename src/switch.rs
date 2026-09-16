@@ -1,6 +1,7 @@
 //! Debounced click stream from the hub microswitch.
 //!
-//! One click is one portion. The hub gives four per revolution.
+//! One click is one portion. That is the whole contract — how many clicks make
+//! a revolution is not something this firmware knows or needs to.
 
 use embassy_time::{Duration, Timer};
 use esp_hal::gpio::{Input, InputConfig, InputPin, Pull};
