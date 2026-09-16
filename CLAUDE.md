@@ -852,6 +852,12 @@ each one.
   stand in for the motor when no driver is connected.
 - Keep changes small and flash-testable; every step should be verifiable on
   the serial console.
+- **When a constant becomes configurable, grep the whole repo for its old
+  value.** Copies survive in log strings, doc comments, `README.md` and the
+  transcripts under `.claude/skills/flash-and-verify/`, and no test can catch
+  them because tests do not read log text. This has bitten three times: the
+  800 ms spacing, the 5 s jam timeout, and `MAX_CLICKS` still being described in
+  portions. The `drift-check` agent exists for exactly this.
 - Don't add features the plan doesn't call for (buzzer, display, battery,
   captive portal) without asking.
 
