@@ -372,8 +372,9 @@ record" state is reachable without any further work.
 
 ### Credentials: getting them out of the binary
 
-**Specified, not built.** The goal is one mechanism that serves development and
-production, with the Wi-Fi password never compiled into the firmware at all.
+**The tool is built and verified; the deletions still wait on setup mode.** The
+goal is one mechanism that serves development and production, with the Wi-Fi
+password never compiled into the firmware at all.
 
 The temptation is to keep `seed_config` and formalise it — cfg.toml supplies
 defaults, flash is seeded at first boot, the reset button wipes. It works, and
@@ -401,12 +402,24 @@ Three pieces:
    dev-dependency, mirroring the existing build-dependency — and writes
    `MAX_RECORD_LEN` bytes, padded with `0xFF` so the image is deterministic and
    matches what erased flash looks like around it.
-2. **`dev/provision.sh`** — build the record, then
-   `espflash write-bin 0x9000 record.bin`. That version of `espflash` takes an
-   address only, with no `--partition` flag, so 0x9000 is written in the script.
-   It is the default table's `nvs` offset and the firmware prints its own answer
-   at boot (`store: nvs at 0x9000, 24576 bytes`), so the two can be checked
-   against each other rather than assumed.
+2. **`dev/provision.sh`** — build the record, erase one sector, then
+   `espflash write-bin 0x9000`. `espflash` takes an address only, with no
+   `--partition` flag, so 0x9000 is written in the script; it is the default
+   table's `nvs` offset, and the firmware prints its own answer at boot
+   (`store: nvs at 0x9000, 24576 bytes`) so the two can be checked against each
+   other rather than assumed.
+
+   ⚠️ **`write-bin` does not erase, and NOR flash can only clear bits**, so
+   writing a record over an existing one ANDs the two together. Found the hard
+   way: `FDR2` written over `FDR1` becomes `FDR0`, and the firmware then says
+   `store: no record yet` — which looks exactly like the write having silently
+   failed rather than like corruption. `espflash erase-region 0x9000 0x1000`
+   first is what makes it work, and it is why that step is in the script rather
+   than being tidied away as redundant.
+
+   The record holds the Wi-Fi password in the clear, so the script builds it
+   into a `mktemp` file and deletes it on the way out rather than leaving it in
+   the working tree. `record.bin` is git-ignored as a backstop.
 3. **The deletions**, exactly as roadmap step 9 already lists them:
    `seed_config`, `load_config`, `Config::to_record`, `parse_u16`, the key loop
    and CI placeholders in `build.rs`, and the six credential lines in
@@ -415,11 +428,16 @@ Three pieces:
    because it is a salt rather than a credential and the firmware must derive
    the same AP password the sticker shows.
 
-**Sequencing, and the one thing that blocks.** Pieces 1 and 2 are independently
-useful and can land immediately: they make the dev loop *faster* than it is
-today, because a provisioned board keeps its credentials across every reflash
-and nothing has to be re-seeded. Piece 3 cannot land until setup mode exists,
-because deleting the fallback leaves an unprovisioned unit with nowhere to go.
+**Sequencing, and the one thing that blocks.** Pieces 1 and 2 are done and
+verified on the dev kit — provisioned, reflashed, and still reading
+`store: configured for ...` with no `seeded from cfg.toml` after it. Piece 3
+cannot land until setup mode exists, because deleting the fallback leaves an
+unprovisioned unit with nowhere to go.
+
+Until then both paths coexist: a provisioned board uses its record, and an
+unprovisioned one still falls back to `cfg.toml`. The absent `seeded from
+cfg.toml` line is the only thing that distinguishes them, which is why it is
+the documented check.
 
 **What this also buys.** The same script provisions the three Zeros without ever
 raising an access point or typing on a phone, which makes step 6 a good deal
@@ -915,9 +933,12 @@ on the LED**, which is the whole reason step 10 exists.
    - ✅ the reset button on GPIO3, as a **boot** gesture rather than a runtime
      one — see *The outside button*. Erases today; becomes a true reset when the
      fallback below goes, since `seed_config` currently writes it straight back
-   - ⬜ `examples/mkrecord.rs` + `dev/provision.sh`, writing the record from the
-     host — specified in *Credentials: getting them out of the binary*. Can land
-     before setup mode and makes the dev loop faster on its own
+   - ✅ `examples/mkrecord.rs` + `dev/provision.sh`, writing the record from the
+     host. Verified on the dev kit: provisioned, reflashed, still configured
+     from flash. See *Credentials: getting them out of the binary*
+   - ✅ `FDR2`: the record now also carries the two per-unit mechanical figures,
+     so one binary can drive three different mechanisms. Stored and round-tripped;
+     `feeder.rs` does not consume them yet, which needs the bench measurements
    - ⬜ retire build-time credentials once setup mode works. `cfg.toml` keeps
      `ap_secret` and nothing else, and the Wi-Fi password stops being compiled
      into the binary at all. To delete, together:

@@ -130,6 +130,24 @@ embassy-sync = "0.7"
 [build-dependencies]
 toml = "1"
 
+# For `examples/mkrecord.rs`, which reads the same cfg.toml build.rs does but
+# runs on the host. Dev-dependencies are not compiled into the firmware.
+[dev-dependencies]
+heapless = "0.9"
+toml     = "1"
+
+# Builds a provisioning record for dev/provision.sh to flash.
+#
+# Host-only, and it needs `std`. A plain `cargo build` does not touch examples,
+# so the board build is unaffected; `--examples` or `--all-targets` against the
+# ESP32-C6 target will fail to find `std`, exactly as the host tests do in
+# reverse. Build it the way dev/provision.sh does:
+#
+#   cargo run --example mkrecord --target "$(rustc -vV | awk '/^host:/{print $2}')"
+[[example]]
+name = "mkrecord"
+path = "examples/mkrecord.rs"
+
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
 [profile.dev]

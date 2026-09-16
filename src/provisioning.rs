@@ -37,14 +37,18 @@ pub const PASSWORD_LEN: usize = 64;
 pub const HOST_LEN: usize = 64;
 pub const USER_LEN: usize = 32;
 
-/// `FDR` for feeder, `1` for the layout below. Bump it if the fields change:
-/// an older record then fails to decode and the unit asks to be set up again,
+/// `FDR` for feeder, and a layout version. Bump it if the fields change: an
+/// older record then fails to decode and the unit asks to be set up again,
 /// which is the right outcome and better than reading fields at the wrong
 /// offsets.
-const MAGIC: [u8; 4] = *b"FDR1";
+///
+/// `FDR1` was credentials only. `FDR2` adds the two per-unit mechanical
+/// figures, because three feeders that are not all the same model cannot share
+/// one set of timings or one idea of how much a click dispenses.
+const MAGIC: [u8; 4] = *b"FDR2";
 
-/// Magic, checksum, six fields with their lengths. Comfortably inside one
-/// 4 KB flash sector.
+/// Magic, checksum, six credential fields with their lengths, two mechanical
+/// figures. Comfortably inside one 4 KB flash sector.
 pub const MAX_RECORD_LEN: usize = 4
     + 4
     + (1 + SSID_LEN)
@@ -52,9 +56,22 @@ pub const MAX_RECORD_LEN: usize = 4
     + (1 + HOST_LEN)
     + 2
     + (1 + USER_LEN)
-    + (1 + PASSWORD_LEN);
+    + (1 + PASSWORD_LEN)
+    + 2
+    + 2;
 
-/// Everything a unit needs to reach the network and the broker.
+/// A detent interval for a mechanism nobody has measured yet.
+///
+/// The figure from the two matching feeders. It is a starting point, not a
+/// default worth relying on — the whole reason this is in the record is that
+/// the third unit is a different brand.
+pub const DEFAULT_DETENT_MS: u16 = 1_900;
+
+/// Below this, the derived minimum click spacing would collide with the 30 ms
+/// debounce in `switch.rs` and start rejecting real clicks.
+pub const MIN_DETENT_MS: u16 = 200;
+
+/// Everything a unit needs to reach the network and to run its own mechanism.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub wifi_ssid: String<SSID_LEN>,
@@ -63,6 +80,17 @@ pub struct Record {
     pub mqtt_port: u16,
     pub mqtt_user: String<USER_LEN>,
     pub mqtt_password: String<PASSWORD_LEN>,
+    /// Milliseconds from one switch click to the next, under power.
+    ///
+    /// Read it through [`Record::detent_ms`], which clamps. The minimum click
+    /// spacing and the jam timeout are both derived from this, so a zero here
+    /// would mean a unit that jams the instant it starts.
+    pub detent_ms: u16,
+    /// How much this unit dispenses per click, as a percentage of a notional
+    /// standard portion. 100 changes nothing.
+    ///
+    /// See [`crate::portions::clicks_for`].
+    pub portion_scale_pct: u16,
 }
 
 /// Why a stored record could not be used.
@@ -99,6 +127,8 @@ impl Record {
         put_bytes(out, &mut at, &self.mqtt_port.to_le_bytes())?;
         put_str(out, &mut at, &self.mqtt_user)?;
         put_str(out, &mut at, &self.mqtt_password)?;
+        put_bytes(out, &mut at, &self.detent_ms.to_le_bytes())?;
+        put_bytes(out, &mut at, &self.portion_scale_pct.to_le_bytes())?;
 
         let checksum = crc32(&out[8..at]).to_le_bytes();
         out[0..4].copy_from_slice(&MAGIC);
@@ -127,6 +157,9 @@ impl Record {
         let mqtt_port = u16::from_le_bytes([take_u8(body, &mut at)?, take_u8(body, &mut at)?]);
         let mqtt_user = take_str(body, &mut at)?;
         let mqtt_password = take_str(body, &mut at)?;
+        let detent_ms = u16::from_le_bytes([take_u8(body, &mut at)?, take_u8(body, &mut at)?]);
+        let portion_scale_pct =
+            u16::from_le_bytes([take_u8(body, &mut at)?, take_u8(body, &mut at)?]);
 
         // Checked only once the length is known, so trailing flash beyond the
         // record cannot change the answer.
@@ -141,6 +174,8 @@ impl Record {
             mqtt_port,
             mqtt_user,
             mqtt_password,
+            detent_ms,
+            portion_scale_pct,
         })
     }
 
@@ -151,6 +186,33 @@ impl Record {
     /// backstop for a record written by an older or buggier version.
     pub fn is_usable(&self) -> bool {
         !self.wifi_ssid.is_empty() && !self.mqtt_host.is_empty() && self.mqtt_port != 0
+    }
+
+    /// The detent interval, clamped to something a mechanism could actually do.
+    ///
+    /// Clamped rather than validated in [`Record::is_usable`] on purpose: a
+    /// nonsensical mechanical figure must not make a unit *unconfigurable*. It
+    /// can still reach the broker, still answer Home Assistant, and still be
+    /// re-provisioned — all of which a rejected record would prevent, leaving
+    /// the button as the only way back.
+    pub fn detent_ms(&self) -> u16 {
+        if self.detent_ms < MIN_DETENT_MS {
+            DEFAULT_DETENT_MS
+        } else {
+            self.detent_ms
+        }
+    }
+
+    /// The portion scale, with zero read as "unchanged".
+    ///
+    /// Zero would otherwise round every meal to the never-zero floor of one
+    /// click, which looks like working and is not.
+    pub fn portion_scale_pct(&self) -> u16 {
+        if self.portion_scale_pct == 0 {
+            crate::portions::SCALE_UNCHANGED
+        } else {
+            self.portion_scale_pct
+        }
     }
 }
 
@@ -299,7 +361,18 @@ pub enum FormError {
 /// The Wi-Fi password may legitimately be empty, for an open network. Nothing
 /// else may: the broker credentials are optional in MQTT but the dev stack
 /// requires them, and an empty SSID or host cannot work at all.
-pub fn record_from_form(body: &str) -> Result<Record, FormError> {
+///
+/// **`previous` is what the unit already had, and it carries the mechanical
+/// figures across.** The setup form asks for a network and a broker, because
+/// that is what someone with a phone can answer; the detent interval and the
+/// portion scale are bench measurements and have no business on it. Without
+/// this argument, re-provisioning a working feeder after a Wi-Fi password
+/// change would silently reset its calibration to defaults, and the only
+/// symptom would be that one feeder quietly dispenses the wrong amount.
+///
+/// It is a parameter rather than a merge the caller remembers to do, because
+/// forgetting it is invisible until someone weighs the food.
+pub fn record_from_form(body: &str, previous: Option<&Record>) -> Result<Record, FormError> {
     let mqtt_port = field::<8>(body, "mqtt_port")?
         .ok_or(FormError::BadPort)?
         .parse::<u16>()
@@ -315,6 +388,9 @@ pub fn record_from_form(body: &str) -> Result<Record, FormError> {
         mqtt_port,
         mqtt_user: field(body, "mqtt_user")?.unwrap_or_default(),
         mqtt_password: field(body, "mqtt_password")?.unwrap_or_default(),
+        detent_ms: previous.map_or(DEFAULT_DETENT_MS, Record::detent_ms),
+        portion_scale_pct: previous
+            .map_or(crate::portions::SCALE_UNCHANGED, Record::portion_scale_pct),
     };
 
     Ok(record)
@@ -476,7 +552,69 @@ mod tests {
             mqtt_port: 1883,
             mqtt_user: String::try_from("feeder").unwrap(),
             mqtt_password: String::try_from("feeder-dev").unwrap(),
+            detent_ms: DEFAULT_DETENT_MS,
+            portion_scale_pct: crate::portions::SCALE_UNCHANGED,
         }
+    }
+
+    #[test]
+    fn the_form_keeps_the_calibration_it_was_not_asked_about() {
+        // The setup form asks for a network and a broker, because that is what
+        // someone holding a phone can answer. Re-provisioning after a Wi-Fi
+        // password change must not quietly reset a bench measurement — the only
+        // symptom would be one feeder dispensing the wrong amount of food.
+        let calibrated = Record {
+            detent_ms: 850,
+            portion_scale_pct: 133,
+            ..sample()
+        };
+
+        let body = "wifi_ssid=new&wifi_password=pw&mqtt_host=10.0.0.1&mqtt_port=1883";
+        let updated = record_from_form(body, Some(&calibrated)).unwrap();
+
+        assert_eq!(updated.wifi_ssid.as_str(), "new");
+        assert_eq!(updated.detent_ms, 850);
+        assert_eq!(updated.portion_scale_pct, 133);
+    }
+
+    #[test]
+    fn a_first_time_form_gets_the_defaults() {
+        let body = "wifi_ssid=new&mqtt_host=10.0.0.1&mqtt_port=1883";
+        let fresh = record_from_form(body, None).unwrap();
+
+        assert_eq!(fresh.detent_ms, DEFAULT_DETENT_MS);
+        assert_eq!(fresh.portion_scale_pct, crate::portions::SCALE_UNCHANGED);
+    }
+
+    #[test]
+    fn nonsense_mechanical_figures_do_not_make_a_unit_unconfigurable() {
+        // Clamped on read rather than rejected: a bad calibration must still
+        // leave a feeder able to reach the broker and be re-provisioned. A
+        // rejected record would leave the button as the only way back.
+        let broken = Record {
+            detent_ms: 0,
+            portion_scale_pct: 0,
+            ..sample()
+        };
+
+        assert!(broken.is_usable());
+        assert_eq!(broken.detent_ms(), DEFAULT_DETENT_MS);
+        assert_eq!(broken.portion_scale_pct(), crate::portions::SCALE_UNCHANGED);
+    }
+
+    #[test]
+    fn an_older_record_is_refused_rather_than_misread() {
+        // An FDR1 record has no mechanical fields. Reading one as FDR2 would
+        // take the CRC bytes as a detent interval, so the magic has to reject
+        // it outright and send the unit back to setup.
+        let mut buffer = [0u8; MAX_RECORD_LEN];
+        let len = sample().encode(&mut buffer).unwrap();
+        buffer[3] = b'1';
+
+        assert_eq!(
+            Record::decode(&buffer[..len]),
+            Err(DecodeError::NotConfigured)
+        );
     }
 
     // ---- the record ----
@@ -579,6 +717,8 @@ mod tests {
             mqtt_port: u16::MAX,
             mqtt_user: String::try_from(long(USER_LEN).as_str()).unwrap(),
             mqtt_password: String::try_from(long(PASSWORD_LEN).as_str()).unwrap(),
+            detent_ms: u16::MAX,
+            portion_scale_pct: u16::MAX,
         };
 
         let mut buffer = [0u8; MAX_RECORD_LEN];
@@ -678,7 +818,7 @@ mod tests {
                     &mqtt_host=192.168.68.108&mqtt_port=1883\
                     &mqtt_user=feeder&mqtt_password=feeder-dev";
 
-        assert_eq!(record_from_form(body).unwrap(), sample());
+        assert_eq!(record_from_form(body, None).unwrap(), sample());
     }
 
     #[test]
@@ -686,7 +826,7 @@ mod tests {
         // A password of `p@ss word+1%` as a browser would send it.
         let body = "wifi_ssid=My+Network&wifi_password=p%40ss+word%2B1%25\
                     &mqtt_host=broker.local&mqtt_port=1883";
-        let record = record_from_form(body).unwrap();
+        let record = record_from_form(body, None).unwrap();
 
         assert_eq!(record.wifi_ssid.as_str(), "My Network");
         assert_eq!(record.wifi_password.as_str(), "p@ss word+1%");
@@ -697,13 +837,16 @@ mod tests {
         // Decoding has to assemble the bytes before checking UTF-8, or an
         // accented SSID comes back as an encoding error.
         let body = "wifi_ssid=Caff%C3%A8&mqtt_host=h&mqtt_port=1883";
-        assert_eq!(record_from_form(body).unwrap().wifi_ssid.as_str(), "Caffè");
+        assert_eq!(
+            record_from_form(body, None).unwrap().wifi_ssid.as_str(),
+            "Caffè"
+        );
     }
 
     #[test]
     fn an_open_network_needs_no_password() {
         let body = "wifi_ssid=Open&wifi_password=&mqtt_host=h&mqtt_port=1883";
-        let record = record_from_form(body).unwrap();
+        let record = record_from_form(body, None).unwrap();
 
         assert!(record.wifi_password.is_empty());
         assert!(record.is_usable());
@@ -712,15 +855,15 @@ mod tests {
     #[test]
     fn the_fields_that_cannot_be_blank_are_rejected() {
         assert_eq!(
-            record_from_form("wifi_ssid=&mqtt_host=h&mqtt_port=1883"),
+            record_from_form("wifi_ssid=&mqtt_host=h&mqtt_port=1883", None),
             Err(FormError::Blank("wifi_ssid"))
         );
         assert_eq!(
-            record_from_form("wifi_ssid=s&mqtt_host=&mqtt_port=1883"),
+            record_from_form("wifi_ssid=s&mqtt_host=&mqtt_port=1883", None),
             Err(FormError::Blank("mqtt_host"))
         );
         assert_eq!(
-            record_from_form("mqtt_host=h&mqtt_port=1883"),
+            record_from_form("mqtt_host=h&mqtt_port=1883", None),
             Err(FormError::Missing("wifi_ssid"))
         );
     }
@@ -736,7 +879,11 @@ mod tests {
             "wifi_ssid=s&mqtt_host=h&mqtt_port=99999",
             "wifi_ssid=s&mqtt_host=h&mqtt_port=1883x",
         ] {
-            assert_eq!(record_from_form(body), Err(FormError::BadPort), "{body}");
+            assert_eq!(
+                record_from_form(body, None),
+                Err(FormError::BadPort),
+                "{body}"
+            );
         }
     }
 
@@ -746,7 +893,7 @@ mod tests {
         let body = std::format!("wifi_ssid={long}&mqtt_host=h&mqtt_port=1883");
 
         assert_eq!(
-            record_from_form(&body),
+            record_from_form(&body, None),
             Err(FormError::TooLong("field")),
             "a truncated SSID would silently join the wrong network"
         );
@@ -760,7 +907,7 @@ mod tests {
             "wifi_ssid=a%zz&mqtt_host=h&mqtt_port=1883",
         ] {
             assert!(matches!(
-                record_from_form(body),
+                record_from_form(body, None),
                 Err(FormError::BadEncoding(_))
             ));
         }

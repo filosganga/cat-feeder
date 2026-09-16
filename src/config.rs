@@ -56,6 +56,12 @@ impl Config {
             mqtt_port: self.mqtt_port,
             mqtt_user: String::try_from(self.mqtt_user).ok()?,
             mqtt_password: String::try_from(self.mqtt_password).ok()?,
+            // `cfg.toml` carries no mechanical figures, and this path is on its
+            // way out anyway — `dev/provision.sh` is what writes a calibrated
+            // record. Defaults here would be overwritten by a real
+            // provisioning run, not relied upon.
+            detent_ms: crate::provisioning::DEFAULT_DETENT_MS,
+            portion_scale_pct: crate::portions::SCALE_UNCHANGED,
         })
     }
 }

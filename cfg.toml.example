@@ -2,12 +2,17 @@
 #
 #   cp cfg.toml.example cfg.toml
 #
-# These values are read by build.rs and compiled into the firmware, so changing
-# any of them needs `cargo build`, not just a reflash.
+# This file is read by two different things, and the difference matters:
 #
-# Everything except `ap_secret` is on its way out. Once setup mode lands, a unit
-# takes its Wi-Fi and broker settings from the form over its own access point
-# and keeps them in flash, and the Wi-Fi password stops being compiled into the
+#   ./dev/provision.sh    writes these values into the board's flash, once.
+#                         Nothing is compiled. This is the way in.
+#
+#   build.rs              still compiles them into the firmware as a fallback
+#                         for an unprovisioned board. On its way out.
+#
+# Everything except `ap_secret` is going. Once setup mode lands, a unit takes
+# its Wi-Fi and broker settings either from `provision.sh` or from the form over
+# its own access point, and the Wi-Fi password stops being compiled into the
 # binary at all. See roadmap step 9 in CLAUDE.md for the full list of what goes.
 
 wifi_ssid     = "your-wifi"
@@ -37,3 +42,24 @@ mqtt_password = "feeder-dev"
 # Changing it invalidates every sticker already printed. It is not a secret that
 # protects your network; it only protects the setup window.
 ap_secret     = "change-me"
+
+# ---------------------------------------------------------------------------
+# Per-unit mechanics. Used only by ./dev/provision.sh, never compiled.
+# ---------------------------------------------------------------------------
+#
+# These are defaults. The three feeders are not all the same model, so measure
+# each one and override it on the command line rather than editing this file:
+#
+#   ./dev/provision.sh --detent-ms 900 --portion-scale 133
+#
+# detent_ms: milliseconds from one switch click to the next, under power. Read
+# it off the console timestamps during a four-portion feed. The minimum click
+# spacing and the jam timeout are both derived from it, so it is the one
+# mechanical figure worth measuring carefully.
+detent_ms = 1900
+
+# portion_scale_pct: how much this unit dispenses per click, relative to a
+# notional standard portion. 100 changes nothing; 133 means three portions
+# become four clicks. feeder/schedule is shared by all three units, so this is
+# what stops one of them quietly over- or under-feeding.
+portion_scale_pct = 100

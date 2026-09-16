@@ -33,3 +33,6 @@ dev/homeassistant/*
 # Build-time secrets
 cfg.toml
 soak/
+
+# The provisioning record: holds the Wi-Fi password in the clear.
+record.bin
