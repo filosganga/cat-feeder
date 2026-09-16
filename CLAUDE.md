@@ -327,15 +327,17 @@ that does not exist, and the only way back is the button.
 
 ### Still to build — the plan
 
-Paused deliberately, not abandoned. The back half works: a record round-trips
-through flash and the boot path reads it. What is missing is everything that
-serves the form. Written out here because the API facts below cost an hour to
-establish and should not be rediscovered.
+The back half works: a record round-trips through flash, the boot path reads
+it, the unit raises its network and a phone that joins gets an address. What is
+missing is the form itself. Written out here because the API facts below cost an
+hour to establish and should not be rediscovered.
 
 **A gated module, `setup.rs`, entered from the boot path when there is no
 usable record.** It never returns — it reboots once a record is saved, so the
-normal path always starts from a clean boot. Slice 1 is built; the remaining
-slices are 3 and 4 below.
+normal path always starts from a clean boot. Steps 1 to 3 are built; step 4 is
+what remains. `setup.rs`'s own module doc counts in three slices rather than
+four, because raising the stack and serving DHCP are one thing to verify: a
+phone either gets an address or it does not.
 
 1. **Raise the access point.** Build `AccessPointConfig` with
    `ap_ssid(id)`, `ap_password(AP_SECRET, id)` and `Wpa2Personal`, then
@@ -344,14 +346,40 @@ slices are 3 and 4 below.
    start call**: `set_config` calls `esp_wifi_start()` whenever the mode
    changes, so applying the initial config brings the network up. Keep the
    controller alive for as long as setup mode runs.
-2. **Bring up a second stack** on `interfaces.access_point`, which is an
+2. ✅ **Bring up a second stack** on `interfaces.access_point`, which is an
    ordinary embassy-net `Interface`. `Config::ipv4_static(StaticConfigV4 {
-   address: 192.168.4.1/24, gateway: None, dns_servers: empty })`, its own
-   `StackResources`, and the existing `net_task` to run it.
-3. **Serve DHCP**, or a phone joins and gets nothing. `edge-dhcp` is a codec,
+   address: 192.168.4.1/24, gateway: None, dns_servers: empty })` and its own
+   `StackResources`.
+
+   **Not** the existing `net_task`, as this plan first said: that one is
+   defined in the binary crate and `setup.rs` is in the library, so a library
+   module cannot spawn a task it cannot name. `setup.rs` has its own, two lines
+   long.
+3. ✅ **Serve DHCP**, or a phone joins and gets nothing. `edge-dhcp` is a codec,
    not a server: `Server::handle_request` takes a parsed `Packet` and returns
    one to send, and the packets are moved by an embassy-net `UdpSocket` bound
-   to port 67. Hand out a small pool from 192.168.4.2 upward.
+   to port 67. The pool is 192.168.4.2–192.168.4.9.
+
+   Two things the plan did not say, both decided at the bench:
+
+   - **`Server::new` defaults its pool to `.50`–`.200`**, which is not this
+     one. `range_start` and `range_end` are public fields and are set after
+     construction.
+   - **The `gateway: None` above is the *unit's* routing table, not what
+     clients are told.** The DHCP server advertises the unit as the client's
+     gateway even though it forwards nothing, which is what every ESP-IDF
+     softAP does: a phone handed no router at all can decide the network is
+     broken and drop it, whereas one that routes at us simply finds its packets
+     go nowhere — which is true, and the point. No DNS server is advertised,
+     because there is not one and hijacking lookups is the captive portal this
+     design has already declined.
+
+   **Association is logged separately from DHCP**, and that is not decoration.
+   A capture with nothing in it cannot otherwise distinguish *the phone never
+   joined* from *the phone joined and DHCP is broken*, and those have nothing
+   in common to debug. This cost one wasted capture to learn. `wifi::new`
+   already enables the access-point station events, so it is a subscription and
+   no configuration.
 4. **Serve the form** on TCP 80. `provisioning::parse_head` reads the request
    line and `Content-Length`; keep reading until the body is that long.
    - `GET /` (and anything else) → the page.
@@ -830,8 +858,9 @@ src/
                   the setup form and just enough HTTP
   sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
   store.rs        reads and writes the record in the nvs partition
-  config.rs       Config, from a flash record or the build-time fallback
-build.rs          injects cfg.toml values as env vars (the fallback; on its way out)
+  setup.rs        setup mode: the access point, its own stack, DHCP, the form
+  config.rs       Config, from a flash record
+build.rs          injects ap_secret from cfg.toml, and nothing else
 examples/mkrecord.rs
                   host-only: builds a provisioning record for dev/provision.sh
 
@@ -969,15 +998,23 @@ on the LED**, which is the whole reason step 10 exists.
      *open* network**, so `Wpa2Personal` is set explicitly — without it the
      salted password protects nothing and the setup session, the one where the
      home Wi-Fi password is typed, is readable by anyone in range
-   - ⬜ DHCP server (`edge-dhcp` 0.8, added) + the form over TCP.
-     Verified against the pinned sources before writing it: `interfaces.
-     access_point` is an ordinary embassy-net `Interface`; the AP needs no
-     explicit start, because `set_config` calls `esp_wifi_start()` whenever the
-     mode changes, so `wifi::new` with an `AccessPoint` config brings it up;
-     the stack takes `Config::ipv4_static`; and `esp_hal::system::
-     software_reset()` is the reboot after saving.
-     **Final verification needs a phone** — joining the network and submitting
-     the form is not something the bench scripts can do.
+   - ✅ the setup stack and the DHCP server (`edge-dhcp` 0.8, codec only —
+     `default-features = false`, so no `edge-nal`). A second embassy-net stack
+     on `interfaces.access_point` at 192.168.4.1/24, and a `UdpSocket` on port
+     67 moving packets in and out of `Server::handle_request`. Pool
+     192.168.4.2–.9.
+     **Verified with a phone**, which is the only way it can be: it associated,
+     and 811 ms later took 192.168.4.2 over Discover/Offer then Request/Ack.
+
+     ```
+     INFO (46110) - setup: station ea:ce:1a:6f:94:0b associated
+     INFO (46921) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
+     INFO (46958) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
+     ```
+   - ⬜ the form over TCP 80. `esp_hal::system::software_reset()` is the reboot
+     after saving.
+     **Final verification needs a phone** — submitting the form is not
+     something the bench scripts can do.
    - ✅ the reset button on GPIO3, as a **boot** gesture rather than a runtime
      one — see *The outside button*. Now a true reset: with the fallback gone,
      erasing drops the unit into setup mode rather than being silently refilled
@@ -1063,11 +1100,29 @@ one line to change, possibly per board.
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
 manual feed works with the broker down; battery backup.
 
-**A display, if a part can be found that fits.** The original LCD window is
-40 × 18 mm, which points at a 0.91" 128×32 I²C OLED — roughly a 38 × 12 mm
-module, two pins, a 512-byte framebuffer, and two lines of about 21 characters.
-The common 0.96" 128×64 is the wrong shape: its module is near enough square at
-27 mm tall and will not go in.
+**A display. The part is ordered.** The original LCD window is 40 × 18 mm,
+which pointed at a 0.91" 128×32 I²C OLED — roughly a 38 × 12 mm module, two
+pins, a 512-byte framebuffer, and two lines of about 21 characters. Five of
+them are on the way (SSD1306, I²C, `GND · VCC · SCL · SDA`). The common 0.96"
+128×64 is the wrong shape: its module is near enough square at 27 mm tall and
+will not go in.
+
+**A 1.3" 128×64 is already on the bench**, and it is the right thing to develop
+against, because the driver crate and the two wires are identical and only a
+size parameter differs. But **lay the screen out for 128×32 from the start** and
+render it on the big one with the bottom half dark. Two lines of 21 characters
+is the real constraint; a layout built for eight lines cannot be shrunk into it,
+and the part that arrives is the part that goes in the case.
+
+⚠️ **Check which controller that 1.3" module actually has before blaming any
+code.** Many 1.3" 128×64 boards are **SH1106**, not SSD1306: it has 132 columns
+of RAM with the panel wired to the middle 128, so an SSD1306 driver renders
+everything displaced two pixels with the edges wrapped. It looks like a broken
+framebuffer and is not one. The 0.91" parts are genuine SSD1306.
+
+Pins are not a constraint — I²C routes through the C6's GPIO matrix, so any free
+pair works. GP6/GP7 on the Zero's back pad row sit next to the GPIO8 LED pad, or
+GP18/GP19 on the edge. Whichever, the number goes in `board.rs` like every other.
 
 What sells it is setup mode. A unit currently cannot tell you the password of
 the network it just raised, which is the whole reason for the salted derivation,
