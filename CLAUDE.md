@@ -339,7 +339,7 @@ what remains. `setup.rs`'s own module doc counts in three slices rather than
 four, because raising the stack and serving DHCP are one thing to verify: a
 phone either gets an address or it does not.
 
-1. **Raise the access point.** Build `AccessPointConfig` with
+1. ✅ **Raise the access point.** Build `AccessPointConfig` with
    `ap_ssid(id)`, `ap_password(AP_SECRET, id)` and `Wpa2Personal`, then
    `esp_radio::wifi::new(wifi, ControllerConfig::default()
    .with_initial_config(WifiConfig::AccessPoint(..)))`. There is **no separate
@@ -380,7 +380,7 @@ phone either gets an address or it does not.
    in common to debug. This cost one wasted capture to learn. `wifi::new`
    already enables the access-point station events, so it is a subscription and
    no configuration.
-4. **Serve the form** on TCP 80. `provisioning::parse_head` reads the request
+4. ⬜ **Serve the form** on TCP 80. `provisioning::parse_head` reads the request
    line and `Content-Length`; keep reading until the body is that long.
    - `GET /` (and anything else) → the page.
    - `POST /save` → `provisioning::record_from_form`. On `Ok`, `store.save`,
@@ -858,7 +858,9 @@ src/
                   the setup form and just enough HTTP
   sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
   store.rs        reads and writes the record in the nvs partition
-  setup.rs        setup mode: the access point, its own stack, DHCP, the form
+  dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
+  setup.rs        setup mode: the access point, its own stack, DHCP (the form
+                  is roadmap step 9's last item and is not built)
   config.rs       Config, from a flash record
 build.rs          injects ap_secret from cfg.toml, and nothing else
 examples/mkrecord.rs
@@ -978,7 +980,7 @@ on the LED**, which is the whole reason step 10 exists.
      interrupted write rejected (`provisioning.rs`, host-tested)
    - ✅ *parsing* a submitted form: `x-www-form-urlencoded` into a record, and
      enough HTTP to read a request line and its `Content-Length`. Nothing
-     serves it yet — see the access point item below
+     serves it yet — see the form item below
    - ✅ setup network credentials, and `dev/ap-password.sh` to match
    - ✅ SHA-256 (`sha256.rs`), pinned to NIST vectors and padding boundaries
    - ✅ reading and writing the `nvs` partition (`store.rs`, `esp-storage`
@@ -1057,16 +1059,35 @@ on the LED**, which is the whole reason step 10 exists.
       much brighter than blue at the same number
     - ⬜ an external WS2812 on the Zero's GPIO8 pad, in parallel with the
       onboard one. Needs no firmware change — see *The RGB LED*
-    - ⬜ wire `Health::setup` when step 9's access point lands. It is the one
-      field `Bus::health()` hardcodes to `false`, and it is hardcoded rather
-      than kept as an always-false atomic so it cannot read as live wiring
+    - ✅ `Health::setup`. `main.rs` sets the flag on the way into setup mode
+      and `Bus::health()` reads it, so the LED's blue flash comes from the same
+      fact the boot path acted on rather than from a constant
 
-11. Move the broker and Home Assistant to the Raspberry Pi 5. The Pi has
-    arrived. Today both run in Docker on the Mac, which is why the feeders point
-    at a laptop that is not always on.
-    - ⬜ Mosquitto and Home Assistant on the Pi, with
-      `homeassistant/packages/cat_feeder.yaml` copied over unchanged — it is
-      tracked here precisely so it can be
+11. Move the broker and Home Assistant to the Raspberry Pi 5. **The Pi is set
+    up and Home Assistant runs on it.** Today the feeders still point at the
+    Mac's Docker stack, which is a laptop that is not always on.
+    - ✅ the Pi itself, with Home Assistant on it
+    - ⬜ Mosquitto on the Pi, and the feeder user in its password file
+    - ⬜ **install `homeassistant/packages/cat_feeder.yaml` on the Pi**,
+      unchanged — it is tracked here precisely so it can be.
+
+      This one is load-bearing rather than housekeeping, and the failure it
+      causes is the nastiest kind. That package is the half of the system that
+      publishes `feeder/time` every minute. A feeder pointed at a broker where
+      nobody publishes it takes the *retained* time, starts its clock on it, and
+      then never arms the schedule — see *A retained `time` is not a trusted
+      one*. The unit sits `online`, flashing red ×3, and does not feed. That is
+      exactly correct behaviour and it is indistinguishable from a bug.
+
+      So it comes **before** repointing any feeder, and it is checkable with no
+      feeder involved at all:
+
+      ```sh
+      mosquitto_sub -h <pi> -u feeder -P <pass> -t 'feeder/time' -v
+      ```
+
+      A line a minute means the Pi's half is done. Silence means Home Assistant
+      is up but the package is not loaded.
     - ⬜ repoint the feeders. **This is a re-provision, not a rebuild**:
       `mqtt_host` lives in each unit's flash record, so it is
       `./dev/provision.sh` once per unit with the Pi's address, and no compile
@@ -1085,7 +1106,8 @@ on the LED**, which is the whole reason step 10 exists.
 | 3, the DRV8833 and the detent interval | the part |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, and the third feeder being opened |
-| 11, the Pi | nothing; the Pi has arrived |
+| 11, the Pi | nothing; the Pi is set up and Home Assistant runs on it |
+| a display | the 0.91" parts, ordered. **Not blocking**: a 1.3" development part is on the bench |
 
 **Both the Pi 5 and the three Zeros are now on the bench.** The only part still
 outstanding is the DRV8833, which blocks step 3 and therefore step 8.

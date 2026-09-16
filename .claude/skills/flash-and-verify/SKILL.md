@@ -130,7 +130,7 @@ that triggers them. Treat it as the acceptance test: implement the lines it
 names, then flash and read them back.
 
 Most steps carry real transcripts now. The ones still unobserved are 3 (the
-motor itself), 6 (flashing the Zeros), 8, the access point half of 9, and the
+motor itself), 6 (flashing the Zeros), 8, the form half of 9, and the
 visual half of 10 — every one of them waiting on hardware, a phone, or someone
 looking at the board. Those describe what the console *must* show, and whoever
 first reaches one should correct the file with what it actually showed.

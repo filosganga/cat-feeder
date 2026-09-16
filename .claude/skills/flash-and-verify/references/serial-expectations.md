@@ -22,8 +22,8 @@ acceptance test, or change both the code and this file together.
 Steps marked *observed* carry real transcripts. The rest are contracts, not
 recordings: when you first reach one, replace its expected block with what the
 console actually printed. Steps 3 (the motor itself), 6 (flashing the Zeros),
-8, the access point half of 9, and 10 are the ones still unobserved. All but
-10 wait on hardware or a phone; 10 only wants a bench session.
+8, the form half of 9, and 10 are the ones still unobserved. All but 10 wait on
+hardware or a phone; 10 only wants a bench session.
 
 Every application line is formatted `LEVEL (ms) - message`, for example
 `INFO (261) - Embassy initialized!`. The number is milliseconds since boot,
@@ -684,16 +684,59 @@ Cross-check the password against `./dev/ap-password.sh <id>`, which derives it
 independently: they must match exactly, or the sticker on the unit is wrong.
 
 The SSID appearing in a phone's Wi-Fi list is the whole of slice 1, and has been
-confirmed. Joining it does nothing yet — DHCP is slice 2.
+confirmed. So has slice 2: joining now gets an address.
 
-### When the access point is built
+### The access point and DHCP — *observed*
 
-Not written yet. What it must show:
+Everything up to and including the address. A phone joined at t=46 s; the
+remaining ~100 s of the capture showed no disconnect and no renewal, so the
+lease held.
 
 ```
-INFO - store: no record yet
-INFO - setup: access point cat-feeder-db0260 up, browse to 192.168.4.1
-INFO - setup: station connected
+INFO (298) - store: no record yet, going to setup
+INFO (304) - setup: raising cat-feeder-db0260
+INFO (308) - setup: password DAKS-2W9X-NVQG
+INFO (313) - setup: then browse to http://192.168.4.1
+INFO (1227) - setup: access point up
+INFO (1232) - setup: dhcp on 192.168.4.1, pool 192.168.4.2-192.168.4.9
+INFO (1239) - link_up = true
+INFO (1858) - led: Setup
+INFO (46110) - setup: station ea:ce:1a:6f:94:0b associated
+INFO (46921) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
+INFO (46958) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
+```
+
+Two `dhcp` lines per client is correct and not a repeat: Discover→Offer, then
+Request→Ack, tens of milliseconds apart and carrying the same address. A phone
+that shows only one has failed halfway.
+
+The `pool` line is the only place the range is ever stated on the console.
+Check it against `POOL_START`/`POOL_END` in `src/setup.rs` when either moves.
+
+The MAC will not match the one printed on the phone: iOS and Android use a
+per-SSID random address, and the locally-administered bit (`ea:` here — second
+nibble `a`, `e`, `2` or `6`) is how you recognise one. It is stable for this
+SSID, so rejoining reuses the same lease.
+
+**The failure signatures worth knowing:**
+
+| What the console shows | What it means |
+|---|---|
+| `station ... associated`, then nothing | the phone joined; DHCP is the broken half |
+| nothing at all | it never joined — radio, SSID or password |
+| `dhcp had no answer for ...` | the pool is exhausted, or the request was not for us |
+| `dhcp refused ...` | the client asked for an address outside the pool — usually a remembered lease from another ESP access point, which all use 192.168.4.x. It should retry from scratch and succeed |
+| `could not bind udp/67` | something else holds the port; it cannot serve at all |
+
+An association line is evidence, not proof: `watch_stations` re-subscribes on
+each event, so one published in the gap is dropped. A `dhcp` line with no
+association above it is not a contradiction — the socket cannot miss those.
+
+### When the form is built
+
+Not written yet. What it must add, after the address above:
+
+```
 INFO - setup: GET /
 INFO - setup: POST /save, saving
 INFO - store: saved

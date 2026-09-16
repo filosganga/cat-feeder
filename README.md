@@ -46,8 +46,9 @@ Nothing has run on a production board yet. All of the above was verified on the
 Waveshare ESP32-C6-DEV-KIT-N8, with a bench button standing in for the hub
 microswitch and log lines standing in for the motor.
 
-The three Zeros and the Raspberry Pi 5 are on the bench; the DRV8833 is the only
-part still outstanding, and it is what blocks driving a real motor.
+The three Zeros are on the bench and the Raspberry Pi 5 is set up, though the
+feeders still point at the Mac's Docker stack. The DRV8833 is the only part
+still outstanding, and it is what blocks driving a real motor.
 
 ## Hardware
 
@@ -277,7 +278,8 @@ src/
   store.rs        reads and writes the record in the nvs partition
   wiring.rs       what the tasks share
   config.rs       Config from the flash record, and the MAC-derived device id
-  setup.rs        setup mode: the unit's own network and the form
+  dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
+  setup.rs        setup mode: the unit's own network, and DHCP on it
 
 build.rs          reads cfg.toml into the build
 dev/              local Mosquitto and Home Assistant, plus the scripts

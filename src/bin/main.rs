@@ -134,7 +134,7 @@ async fn main(spawner: Spawner) -> ! {
     let Some(cfg) = resolve_config(peripherals.FLASH, wipe) else {
         BUS.setup.store(true, Ordering::Relaxed);
         spawner.spawn(button_task(button).expect("failed to create button task"));
-        cat_feeder::setup::run(peripherals.WIFI, id, AP_SECRET).await
+        cat_feeder::setup::run(spawner, peripherals.WIFI, id, AP_SECRET).await
     };
 
     spawner.spawn(button_task(button).expect("failed to create button task"));
