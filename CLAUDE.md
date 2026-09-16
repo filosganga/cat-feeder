@@ -134,35 +134,38 @@ so the state machine is written so the starting level does not matter.
 Without the align phase, a run that starts with the switch free would make the
 first portion short of a full 90°.
 
-**Minimum spacing between clicks is derived per unit — 760 ms on the reference
-mechanism — and it lives in `feeder.rs`, not in `switch.rs`.** Just after the motor starts, the hub is sitting right on an edge;
-a fraction of a turn can bounce the switch and produce a spurious falling edge
-at zero rotation. So inside the counting loop, an edge arriving less than 800 ms
-after the previous one, or after the motor started, is discarded. At 8 rpm a
-quarter turn needs ~1900 ms, so this cannot reject a real click. It works
-together with the 30 ms debounce, not instead of it.
+**Minimum spacing between clicks lives in `feeder.rs`, not in `switch.rs`, and
+is derived per unit** — 760 ms on the reference mechanism. Just after the motor
+starts, the hub is sitting right on an edge; a fraction of a turn can bounce the
+switch and produce a spurious falling edge at zero rotation. So inside the
+counting loop, an edge arriving sooner than that after the previous one, or
+after the motor started, is discarded. The threshold is two fifths of a detent,
+so it cannot reject a real click at any mechanism speed. It works together with
+the 30 ms debounce, not instead of it.
 
-The placement matters. That 1900 ms floor only holds **while the motor is
+The placement matters. That detent floor only holds **while the motor is
 driving**. A bench button pressed twice quickly produces edges far closer
 together and every one of them is real. If the rule lived in `switch.rs`, the
 stream would silently swallow them and lie about what it observed, and every
 bench test would look like a broken debounce.
 
 So: `switch.rs` debounces at 30 ms and reports **every** real edge.
-`feeder.rs` applies the 800 ms rejection, where the motor-driven assumption
+`feeder.rs` applies the spacing rejection, where the motor-driven assumption
 actually holds.
 
-The 5 s no-edge timeout remains the jam guard.
+The no-edge timeout remains the jam guard, derived the same way at two and a
+half detents.
 
 These four cases — *starts pressed*, *starts free*, *bounce at t=0*, *no clicks
 at all* — are host tests in `feeder.rs`, along with the one that is easiest to
 get wrong: repeated bounce must not postpone jam detection.
 
-Note the 800 ms threshold is a wide margin, not a check that a full quarter
-turn happened. Real contact chatter lasts milliseconds; a real detent takes
-~1900 ms. Anything in between cannot occur while the motor drives, so the
-threshold sits comfortably in the empty middle rather than close to either
-edge.
+Note the threshold is a wide margin, not a check that a full detent happened.
+Real contact chatter lasts milliseconds; a real detent takes the interval this
+unit was calibrated for. Anything in between cannot occur while the motor
+drives, so the threshold sits in the empty middle rather than close to either
+edge — and `feeder.rs` has tests asserting it stays there for every interval
+from 1 ms to 5 s, rather than only for the mechanism on the bench.
 
 ### The feeder task owns the motor
 
@@ -805,8 +808,8 @@ src/
   board.rs        pin map per board (feature-gated)
   motor.rs        Motor { run_forward(), brake() } over two Output pins + nSLEEP
   switch.rs       debounced click stream (async), 30 ms; reports every edge
-  feeder.rs       owns motor + switch; FEED queue, align, 800 ms spacing,
-                  count, brake, jam timeout
+  feeder.rs       owns motor + switch; FEED queue, align, per-unit spacing,
+                  count, brake, jam timeout, portions -> clicks
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   button.rs       pure logic: what a press of the outside button means
   indicator.rs    pure logic: what the LED shows, the priority ladder, the
@@ -851,7 +854,7 @@ each one.
 1. ✅ Toolchain + blinky on the DEV-KIT
 2. ✅ Switch task: debounced clicks on the console, on a bench button
 3. `feed(n)`: ✅ state machine host-tested and verified on hardware with a
-   logging fake motor (align, 800 ms rejection, counting, jam, accumulation).
+   logging fake motor (align, spacing rejection, counting, jam, accumulation).
    Still to do: the DRV8833, and with it the one measurement that matters —
    the **detent interval**, the time from one click to the next under power.
    That belongs here rather than in step 2: the hub can be back-driven by hand,

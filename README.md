@@ -4,14 +4,19 @@ Replacement electronics for three commercial automatic cat feeders, so all
 three dispense at the same instant.
 
 The original board in each feeder is removed. The mechanics are kept: a 5 V
-geared motor and a microswitch on the output hub that clicks four times per
-revolution, one click per portion. An ESP32-C6 running Rust firmware drives the
-motor and takes its orders from Home Assistant over MQTT.
+geared motor and a microswitch on the output hub, where one click is one
+portion. An ESP32-C6 running Rust firmware drives the motor and takes its
+orders from Home Assistant over MQTT.
 
-There is no real-time clock, no NTP and nothing stored in flash. Home Assistant
-publishes the time and the feeding schedule as retained MQTT messages, and each
-feeder keeps them in RAM. The broker is the only thing that remembers, which is
-why a feeder that loses power and finds no broker waits rather than guessing.
+There is no real-time clock and no NTP. Home Assistant publishes the time and
+the feeding schedule as retained MQTT messages, and each feeder keeps them in
+RAM. The broker is the only thing that remembers *when to feed*, which is why a
+feeder that loses power and finds no broker waits rather than guessing.
+
+Flash holds one thing only: how to reach the broker, plus each unit's own
+mechanical calibration. Those are the facts the broker cannot supply, because
+they are how a unit reaches it in the first place — and because the three
+feeders are not all the same model.
 
 ## Status
 
@@ -27,6 +32,10 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Home Assistant discovery, commands, pause | working |
 | Schedule, clock, double-feed guard | working |
 | Home Assistant automations publishing time and schedule | working |
+| Status LED on the onboard WS2812 | working, verified by eye |
+| Outside button: hold to arm, tap to feed | working |
+| Per-board provisioning from the host (`dev/provision.sh`) | working |
+| Per-unit mechanical calibration | working, defaults until measured |
 | Driving the actual motor | **not started** — no DRV8833 yet |
 | Setup over the unit's own Wi-Fi | **partly built**, see below |
 
@@ -57,11 +66,25 @@ cargo install espflash
 cp cfg.toml.example cfg.toml     # then fill in Wi-Fi and broker details
 ./dev/bootstrap.sh               # once, creates the dev broker password
 docker compose up -d             # Mosquitto on 1883, Home Assistant on 8123
+./dev/provision.sh               # once per board, writes cfg.toml into flash
 cargo run                        # build, flash, and open the serial monitor
 ```
 
-`cfg.toml` is git-ignored and compiled into the binary, so changing it needs a
-rebuild rather than only a reflash.
+`cfg.toml` is git-ignored. `dev/provision.sh` writes its values straight into
+the board's `nvs` partition, which an application reflash never touches — so a
+board is provisioned once and keeps its settings across every `cargo run`, with
+nothing compiled in and nothing re-seeded at boot.
+
+It also carries this unit's mechanical calibration, so three feeders that are
+not the same model can run one binary:
+
+```sh
+./dev/provision.sh --detent-ms 900 --portion-scale 133
+```
+
+The firmware still falls back to compiling `cfg.toml` in when a board has no
+record. That fallback goes once setup mode lands; `store: seeded from cfg.toml`
+on the console is what tells you a board is running on it.
 
 A healthy boot looks like this:
 
@@ -143,9 +166,11 @@ reproducible off the device.
 
 **Then, per unit.** *Not yet — this is what step 9 builds.*
 
-1. Press and hold the reset button on the outside of the case. The unit erases
-   its stored configuration and restarts with nothing, which is the one and only
-   way into setup.
+1. Hold the reset button on the outside of the case **while plugging the unit
+   in**. It erases its stored configuration, which is the one and only way into
+   setup. It is a power-on gesture rather than a runtime one so that it cannot
+   happen by accident: the same button feeds, and separating the two by hold
+   duration alone would mean a beat too long wipes a working feeder.
 2. Join `cat-feeder-<id>` from a phone, using the password on the sticker.
 3. Browse to `http://192.168.4.1`.
 4. Fill in Wi-Fi and broker details, save.
@@ -154,10 +179,53 @@ reproducible off the device.
 A brand-new unit skips step 1: fresh flash has no configuration, so it comes up
 in setup mode on its own.
 
+With a cable to hand, `./dev/provision.sh` does the same job without any of
+this — it writes the record directly. The access point is for the case where
+the units are already installed and a laptop is not.
+
 There is deliberately no automatic fall back into setup after a failed
 connection. A router rebooting for five minutes must not drop a working feeder
 into setup mode and stop it feeding — the button makes that a decision rather
 than an accident.
+
+## The LED and the button
+
+Each unit has an RGB LED and one button on the outside of the case. Between them
+they cover the things Home Assistant cannot tell you — because the failures that
+matter most are the ones where the unit cannot reach Home Assistant at all.
+
+| LED | Meaning |
+|---|---|
+| red, green, blue at power-on | self-test. Proves the LED works, and that its colours are the right way round |
+| **solid** red | jammed. Something is stuck; go and look |
+| **solid** white | feeding |
+| cyan, twice a second | the button is armed — a tap will dispense |
+| red ×1 every 3 s | no Wi-Fi. Check the router or the credentials |
+| red ×2 every 3 s | no broker. Check the broker address, or Mosquitto |
+| red ×3 every 3 s | no trusted time, so **this unit will not feed on schedule**. Check Home Assistant is publishing |
+| amber ×1 every 5 s | paused |
+| green ×2, then dark | all well |
+
+**Dark is the healthy state.** If lit were normal, lit would carry no
+information and nobody would look at it. Count the flashes rather than judging
+the colour: one, two and three point at three different things to fix, and
+counting works across a dark room and for a colour-blind reader.
+
+Red ×3 for up to a minute after a reboot is normal — the unit is waiting for
+Home Assistant's next time publish. It only means something if it stays.
+
+The button:
+
+| Gesture | Effect |
+|---|---|
+| hold 2 s | arm it. The LED blinks cyan |
+| tap while armed | feed one portion. Taps refresh the window |
+| nothing for 10 s | locks again |
+| held while plugging in | erase the configuration |
+
+Arming exists because **a button on a cat feeder that dispenses food when
+pressed is a button cats will learn to press.** Recess it as well; needing a
+fingertip defeats a paw outright.
 
 ## MQTT
 
@@ -184,14 +252,18 @@ host; anything touching a peripheral is below it and is verified on the console.
 src/
   bin/main.rs     peripherals, tasks, executor
 
-  feeder.rs       pure: align, count, brake, jam timeout
-  portions.rs     pure: the pending-portions counter and its cap
+  feeder.rs       pure: align, count, brake, jam timeout, per-unit timings
+  portions.rs     pure: the pending-click counter, its cap, portions -> clicks
   schedule.rs     pure: clock, schedule, the double-feed guard
   provisioning.rs pure: the flash record, setup credentials and form
   sha256.rs       pure: shared with dev/ap-password.sh
 
+  button.rs       pure: what a press of the outside button means
+  indicator.rs    pure: what the status LED shows, and when
+
   board.rs        pin map and board identity, per Cargo feature
   switch.rs       debounced click stream
+  led.rs          the onboard WS2812, over RMT
   motor.rs        MotorDriver, the DRV8833, and a logging stand-in
   mqtt.rs         connection, last will, discovery, commands, state
   wiring.rs       what the tasks share

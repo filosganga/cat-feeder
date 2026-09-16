@@ -32,9 +32,16 @@ from `esp-println`'s `timestamp` feature, fed by `_esp_println_timestamp` in
 from this firmware.
 
 **Use those timestamps.** Every timing rule in this project is checkable from
-the console rather than guessed at: the 30 ms debounce, the 800 ms minimum
-click spacing, ~1.9 s per portion, the 5 s jam timeout. To read gaps between
-lines rather than absolute times:
+the console rather than guessed at: the 30 ms debounce, the minimum click
+spacing, the detent interval, the jam timeout. The last three are **per unit**
+and derived from that interval, so read the figures the board prints at boot
+rather than assuming the reference mechanism's:
+
+```
+INFO - feeder: clicks >760 ms apart, jam after 4750 ms, portions x100%
+```
+
+To read gaps between lines rather than absolute times:
 
 ```sh
 espflash monitor --non-interactive --port "$ESPFLASH_PORT" \
@@ -74,7 +81,7 @@ better place to start, because it separates wiring problems from mechanical
 ones. The real hub comes second.
 
 `switch.rs` debounces at 30 ms and reports **every** real edge. It does **not**
-apply the 800 ms minimum spacing; that belongs to `feeder.rs`, where the motor
+apply the minimum spacing; that belongs to `feeder.rs`, where the motor
 guarantees clicks cannot arrive faster than about 1900 ms. Getting this backwards
 is the likeliest mistake in this step, and it shows up as a bench button that
 ignores every second press.
@@ -92,7 +99,7 @@ INFO - switch: click 2
 ```
 
 - **Every press counts, however fast.** Two presses 200 ms apart must produce
-  two clicks. If the second is swallowed, the 800 ms spacing rule has been put
+  two clicks. If the second is swallowed, the spacing rule has been put
   in the switch stream instead of the feeder.
 - One press giving several clicks means the 30 ms debounce is not working. Log
   raw edges at `debug` to see the bounce.
@@ -206,13 +213,13 @@ edge, which is the normal resting position, and watch the first click:
 ```
 INFO - feed: start, portions=1
 INFO - feed: aligned
-DEBUG - feed: edge at 40ms ignored, below 800ms minimum spacing
+DEBUG - feed: edge ignored, below 760ms minimum spacing
 INFO - feed: click 1/1
 INFO - feed: done, portions=1, elapsed=1.9s
 ```
 
 A feed that completes in well under a second has counted the startup bounce as a
-portion. The 800 ms minimum spacing is what prevents that, and it is separate
+portion. The minimum spacing is what prevents that, and it is separate
 from the 30 ms debounce in `switch.rs`. Both must be present, in their own
 modules: the debounce filters contact bounce everywhere, the spacing rule
 rejects impossible-at-8-rpm edges and is only correct while the motor drives.
@@ -724,8 +731,9 @@ distinction is the entire diagnostic value.
 
 **Two presses, not one.** The hub rests with the switch open, so the first click
 aligns and only the second counts a portion — the log says `needs aligning`.
-Presses closer than 800 ms apart are discarded as motor-start bounce, so they
-have to be deliberate rather than a double-tap.
+Presses closer together than the unit's minimum spacing — 760 ms on the
+reference mechanism, and printed at boot — are discarded as motor-start bounce,
+so they have to be deliberate rather than a double-tap.
 
 ### Testing anything below `NoTime` needs care
 

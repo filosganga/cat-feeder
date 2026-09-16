@@ -577,7 +577,9 @@ async fn feeder_task(mut motor: LogMotor, cfg: Config) {
                 .await;
 
                 match event {
-                    Either3::First(()) => log_click(feeder.on_click(now_ms())),
+                    Either3::First(()) => {
+                        log_click(feeder.on_click(now_ms()), cfg.timings.min_click_spacing_ms)
+                    }
                     Either3::Second(extra) => {
                         // No `start`, no touching the motor: it is already
                         // turning, and this only lengthens the same run.
@@ -776,12 +778,18 @@ fn log_clamp(added: Added) {
 
 /// See [`log_start`] for why this is a separate function.
 #[inline(never)]
-fn log_click(outcome: ClickOutcome) {
+fn log_click(outcome: ClickOutcome, min_spacing_ms: u64) {
     match outcome {
         ClickOutcome::Aligned => info!("feed: aligned"),
         ClickOutcome::Counted { remaining: 0 } => info!("feed: done"),
         ClickOutcome::Counted { remaining } => info!("feed: click, {remaining} to go"),
-        ClickOutcome::TooSoon => info!("feed: edge ignored, below 800ms minimum spacing"),
+        // The real threshold, not a literal. It is derived from this unit's
+        // detent interval, so a hardcoded number would state a figure the
+        // firmware is not using — on exactly the log line someone reads when
+        // clicks are going missing.
+        ClickOutcome::TooSoon => {
+            info!("feed: edge ignored, below {min_spacing_ms}ms minimum spacing")
+        }
         ClickOutcome::NotTurning => {}
     }
 }
