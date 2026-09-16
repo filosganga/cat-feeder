@@ -95,35 +95,57 @@ feeder/schedule [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
 
 ### The same thing on the Raspberry Pi
 
-The Pi runs Raspberry Pi OS with Docker, so it is the same shape as the stack
-above and the procedure is identical: copy the file into whatever directory is
-mounted as Home Assistant's `/config`, add the same `packages:` line, restart
-the container. It goes over **unchanged** — nothing in it names a host, which is
-why it is tracked in this repo rather than configured per machine.
+The Pi runs Raspberry Pi OS with Docker, so the procedure is the one above:
+copy the file into the directory mounted as Home Assistant's `/config`, include
+the packages directory, restart. `cat_feeder.yaml` goes over **unchanged** —
+nothing in it names a host, which is why it is tracked in this repo rather than
+configured per machine.
 
-The same check works against the Pi by setting `MQTT_HOST` — and `MQTT_PASS`
-too, if the feeder user there has a different password from the dev stack's:
+```sh
+scp homeassistant/packages/cat_feeder.yaml <pi>:~/ha/config/packages/
+```
+
+A Home Assistant that was set up through the UI has no `homeassistant:` block in
+its `configuration.yaml` at all, and without one the packages directory is never
+read. Add it:
+
+```yaml
+# ha/config/configuration.yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+Then restart Home Assistant and watch the Pi's broker. This needs no feeder, and
+`MQTT_PASS` too if the feeder user there differs from the dev stack's:
 
 ```sh
 MQTT_HOST=<pi> ./dev/watch.sh 'feeder/time' 'feeder/schedule'
 ```
 
-A line a minute on `feeder/time` is what says the Pi's half is done, and no
-feeder has to be involved at all.
+A line a minute on `feeder/time` says the Pi's half is done.
 
-Two things to check there that this compose file already gets right:
+**Read the offset on that line before believing it.** The feeders apply the
+wall-clock fields straight from `feeder/time` without converting — see *MQTT
+contract* in CLAUDE.md — so a Home Assistant on the wrong zone publishes a
+payload that is still entirely valid with every meal moved by an hour. Mounting
+`/etc/localtime` into the container is the usual way to get this right and does
+not need a `TZ` variable, but note that it is not quite the thing being checked:
+what renders `{{ now() }}` is Home Assistant's own `time_zone`, taken from the
+system zone at onboarding and kept in `.storage/` rather than in a file. The two
+normally agree. The offset on the wire is what proves it.
 
-- **The container's timezone.** `compose.yaml` sets `TZ: Europe/Rome`, and that
-  is load-bearing rather than cosmetic. Home Assistant publishes its own local
-  time and the feeders apply the wall-clock fields directly, without converting
-  — see *MQTT contract* in CLAUDE.md. Home Assistant left on UTC publishes
-  `+00:00`, every meal silently moves by the offset, and the payload still looks
-  entirely valid. A feeder prints what it was told at startup
-  (`clock: started, ...+02:00`) for exactly this reason: it turns an hour-long
-  error into the first line on the console.
-- **That Mosquitto listens on the LAN**, not just on loopback, or the feeders
-  cannot reach it even though the Pi's own `mosquitto_sub` works fine. The
-  compose file publishes 1883 on all interfaces for the same reason.
+Two more differences from the stack above, both properties of the Pi's compose
+file rather than of the broker:
+
+- **Home Assistant with `network_mode: host`** reaches Mosquitto at `localhost`,
+  not at `mosquitto`. The container-name address in *The broker has three
+  different addresses* is a property of this stack's bridge network only.
+- **A bind-mounted Mosquitto data directory** still needs `persistence true` in
+  its config, or retained messages are lost on every broker restart. Most come
+  straight back, because the package republishes the time each minute and the
+  schedule on restart — but `feeder/<id>/paused` does not, and a paused feeder
+  silently resuming is the one state change in this system that nothing alarms
+  about.
 
 ⚠️ **Do not point one feeder at both stacks.** Every piece of persistent state
 in this design is a retained message, so a unit moved back to the Mac picks up
