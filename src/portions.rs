@@ -19,6 +19,59 @@
 /// otherwise keep the motor running until the hopper is empty.
 pub const MAX_PORTIONS: u8 = 10;
 
+/// A [`portion_scale`](clicks_for) that changes nothing.
+pub const SCALE_UNCHANGED: u16 = 100;
+
+/// How many clicks this unit must turn to dispense `portions`.
+///
+/// **Specified and tested, not yet wired up.** The scale comes from the
+/// per-unit record in flash, which is roadmap step 9; see *Per-unit portion
+/// size* in `CLAUDE.md`.
+///
+/// ## Why a scale exists at all
+///
+/// `feeder/schedule` is a single retained topic shared by every unit, so a slot
+/// saying `portions: 2` means the same request reaches all three. The feeders
+/// are not all the same model, and a click on one mechanism need not dispense
+/// the same amount of food as a click on another. Without a per-unit scale, one
+/// feeder quietly over- or under-feeds forever, and nothing in the system can
+/// see it.
+///
+/// So **portions are the contract and clicks are the mechanism**: everything
+/// arriving from outside — the Home Assistant button, `feeder/<id>/feed`,
+/// `feeder/all/feed`, every schedule slot — speaks portions, and this is the
+/// one place they become clicks.
+///
+/// ## The rule that matters
+///
+/// A request for one or more portions **never becomes zero clicks**, however
+/// small the scale. Rounding a meal away would be a feeder that silently stops
+/// feeding, which is the failure this whole project is built to avoid. Zero in
+/// still gives zero out, because `feed 0` is a documented no-op rather than a
+/// meal.
+///
+/// Rounding is to nearest, and per request — no remainder is carried between
+/// meals. Carrying one would make the same slot dispense two clicks some days
+/// and one on others, which is impossible to read on a console and interacts
+/// badly with the never-double-feed rules. The cost is that small portion counts
+/// can only approximate a scale: at 133%, a one-portion meal is one click, not
+/// 1.33. If that matters for a unit, the honest fix is a schedule with larger
+/// counts, not a cleverer rounding rule.
+pub fn clicks_for(portions: u8, scale_pct: u16) -> u8 {
+    if portions == 0 {
+        return 0;
+    }
+
+    // u32 throughout: 255 portions at a 400% scale overflows both u8 and u16.
+    // The `+ 50` is round-to-nearest rather than truncation, which is what makes
+    // 3 portions at 133% come out as 4 clicks instead of 3.
+    let scaled = (portions as u32 * scale_pct as u32 + 50) / 100;
+
+    // Never zero, never wrapped. The upper clamp only bites on absurd scales,
+    // and `Pending::add` caps the queue at MAX_PORTIONS anyway.
+    scaled.clamp(1, u8::MAX as u32) as u8
+}
+
 /// Portions owed but not yet dispensed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Pending {
@@ -89,6 +142,74 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unscaled_feeder_is_unchanged() {
+        for portions in 0..=20 {
+            assert_eq!(clicks_for(portions, SCALE_UNCHANGED), portions);
+        }
+    }
+
+    #[test]
+    fn a_bigger_click_needs_fewer_of_them() {
+        // The worked example: a unit whose click dispenses half again as much.
+        // Three portions should come out as two clicks, not three.
+        assert_eq!(clicks_for(3, 67), 2);
+        assert_eq!(clicks_for(6, 67), 4);
+    }
+
+    #[test]
+    fn a_smaller_click_needs_more_of_them() {
+        assert_eq!(clicks_for(3, 133), 4);
+        assert_eq!(clicks_for(6, 133), 8);
+    }
+
+    #[test]
+    fn a_meal_is_never_rounded_away() {
+        // The rule this function exists to guarantee. A feeder that silently
+        // dispenses nothing is the failure mode the whole project avoids, and
+        // it would be invisible: Home Assistant sees the request succeed.
+        for scale in 1..=SCALE_UNCHANGED {
+            assert!(
+                clicks_for(1, scale) >= 1,
+                "one portion at {scale}% became no clicks at all"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_portions_still_means_zero_clicks() {
+        // `feed 0` is a documented no-op. The never-zero rule must not turn it
+        // into a meal nobody asked for.
+        for scale in [1, 50, SCALE_UNCHANGED, 250, u16::MAX] {
+            assert_eq!(clicks_for(0, scale), 0);
+        }
+    }
+
+    #[test]
+    fn scaling_rounds_to_nearest_not_down() {
+        // Truncation would make every scaled feeder under-feed systematically.
+        assert_eq!(clicks_for(1, 150), 2, "1.5 rounds up");
+        assert_eq!(clicks_for(1, 149), 1, "1.49 rounds down");
+        assert_eq!(clicks_for(2, 125), 3, "2.5 rounds up");
+    }
+
+    #[test]
+    fn an_absurd_scale_cannot_wrap_or_overflow() {
+        // 255 portions at 400% is well past both u8 and u16.
+        assert_eq!(clicks_for(u8::MAX, 400), u8::MAX);
+        assert_eq!(clicks_for(u8::MAX, u16::MAX), u8::MAX);
+    }
+
+    #[test]
+    fn scaling_carries_nothing_between_meals() {
+        // Stateless on purpose. A carried remainder would make the same slot
+        // give two clicks on some days and one on others, which cannot be read
+        // off a console and fights the never-double-feed guard.
+        assert_eq!(clicks_for(1, 133), 1);
+        assert_eq!(clicks_for(1, 133), 1);
+        assert_eq!(clicks_for(1, 133), 1);
+    }
 
     #[test]
     fn starts_empty() {

@@ -41,13 +41,12 @@ being missed or doubled — but that is a check, not a contract.
 So the third unit needs the detent interval measured, and the switch confirmed
 to be a switch. See *Per-unit mechanical timing* for where the number goes.
 
-**One question to answer while it is open**, because it is cheap now and
-awkward later: does a click dispense the *same amount of food* as on the other
-two? `feeder/schedule` is a single retained topic shared by all three units, so
-a slot saying `portions: 2` means two clicks everywhere. If this mechanism
-dispenses a noticeably different amount per click, that needs either a per-unit
-portion scale in the record or per-unit schedule topics — both real changes, and
-both much easier to design before two units are assembled around the assumption.
+**Measure what one click actually dispenses** while it is open — by weight, or
+by counting clicks into a measuring spoon — and compare it with the other two.
+`feeder/schedule` is one retained topic shared by all three, so `portions: 2`
+reaches every unit identically, and a mechanism that dispenses a different
+amount per click needs a per-unit scale. That is designed and half-built: see
+*Per-unit portion size*. What is needed from the bench is the ratio.
 
 Both boards are the same chip; only GPIO numbers differ. Keep the pin map in
 one place (`src/board.rs`) selected by a Cargo feature: `board-devkit`
@@ -480,6 +479,48 @@ tool* rather than as something a compiler ever sees.
 ./dev/provision.sh                      # the cfg.toml default
 ./dev/provision.sh --detent-ms 900      # the odd one out
 ```
+
+### Per-unit portion size
+
+**Specified and half-built**, in the same record as the timing above. The pure
+part is `portions::clicks_for`, tested; nothing calls it yet.
+
+`feeder/schedule` is one retained topic shared by all three units, so a slot
+saying `portions: 2` reaches every feeder as the same request. The feeders are
+not all the same model, and a click on one mechanism need not dispense the same
+amount of food as a click on another. Without a per-unit scale one feeder
+over- or under-feeds forever, and **nothing in the system can see it** — Home
+Assistant sees every request succeed.
+
+So: a `portion_scale_pct` per unit, 100 meaning unchanged. Three portions
+becomes four clicks at 133%, or two at 67%.
+
+**Portions are the contract; clicks are the mechanism.** Everything arriving
+from outside speaks portions — the Home Assistant button, `feeder/<id>/feed`,
+`feeder/all/feed`, every schedule slot — and `clicks_for` is the single place
+they become clicks. Everything downstream of it counts clicks, `MAX_PORTIONS`
+included, which is correct for a cap whose job is protecting the hopper: what
+empties a hopper is clicks, not intentions.
+
+That does leave `MAX_PORTIONS` named for the wrong thing once this lands. Rename
+it with the wiring, not before, so the change is one commit rather than two.
+
+Two rules worth knowing before reading the code:
+
+- **A request for one or more portions never becomes zero clicks**, at any
+  scale. Rounding a meal away is a feeder that silently stops feeding, which is
+  the failure this whole project is built to avoid. `feed 0` still means zero,
+  because it is a documented no-op rather than a meal.
+- **Rounding is to nearest and per request; no remainder carries between
+  meals.** A carried remainder would make the same slot give two clicks some
+  days and one on others — unreadable on a console, and awkward against the
+  never-double-feed guard. The price is that small counts only approximate: at
+  133%, a one-portion meal is one click, not 1.33. If that matters for a unit,
+  the fix is a schedule with larger counts, not cleverer rounding.
+
+Report `last_fed` and the state payload in **portions as requested**, not in
+clicks. Home Assistant asked in portions and should be answered in the same
+units, or its history stops matching its own automations.
 
 ### The outside button
 
