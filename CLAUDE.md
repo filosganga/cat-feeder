@@ -1088,12 +1088,35 @@ on the LED**, which is the whole reason step 10 exists.
       and `Bus::health()` reads it, so the LED's blue flash comes from the same
       fact the boot path acted on rather than from a constant
 
-11. Move the broker and Home Assistant to the Raspberry Pi 5. **Both run on the
-    Pi already**; what is left is the `cat_feeder` package and repointing the
-    units, which still talk to the Mac's Docker stack — a laptop that is not
-    always on.
-    - ✅ the Pi itself, with Home Assistant and Mosquitto on it, and the feeder
-      user in the broker's password file
+11. Move the broker and Home Assistant to the Raspberry Pi 5. **The Pi is up at
+    192.168.68.126**, both containers running from `~/ha`, which is a working
+    tree of `github.com/filosganga/home-assistant`. The feeders still talk to
+    the Mac's Docker stack — a laptop that is not always on.
+
+    Note `ha.local` does not resolve from the Mac, so this is an address, and
+    `ha/config` is root-owned: the config edits below need `sudo` on the Pi and
+    belong in that repo rather than being dropped on the box.
+    - ✅ Mosquitto, and it is configured correctly: `listener 1883`,
+      `allow_anonymous false`, a password file, and — checked, because it is
+      easy to omit — `persistence true`. Anonymous connections are refused, as
+      they should be
+    - ⬜ **a `feeder` user in that password file.** The one there is Home
+      Assistant's own. A unit provisioned with the dev credentials is refused,
+      so this blocks repointing even once everything else works
+    - ⬜ **onboard Home Assistant.** The container has run since first boot but
+      nothing has been set up in it: `/api/onboarding` reports `user`,
+      `core_config`, `analytics` and `integration` all `false`, and
+      `core.config_entries` holds only what was auto-discovered — no MQTT.
+
+      `core_config` is the step that sets the timezone, so **until it is done
+      Home Assistant is on UTC**, which is exactly the silent hour-shift
+      described above. Set `Europe/Rome` while onboarding rather than fixing it
+      afterwards.
+    - ⬜ add the MQTT integration, pointing at **`localhost:1883`** — Home
+      Assistant runs with `network_mode: host` there, so the `mosquitto`
+      container name that works on the Mac does not exist on the Pi. The
+      package publishes through this integration, so without it every
+      automation in it fails at runtime while the package itself loads cleanly
     - ⬜ **install `homeassistant/packages/cat_feeder.yaml` on the Pi**,
       unchanged — it is tracked here precisely so it can be.
 
@@ -1132,7 +1155,7 @@ on the LED**, which is the whole reason step 10 exists.
 | 3, the DRV8833 and the detent interval | the part |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, and the third feeder being opened |
-| 11, the Pi | nothing; Home Assistant and Mosquitto both run on it |
+| 11, the Pi | nothing; both containers run. Home Assistant is not onboarded yet |
 | a display | the 0.91" parts, ordered. **Not blocking**: a 1.3" development part is on the bench |
 
 **Both the Pi 5 and the three Zeros are now on the bench.** The only part still

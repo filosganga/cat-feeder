@@ -46,10 +46,10 @@ Nothing has run on a production board yet. All of the above was verified on the
 Waveshare ESP32-C6-DEV-KIT-N8, with a bench button standing in for the hub
 microswitch and log lines standing in for the motor.
 
-The three Zeros are on the bench, and the Raspberry Pi 5 is up with Home
-Assistant and Mosquitto on it — though the feeders still point at the Mac's
-Docker stack. The DRV8833 is the only part still outstanding, and it is what
-blocks driving a real motor.
+The three Zeros are on the bench, and the Raspberry Pi 5 runs both containers,
+though Home Assistant there is not set up yet and the feeders still point at the
+Mac's Docker stack. The DRV8833 is the only part still outstanding, and it is
+what blocks driving a real motor.
 
 ## Hardware
 
