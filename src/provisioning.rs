@@ -453,8 +453,11 @@ impl core::fmt::Display for Escaped<'_> {
 /// It is a parameter rather than a merge the caller remembers to do, because
 /// forgetting it is invisible until someone weighs the food.
 pub fn record_from_form(body: &str, previous: Option<&Record>) -> Result<Record, FormError> {
-    let mqtt_port = field::<8>(body, "mqtt_port")?
+    // Through `decoded` rather than `field`, so that a port padded with spaces
+    // is a port and not a field that is "too long for this firmware".
+    let mqtt_port = decoded(body, "mqtt_port")?
         .ok_or(FormError::BadPort)?
+        .trim()
         .parse::<u16>()
         .map_err(|_| FormError::BadPort)?;
     if mqtt_port == 0 {
@@ -473,7 +476,7 @@ pub fn record_from_form(body: &str, previous: Option<&Record>) -> Result<Record,
         wifi_password: field(body, "wifi_password")?.unwrap_or_default(),
         mqtt_host,
         mqtt_port,
-        mqtt_user: field(body, "mqtt_user")?.unwrap_or_default(),
+        mqtt_user: optional_trimmed(body, "mqtt_user")?,
         mqtt_password: field(body, "mqtt_password")?.unwrap_or_default(),
         detent_ms: previous.map_or(DEFAULT_DETENT_MS, Record::detent_ms),
         portion_scale_pct: previous
@@ -483,19 +486,78 @@ pub fn record_from_form(body: &str, previous: Option<&Record>) -> Result<Record,
     Ok(record)
 }
 
+/// An optional field, decoded and trimmed before it is measured.
+///
+/// Absent and blank are the same thing here: every caller wants a default.
+fn optional_trimmed<const N: usize>(
+    body: &str,
+    name: &'static str,
+) -> Result<String<N>, FormError> {
+    match decoded(body, name)? {
+        Some(raw) => fit(trimmed(raw).as_str(), name),
+        None => Ok(String::new()),
+    }
+}
+
 fn required<const N: usize>(body: &str, name: &'static str) -> Result<String<N>, FormError> {
-    let value = field::<N>(body, name)?.ok_or(FormError::Missing(name))?;
+    // Decode, trim, *then* measure. The order is the point — see `decoded`.
+    let raw = decoded(body, name)?.ok_or(FormError::Missing(name))?;
+    let value = fit::<N>(trimmed(raw).as_str(), name)?;
     if value.is_empty() {
         return Err(FormError::Blank(name));
     }
     Ok(value)
 }
 
+/// Drops surrounding whitespace.
+///
+/// **Phone keyboards add trailing spaces**, by autocorrect, by autocomplete, or
+/// by a thumb. An SSID is the field this ruins: `"fdlgrm "` is stored happily,
+/// survives the reboot, and then fails forever as `NoAccessPointFound` — which
+/// reads as "wrong password" or "out of range" and says nothing about the
+/// space. Observed on the bench the first time this form was used for real.
+///
+/// **Passwords are deliberately not trimmed.** A password may legitimately end
+/// in a space, and trimming one makes a correct credential unusable with no way
+/// to express it. The risk is also much lower: `type=password` inputs do not
+/// autocorrect or autocapitalise, which is what puts the space there in the
+/// first place. The form sets those off explicitly on the other fields too.
+///
+/// Trimming can only shrink, so the result always fits.
+fn trimmed<const N: usize>(value: String<N>) -> String<N> {
+    let text = value.trim();
+    if text.len() == value.len() {
+        return value;
+    }
+    String::try_from(text).unwrap_or_default()
+}
+
 /// Finds one field and percent-decodes it.
 ///
 /// Returns `None` when the field is absent, which the caller distinguishes from
 /// a field that is present and empty.
-pub fn field<const N: usize>(body: &str, name: &str) -> Result<Option<String<N>>, FormError> {
+pub fn field<const N: usize>(
+    body: &str,
+    name: &'static str,
+) -> Result<Option<String<N>>, FormError> {
+    match decoded(body, name)? {
+        Some(value) => fit(&value, name).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Every field this firmware stores is far shorter than this, so decoding into
+/// one size and narrowing afterwards costs a single stack buffer and buys the
+/// ordering that [`required`] needs: **trim first, measure second**.
+const DECODE_LEN: usize = 256;
+
+/// Finds one field and percent-decodes it, without judging its length.
+///
+/// Split out from [`field`] so a value can be trimmed *before* it is measured.
+/// Otherwise a 32-character SSID with the keyboard's trailing space is 33 bytes
+/// and comes back as "too long" — refusing the one input the trimming exists to
+/// rescue, with a message that names neither the field nor the space.
+fn decoded(body: &str, name: &str) -> Result<Option<String<DECODE_LEN>>, FormError> {
     for pair in body.split('&') {
         let Some((key, value)) = pair.split_once('=') else {
             // A bare key with no `=`. Browsers do not send these; skip it
@@ -509,11 +571,19 @@ pub fn field<const N: usize>(body: &str, name: &str) -> Result<Option<String<N>>
     Ok(None)
 }
 
+/// Narrows a decoded value to the width the record has for it.
+///
+/// Refused rather than truncated: a shortened SSID would silently join the
+/// wrong network, and a shortened password would fail to join at all.
+fn fit<const N: usize>(value: &str, name: &'static str) -> Result<String<N>, FormError> {
+    String::try_from(value).map_err(|_| FormError::TooLong(name))
+}
+
 /// Percent-decoding, plus the `+` for space that form encoding adds.
-fn decode_value<const N: usize>(raw: &str) -> Result<String<N>, FormError> {
+fn decode_value(raw: &str) -> Result<String<DECODE_LEN>, FormError> {
     // Decoded bytes first, because a multi-byte character arrives as several
     // escapes and only becomes valid UTF-8 once they are all decoded.
-    let mut bytes: heapless::Vec<u8, N> = heapless::Vec::new();
+    let mut bytes: heapless::Vec<u8, DECODE_LEN> = heapless::Vec::new();
     let mut chars = raw.as_bytes().iter().copied();
 
     while let Some(byte) = chars.next() {
@@ -625,6 +695,179 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+// ---------------------------------------------------------------------------
+// The page
+// ---------------------------------------------------------------------------
+
+/// How much rendered HTML a page may take.
+///
+/// Sized against the worst case rather than the typical one, and
+/// `the_widest_possible_form_still_fits` holds it to that: six fields at their
+/// echo-back limit, every character one that escapes to six bytes, and the
+/// longest error above them. `heapless` writes silently stop at the cap, so a
+/// page that outgrew this would reach the phone truncated mid-tag with a
+/// `Content-Length` agreeing with the truncation — a blank form and nothing on
+/// the console.
+pub const PAGE_LEN: usize = 8192;
+
+/// The page, with whatever was last typed still in the boxes.
+///
+/// `submitted` is the body of the rejected `POST`, or `""` for a first visit.
+/// Re-reading the fields out of it rather than carrying a parsed struct means
+/// a body that failed to parse *as a whole* can still give back the fields that
+/// were fine — which is exactly the case this runs in.
+///
+/// **Passwords are filled back in too.** They are the longest things on the
+/// form and the most miserable to retype on a phone, and clearing them on a
+/// typo in the port field is how someone ends up giving up. The response goes
+/// over the unit's own WPA2 link to the person who just typed it, in answer to
+/// a request that carried the same password, so echoing it back reaches nobody
+/// new. `Cache-Control: no-store` in [`send`] keeps it out of the browser's
+/// history.
+pub fn render_form(
+    page: &mut String<PAGE_LEN>,
+    submitted: &str,
+    error: Option<FormError>,
+    failure: Option<&str>,
+) {
+    page.clear();
+
+    let _ = page.push_str(
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <title>cat-feeder setup</title><style>\
+         body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;\
+         max-width:26rem;background:#faf9f7;color:#222}\
+         h1{font-size:1.25rem;margin:0 0 1rem}\
+         label{display:block;margin:.75rem 0 .2rem;font-weight:600;font-size:.9rem}\
+         input{width:100%;box-sizing:border-box;padding:.55rem;font-size:1rem;\
+         border:1px solid #bbb;border-radius:.3rem;background:#fff}\
+         button{margin-top:1.25rem;width:100%;padding:.7rem;font-size:1rem;\
+         border:0;border-radius:.3rem;background:#2f6f4f;color:#fff}\
+         .err{background:#fdecea;border:1px solid #d9534f;border-radius:.3rem;\
+         padding:.6rem;margin-bottom:1rem}\
+         .hint{color:#666;font-size:.8rem;margin:.2rem 0 0}\
+         </style></head><body><h1>cat-feeder setup</h1>",
+    );
+
+    // The failure, if there was one, above the fields rather than beside them:
+    // there is only ever one, and a phone screen is short.
+    if let Some(message) = failure {
+        let _ = write!(page, "<p class=err>{}</p>", Escaped(message));
+    } else if let Some(error) = error {
+        let _ = write!(page, "<p class=err>{error}</p>");
+    }
+
+    let _ = page.push_str("<form method=post action=/save>");
+
+    text_field(page, "wifi_ssid", "Wi-Fi network", submitted, "text", None);
+    text_field(
+        page,
+        "wifi_password",
+        "Wi-Fi password",
+        submitted,
+        "password",
+        Some("Leave empty for an open network."),
+    );
+    text_field(
+        page,
+        "mqtt_host",
+        "Broker address",
+        submitted,
+        "text",
+        Some("An IP address such as 192.168.1.10. Names will not work."),
+    );
+    text_field(page, "mqtt_port", "Broker port", submitted, "text", None);
+    text_field(
+        page,
+        "mqtt_user",
+        "Broker username",
+        submitted,
+        "text",
+        None,
+    );
+    text_field(
+        page,
+        "mqtt_password",
+        "Broker password",
+        submitted,
+        "password",
+        None,
+    );
+
+    let _ = page.push_str("<button type=submit>Save and restart</button></form></body></html>");
+}
+
+/// One labelled input, with its previous value escaped back into it.
+///
+/// The `name` is the one [`record_from_form`] looks for. They are written out
+/// here rather than derived, so this file and `provisioning.rs` can be grepped
+/// for the same six strings.
+fn text_field(
+    page: &mut String<PAGE_LEN>,
+    name: &'static str,
+    label: &str,
+    submitted: &str,
+    kind: &str,
+    hint: Option<&str>,
+) {
+    // A field that failed to decode comes back empty rather than taking the
+    // whole page down with it: the rest of the form is still worth showing.
+    let value = field::<PASSWORD_LEN>(submitted, name)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    // `autocapitalize`/`autocorrect`/`spellcheck` off on every field, and this
+    // is the root of a real bug rather than polish: a phone keyboard offered
+    // `fdlgrm` as a completion, inserted the trailing space that always follows
+    // one, and the unit stored `"fdlgrm "` and then failed forever with
+    // `NoAccessPointFound`. `provisioning::trimmed` is the belt; this is the
+    // braces, and it also stops iOS capitalising the first letter of an SSID.
+    let _ = write!(
+        page,
+        "<label for={name}>{label}</label>\
+         <input id={name} name={name} type={kind} \
+         autocapitalize=off autocorrect=off spellcheck=false \
+         value=\"{}\"",
+        Escaped(&value)
+    );
+    // The port is the only numeric one, and a phone showing a number pad for
+    // it saves a keyboard switch.
+    if name == "mqtt_port" {
+        let _ = page.push_str(" inputmode=numeric");
+    }
+    let _ = page.push_str(">");
+
+    if let Some(hint) = hint {
+        let _ = write!(page, "<p class=hint>{}</p>", Escaped(hint));
+    }
+}
+
+/// The page shown once, on the way out.
+pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
+    page.clear();
+    let _ = write!(
+        page,
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <title>cat-feeder setup</title><style>\
+         body{{font:16px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;\
+         max-width:26rem;background:#faf9f7;color:#222}}\
+         </style></head><body><h1>Saved</h1>\
+         <p>This feeder is restarting and will join <b>{}</b>, then connect to \
+         the broker at <b>{}:{}</b>.</p>\
+         <p>Its setup network is about to disappear — that is what success \
+         looks like. Rejoin your own Wi-Fi.</p>\
+         <p>If it does not appear in Home Assistant, hold the button through a \
+         power cycle to erase and start again.</p>\
+         </body></html>",
+        Escaped(&record.wifi_ssid),
+        Escaped(&record.mqtt_host),
+        record.mqtt_port,
+    );
 }
 
 #[cfg(test)]
@@ -981,9 +1224,123 @@ mod tests {
 
         assert_eq!(
             record_from_form(&body, None),
-            Err(FormError::TooLong("field")),
+            Err(FormError::TooLong("wifi_ssid")),
             "a truncated SSID would silently join the wrong network"
         );
+    }
+
+    /// The six names the form and the parser must agree on.
+    const FIELDS: [&str; 6] = [
+        "wifi_ssid",
+        "wifi_password",
+        "mqtt_host",
+        "mqtt_port",
+        "mqtt_user",
+        "mqtt_password",
+    ];
+
+    #[test]
+    fn the_form_asks_for_exactly_what_the_parser_reads() {
+        // Renaming an input on one side and not the other is invisible until a
+        // phone posts a form with a field missing — which `record_from_form`
+        // reports as `Missing`, blaming the person typing. Nothing else checks
+        // this: the two lists are written out in different files.
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(&mut page, "", None, None);
+
+        for name in FIELDS {
+            assert!(
+                page.contains(&std::format!("name={name}")),
+                "the form has no input named {name}"
+            );
+        }
+        // Counted on `<input`, not on `name=`: the viewport `<meta>` carries a
+        // `name=` too, and an assertion that drifts with the page furniture is
+        // one somebody will eventually delete.
+        assert_eq!(
+            page.matches("<input").count(),
+            FIELDS.len(),
+            "the form has an input the parser does not read"
+        );
+    }
+
+    #[test]
+    fn what_the_form_shows_is_what_was_typed_into_it() {
+        // The echo-back path end to end: a submitted body renders into the
+        // page, and the values come back out of the HTML unchanged.
+        let body = "wifi_ssid=My+Network&wifi_password=p%40ss&mqtt_host=10.0.0.1\
+                    &mqtt_port=1883&mqtt_user=feeder&mqtt_password=dev";
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(&mut page, body, Some(FormError::BadPort), None);
+
+        assert!(page.contains(r#"value="My Network""#));
+        assert!(page.contains(r#"value="p@ss""#));
+        assert!(page.contains(r#"value="10.0.0.1""#));
+        assert!(page.contains("The broker port must be a number"));
+    }
+
+    #[test]
+    fn a_value_that_would_break_the_html_is_escaped_in_the_page() {
+        // Not a hypothetical: an SSID may contain a quote, and unescaped it
+        // ends the attribute early and silently truncates the field.
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(&mut page, "wifi_ssid=a%22b%3Cc", None, None);
+
+        assert!(page.contains(r#"value="a&quot;b&lt;c""#));
+        // The raw quote must not survive anywhere in the rendered attribute.
+        assert!(!page.contains(r#"value="a"b"#));
+    }
+
+    #[test]
+    fn the_widest_possible_form_still_fits() {
+        // `heapless` writes stop silently at the cap, so an overflowing page
+        // reaches the phone truncated mid-tag with a `Content-Length` that
+        // agrees with the truncation: a blank form, and nothing on the console
+        // to say why. This is the only thing holding `PAGE_LEN` honest.
+        //
+        // Worst case: every field at its echo-back width, filled with the
+        // character that costs the most escaped (`&` -> `&amp;`), and the
+        // longest error message above them.
+        let widest = "%26".repeat(PASSWORD_LEN);
+        let mut body = std::string::String::new();
+        for name in FIELDS {
+            body.push_str(&std::format!("{name}={widest}&"));
+        }
+
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(
+            &mut page,
+            &body,
+            Some(FormError::NotAnIp("mqtt_host")),
+            None,
+        );
+
+        assert!(
+            page.ends_with("</html>"),
+            "the page was truncated: {} of {PAGE_LEN} bytes used",
+            page.len()
+        );
+    }
+
+    #[test]
+    fn the_saved_page_names_the_network_it_is_leaving_for() {
+        // The last thing anyone sees before the setup network disappears. If
+        // it does not say where the unit went, a phone losing the access point
+        // is indistinguishable from a crash.
+        let mut page = String::<PAGE_LEN>::new();
+        render_saved(&mut page, &sample());
+
+        assert!(
+            page.contains("fdlgrm"),
+            "the SSID it is leaving for is missing"
+        );
+        assert!(page.contains("192.168.68.108"));
+        assert!(page.contains("1883"));
+        assert!(page.ends_with("</html>"));
+        // The password reached this function inside the record and must not
+        // reach the page: unlike the form, nobody needs to read it back.
+        assert!(!page.contains("hunter2"));
+        assert!(!page.contains("feeder-dev"));
     }
 
     #[test]
@@ -999,7 +1356,6 @@ mod tests {
             "192.168.1.256",
             "1.2.3.4.5",
             "::1",
-            " 192.168.1.10",
         ] {
             let body = std::format!("wifi_ssid=s&mqtt_host={host}&mqtt_port=1883");
             assert_eq!(
@@ -1008,6 +1364,84 @@ mod tests {
                 "{host}"
             );
         }
+    }
+
+    #[test]
+    fn a_trailing_space_from_a_phone_keyboard_is_dropped() {
+        // The bug this exists for, exactly as it happened: the SSID was stored
+        // with a trailing space, the unit rebooted, and every attempt failed as
+        // `NoAccessPointFound` — which reads as a wrong password and says
+        // nothing whatever about a space.
+        let body = "wifi_ssid=fdlgrm+&mqtt_host=+192.168.1.2+&mqtt_port=+1883+\
+                    &mqtt_user=feeder+";
+        let record = record_from_form(body, None).unwrap();
+
+        assert_eq!(record.wifi_ssid.as_str(), "fdlgrm");
+        assert_eq!(record.mqtt_host.as_str(), "192.168.1.2");
+        assert_eq!(record.mqtt_port, 1883);
+        assert_eq!(record.mqtt_user.as_str(), "feeder");
+    }
+
+    #[test]
+    fn a_full_length_ssid_with_a_keyboard_space_still_fits() {
+        // The boundary the first version of the trim got wrong: measuring
+        // before trimming made a 32-character SSID plus the keyboard's space
+        // 33 bytes, so it was refused as "too long" — the one input length
+        // where the trimming still failed, and with a message naming neither
+        // the field nor the space.
+        let ssid = core::iter::repeat_n('x', SSID_LEN).collect::<std::string::String>();
+        let body = std::format!("wifi_ssid={ssid}+&mqtt_host=10.0.0.1&mqtt_port=1883");
+
+        assert_eq!(
+            record_from_form(&body, None).unwrap().wifi_ssid.as_str(),
+            ssid
+        );
+    }
+
+    #[test]
+    fn a_field_that_is_too_long_even_trimmed_names_itself() {
+        // `TooLong` used to carry the literal "field", which `label` rendered
+        // as "That field" — true, useless, and beside the wrong input.
+        let long = core::iter::repeat_n('x', HOST_LEN + 1).collect::<std::string::String>();
+        let body = std::format!("wifi_ssid=s&mqtt_host={long}&mqtt_port=1883");
+
+        assert_eq!(
+            record_from_form(&body, None),
+            Err(FormError::TooLong("mqtt_host"))
+        );
+        assert!(std::format!("{}", FormError::TooLong("mqtt_host")).contains("broker address"));
+    }
+
+    #[test]
+    fn a_padded_port_is_a_port_not_an_oversized_field() {
+        // `mqtt_port` is read into eight bytes. Spaces around a four-digit
+        // port fit, but the failure if they did not would be "too long for
+        // this firmware" about a field the person typed four characters into.
+        let record =
+            record_from_form("wifi_ssid=s&mqtt_host=10.0.0.1&mqtt_port=++1883++", None).unwrap();
+        assert_eq!(record.mqtt_port, 1883);
+    }
+
+    #[test]
+    fn passwords_keep_every_character_they_were_given() {
+        // The other half of the trade. A password may legitimately end in a
+        // space, and trimming one makes a correct credential impossible to
+        // enter — with the same silent failure and no way to work around it.
+        let body = "wifi_ssid=net&wifi_password=+hunter2+\
+                    &mqtt_host=10.0.0.1&mqtt_port=1883&mqtt_password=+s3cret+";
+        let record = record_from_form(body, None).unwrap();
+
+        assert_eq!(record.wifi_password.as_str(), " hunter2 ");
+        assert_eq!(record.mqtt_password.as_str(), " s3cret ");
+    }
+
+    #[test]
+    fn a_field_of_nothing_but_spaces_is_still_blank() {
+        // Trimming must not turn "obviously empty" into "present and fine".
+        assert_eq!(
+            record_from_form("wifi_ssid=+++&mqtt_host=10.0.0.1&mqtt_port=1883", None),
+            Err(FormError::Blank("wifi_ssid"))
+        );
     }
 
     #[test]

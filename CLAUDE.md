@@ -258,7 +258,8 @@ loop {
 ## Provisioning
 
 Credentials come from flash, and a unit with none raises its own Wi-Fi network
-and serves a form. **Partly built** — see roadmap step 9 for what runs today.
+and serves a form. **Built**, and driven end to end from a phone: typed in,
+saved, rebooted, joined the house network and reached the broker.
 
 ```text
   boot ── read the record from the nvs partition
@@ -325,19 +326,18 @@ and an interrupted write both read as *unconfigured* rather than as garbage
 credentials. A unit that believes a corrupt record sits trying to join a network
 that does not exist, and the only way back is the button.
 
-### Still to build — the plan
+### How it was built
 
-The back half works: a record round-trips through flash, the boot path reads
-it, the unit raises its network and a phone that joins gets an address. What is
-missing is the form itself. Written out here because the API facts below cost an
-hour to establish and should not be rediscovered.
+All four steps are done and driven end to end from a phone. Kept rather than
+deleted because the API facts cost an hour to establish and are not obvious
+from the code that resulted; the notes under each step are what would otherwise
+have to be rediscovered.
 
 **A gated module, `setup.rs`, entered from the boot path when there is no
 usable record.** It never returns — it reboots once a record is saved, so the
-normal path always starts from a clean boot. Steps 1 to 3 are built; step 4 is
-what remains. `setup.rs`'s own module doc counts in three slices rather than
-four, because raising the stack and serving DHCP are one thing to verify: a
-phone either gets an address or it does not.
+normal path always starts from a clean boot. `setup.rs`'s own module doc counts
+in three slices rather than four, because raising the stack and serving DHCP
+are one thing to verify: a phone either gets an address or it does not.
 
 1. ✅ **Raise the access point.** Build `AccessPointConfig` with
    `ap_ssid(id)`, `ap_password(AP_SECRET, id)` and `Wpa2Personal`, then
@@ -380,7 +380,7 @@ phone either gets an address or it does not.
    in common to debug. This cost one wasted capture to learn. `wifi::new`
    already enables the access-point station events, so it is a subscription and
    no configuration.
-4. ⬜ **Serve the form** on TCP 80. `provisioning::parse_head` reads the request
+4. ✅ **Serve the form** on TCP 80. `provisioning::parse_head` reads the request
    line and `Content-Length`; keep reading until the body is that long.
    - `GET /` (and anything else) → the page.
    - `POST /save` → `provisioning::record_from_form`. On `Ok`, `store.save`,
@@ -855,12 +855,13 @@ src/
   wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed,
                   Connectivity
   provisioning.rs pure logic: the flash record, setup-network credentials,
-                  the setup form and just enough HTTP
+                  the setup form — the page it renders as well as the body it
+                  parses back — and just enough HTTP
   sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
   store.rs        reads and writes the record in the nvs partition
   dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
-  setup.rs        setup mode: the access point, its own stack, DHCP (the form
-                  is roadmap step 9's last item and is not built)
+  setup.rs        setup mode: the access point, its own stack, DHCP, and the
+                  sockets the form is served over
   config.rs       Config, from a flash record
 build.rs          injects ap_secret from cfg.toml, and nothing else
 examples/mkrecord.rs
@@ -1013,10 +1014,34 @@ on the LED**, which is the whole reason step 10 exists.
      INFO (46921) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
      INFO (46958) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
      ```
-   - ⬜ the form over TCP 80. `esp_hal::system::software_reset()` is the reboot
-     after saving.
-     **Final verification needs a phone** — submitting the form is not
-     something the bench scripts can do.
+   - ✅ the form over TCP 80. **Verified with a phone**, end to end: the page
+     loaded, a hostname in the broker field was rejected with the fields still
+     filled in, a corrected form saved, and the unit rebooted straight into
+     `store: configured for ...`.
+
+     Two things the plan did not anticipate, both found by using it:
+
+     - **Three connections, not one.** A browser fetches `/favicon.ico` on a
+       second connection and opens others it sends nothing on. With a single
+       socket the next real request is refused with a RST, so pressing **Save**
+       gave "this site can't be reached" seconds after the GET that drew the
+       form had worked. `CONNECTIONS = 3`, each with its own buffers, sharing
+       the `Store` behind a mutex.
+     - **Phone keyboards add a trailing space.** An SSID stored as `"fdlgrm "`
+       then fails forever as `NoAccessPointFound`, which names neither the
+       space nor the field. The inputs now set `autocapitalize=off
+       autocorrect=off spellcheck=false`, and `provisioning::trimmed` strips
+       whitespace from the SSID, host, port and username — but **not** from
+       either password, where a trailing space may be real and trimming would
+       make a correct credential impossible to enter.
+
+       ✅ Both the bug and the fix observed on hardware, with the same phone:
+       the same SSID that stored as `"fdlgrm "` now stores clean, associates,
+       and the unit reaches `led: Healthy`.
+
+     `mqtt_host` is validated as a literal IPv4 address at the form, because
+     `mqtt.rs` has no resolver: a hostname would be stored, survive the reboot,
+     and leave the unit retrying a connection it can never make.
    - ✅ the reset button on GPIO3, as a **boot** gesture rather than a runtime
      one — see *The outside button*. Now a true reset: with the fallback gone,
      erasing drops the unit into setup mode rather than being silently refilled

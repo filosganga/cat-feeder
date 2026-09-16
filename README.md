@@ -40,7 +40,7 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Per-board provisioning from the host (`dev/provision.sh`) | working |
 | Per-unit mechanical calibration | working, defaults until measured |
 | Driving the actual motor | **not started** — no DRV8833 yet |
-| Setup over the unit's own Wi-Fi | **partly built**, see below |
+| Setup over the unit's own Wi-Fi | working, driven from a phone |
 
 Nothing has run on a production board yet. All of the above was verified on the
 Waveshare ESP32-C6-DEV-KIT-N8, with a bench button standing in for the hub
@@ -140,14 +140,13 @@ documented in [dev/README.md](dev/README.md).
 
 ## Setting up a feeder
 
-> **Partly built.** The pieces below marked *works today* are in and tested.
-> A unit with no record now raises its setup network, but it does not serve the
-> form yet — so for now a board is configured over USB with
-> `./dev/provision.sh`. Roadmap step 9 in [CLAUDE.md](CLAUDE.md) tracks the
-> rest.
+> **Works today**, driven end to end from a phone: the unit raises its network,
+> hands out an address, serves the form, saves what you type and reboots into
+> it. `./dev/provision.sh` still configures a board over USB, which stays the
+> quicker route while a unit is on the bench.
 
-The plan is that a feeder is set up from a phone, with no laptop and no
-toolchain, because the case that actually hurts is not first boot — it is the
+A feeder is set up from a phone, with no laptop and no toolchain, because the
+case that actually hurts is not first boot — it is the
 Wi-Fi password changing across three units already screwed into place.
 
 **Once per project — pick a salt.** *Works today.*
@@ -174,7 +173,7 @@ station MAC, printed at boot and by `espflash board-info`. Stickers can be made
 before a unit is ever powered on, which is the point of the derivation being
 reproducible off the device.
 
-**Then, per unit.** *Not yet — this is what step 9 builds.*
+**Then, per unit.**
 
 1. Hold the reset button on the outside of the case **while plugging the unit
    in**. It erases its stored configuration, which is the one and only way into
@@ -280,7 +279,7 @@ src/
   wiring.rs       what the tasks share
   config.rs       Config from the flash record, and the MAC-derived device id
   dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
-  setup.rs        setup mode: the unit's own network, and DHCP on it
+  setup.rs        setup mode: the unit's own network, DHCP, and the sockets
 
 build.rs          reads cfg.toml into the build
 dev/              local Mosquitto and Home Assistant, plus the scripts

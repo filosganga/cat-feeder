@@ -29,7 +29,7 @@
 //!
 //! 1. ✅ raise the access point — the SSID appears in a phone's Wi-Fi list
 //! 2. ✅ a second network stack on it, DHCP, so a phone gets an address
-//! 3. ⬜ the form on TCP 80
+//! 3. ✅ the form on TCP 80, and a saved record reboots into normal mode
 
 use core::fmt::Write as _;
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -41,6 +41,8 @@ use embassy_futures::join::join3;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::Write as _;
 use esp_hal::peripherals::WIFI;
@@ -55,8 +57,8 @@ use static_cell::StaticCell;
 
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
 use crate::provisioning::{
-    Escaped, FormError, Head, Method, PASSWORD_LEN, Record, ap_password, ap_ssid, field,
-    parse_head, record_from_form,
+    Head, Method, PAGE_LEN, Record, ap_password, ap_ssid, parse_head, record_from_form,
+    render_form, render_saved,
 };
 use crate::store::Store;
 
@@ -100,9 +102,8 @@ const DHCP_BUF: usize = 1536;
 
 /// Raises this unit's setup network and stays there.
 ///
-/// Never returns. Once slice 3 lands it reboots after saving a record, so the
-/// normal boot path always starts clean rather than from a half-configured
-/// process.
+/// Never returns. It reboots once a record is saved, so the normal boot path
+/// always starts clean rather than from a half-configured process.
 ///
 /// The controller is kept alive for the life of setup mode: dropping it takes
 /// the network down, and a phone mid-form would simply lose its connection.
@@ -169,12 +170,16 @@ pub async fn run(
         info!("setup: keeping this unit's measured timings from the old record");
     }
 
+    // Shared because the connection slots below all serve `/save`. Contended
+    // only in the moment one of them writes, and that moment ends in a reboot.
+    let store = Mutex::<CriticalSectionRawMutex, _>::new(store);
+
     // `.0` is `!`: every branch diverges, so the tuple is uninhabited and this
     // expression is the function's divergence rather than a value.
     join3(
         serve_dhcp(stack),
         watch_stations(&controller),
-        serve_form(stack, &mut store, previous.as_ref()),
+        serve_form(stack, &store, previous.as_ref()),
     )
     .await
     .0
@@ -250,9 +255,10 @@ fn start_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
         dns_servers: heapless::Vec::new(),
     });
 
-    // Three sockets: the DHCP one below, and room for slice 3's listener and
-    // the second connection a browser habitually opens alongside it.
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    // One UDP socket for DHCP plus `CONNECTIONS` TCP ones for the form, and a
+    // spare. Too few shows up as `accept failed (InvalidState)` rather than as
+    // anything about sockets.
+    static RESOURCES: StaticCell<StackResources<{ CONNECTIONS + 2 }>> = StaticCell::new();
 
     let (stack, runner) =
         embassy_net::new(device, config, RESOURCES.init(StackResources::new()), seed);
@@ -421,44 +427,91 @@ async fn halt() -> ! {
 /// body would parse as a form with fields missing and blame the person typing.
 const REQUEST_LEN: usize = 2048;
 
-/// How much rendered HTML this will hold. The page plus six escaped field
-/// values, with room to spare.
-const PAGE_LEN: usize = 4096;
+/// The socket's send buffer. Smaller than a page on purpose: `write_all`
+/// refills it as the peer acknowledges, so this only sets how many round trips
+/// a response takes, not how large one can be.
+const TX_LEN: usize = 2048;
 
-/// Long enough for a person to be slow, short enough that a connection a
-/// browser opened speculatively and abandoned does not hold the only socket.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a connection may sit idle before it is recycled.
+///
+/// A browser opens connections it then sends nothing on. Each occupies a slot
+/// until this expires, so it is short — but not so short that a phone on a weak
+/// signal loses a request in flight.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How many connections are served at once.
+///
+/// **Not one.** See [`serve_form`]: a single socket makes a browser's own
+/// speculative connection block the next real request.
+const CONNECTIONS: usize = 3;
 
 /// Serves the form until a record is saved, then reboots.
 ///
-/// **One connection at a time.** A browser opens several, and the extras are
-/// refused while this one is busy — which they survive, because each response
-/// says `Connection: close` and the loop is back in `accept` within
-/// microseconds. The alternative, a second socket, buys very little and costs a
-/// `Store` shared between two writers.
-async fn serve_form(stack: Stack<'static>, store: &mut Store, previous: Option<&Record>) -> ! {
-    static RX: StaticCell<[u8; REQUEST_LEN]> = StaticCell::new();
-    static TX: StaticCell<[u8; PAGE_LEN]> = StaticCell::new();
-    static REQUEST: StaticCell<[u8; REQUEST_LEN]> = StaticCell::new();
-    static PAGE: StaticCell<String<PAGE_LEN>> = StaticCell::new();
+/// **Several connections at once, not one.** A browser opens more than it uses,
+/// and sends nothing on some of them. With a single socket the next real
+/// request is refused with a RST while an idle one is still being waited on —
+/// which is what "this site can't be reached" looked like when Save was
+/// pressed, moments after the GET that drew the form had worked perfectly.
+async fn serve_form(
+    stack: Stack<'static>,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
+    previous: Option<&Record>,
+) -> ! {
+    static RX: StaticCell<[[u8; REQUEST_LEN]; CONNECTIONS]> = StaticCell::new();
+    static TX: StaticCell<[[u8; TX_LEN]; CONNECTIONS]> = StaticCell::new();
+    static REQUEST: StaticCell<[[u8; REQUEST_LEN]; CONNECTIONS]> = StaticCell::new();
+    static PAGE: StaticCell<[String<PAGE_LEN>; CONNECTIONS]> = StaticCell::new();
 
-    let mut socket = TcpSocket::new(stack, RX.init([0; REQUEST_LEN]), TX.init([0; PAGE_LEN]));
+    // Destructured rather than indexed, so each slot below gets its own
+    // `&'static mut` and the borrow checker can see they do not alias.
+    let [rx0, rx1, rx2] = RX.init([[0; REQUEST_LEN]; CONNECTIONS]);
+    let [tx0, tx1, tx2] = TX.init([[0; TX_LEN]; CONNECTIONS]);
+    let [rq0, rq1, rq2] = REQUEST.init([[0; REQUEST_LEN]; CONNECTIONS]);
+    let [pg0, pg1, pg2] = PAGE.init([String::new(), String::new(), String::new()]);
+
+    info!("setup: form on http://{AP_ADDR}/, {CONNECTIONS} connections");
+
+    join3(
+        connection(0, stack, rx0, tx0, rq0, pg0, store, previous),
+        connection(1, stack, rx1, tx1, rq1, pg1, store, previous),
+        connection(2, stack, rx2, tx2, rq2, pg2, store, previous),
+    )
+    .await
+    .0
+}
+
+/// One connection slot: accept, answer, recycle, forever.
+///
+/// `slot` exists for the log. Two slots working while a third sits idle is the
+/// normal picture, and without the number a capture reads as one connection
+/// behaving erratically.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the caller splits one static array per buffer so each slot owns \
+    its own; bundling them into a struct would carry the same six fields"
+)]
+async fn connection(
+    slot: u8,
+    stack: Stack<'static>,
+    rx: &'static mut [u8; REQUEST_LEN],
+    tx: &'static mut [u8; TX_LEN],
+    request: &'static mut [u8; REQUEST_LEN],
+    page: &'static mut String<PAGE_LEN>,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
+    previous: Option<&Record>,
+) -> ! {
+    let mut socket = TcpSocket::new(stack, rx, tx);
     socket.set_timeout(Some(HTTP_TIMEOUT));
-
-    let request = REQUEST.init([0; REQUEST_LEN]);
-    let page = PAGE.init(String::new());
-
-    info!("setup: form on http://{AP_ADDR}/");
 
     loop {
         if let Err(e) = socket.accept(HTTP_PORT).await {
-            warn!("setup: accept failed ({e:?})");
+            warn!("setup: [{slot}] accept failed ({e:?})");
             reset_socket(&mut socket).await;
             continue;
         }
 
         // `Saved` is the only way out of this loop, and out of setup mode.
-        if let Outcome::Saved = handle(&mut socket, request, page, store, previous).await {
+        if let Outcome::Saved = handle(slot, &mut socket, request, page, store, previous).await {
             // The browser is told before the unit disappears. Without the
             // flush the reset races the last segment and the phone shows a
             // connection error on what was actually a success.
@@ -495,20 +548,29 @@ enum Outcome {
 
 /// Reads one request and answers it.
 async fn handle(
+    slot: u8,
     socket: &mut TcpSocket<'_>,
     request: &mut [u8; REQUEST_LEN],
     page: &mut String<PAGE_LEN>,
-    store: &mut Store,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
 ) -> Outcome {
-    let Some((head, body)) = read_request(socket, request).await else {
+    let Some((head, body)) = read_request(slot, socket, request).await else {
         return Outcome::Continue;
     };
+
+    // Every request, before it is acted on. This is the line whose absence made
+    // a working GET and a refused POST look identical on the console, and it is
+    // cheap: a phone joining produces a handful of these, not a stream.
+    info!(
+        "setup: [{slot}] {:?} {} ({} byte body)",
+        head.method, head.path, head.content_length
+    );
 
     match (head.method, head.path.as_str()) {
         (Method::Post, "/save") => {
             match record_from_form(body, previous) {
-                Ok(record) => match store.save(&record) {
+                Ok(record) => match store.lock().await.save(&record) {
                     Ok(()) => {
                         info!(
                             "setup: saved {} via {}:{}",
@@ -566,6 +628,7 @@ async fn handle(
 /// `None` means the connection produced nothing usable and has been answered
 /// if it deserved an answer.
 async fn read_request<'b>(
+    slot: u8,
     socket: &mut TcpSocket<'_>,
     request: &'b mut [u8; REQUEST_LEN],
 ) -> Option<(Head, &'b str)> {
@@ -578,13 +641,13 @@ async fn read_request<'b>(
             Ok(Some(head)) => break head,
             Ok(None) => {}
             Err(e) => {
-                warn!("setup: bad request ({e:?})");
+                warn!("setup: [{slot}] bad request ({e:?})");
                 return None;
             }
         }
 
         if filled == request.len() {
-            warn!("setup: request head too large");
+            warn!("setup: [{slot}] request head too large");
             return None;
         }
 
@@ -594,7 +657,7 @@ async fn read_request<'b>(
             Ok(0) => return None,
             Ok(n) => filled += n,
             Err(e) => {
-                warn!("setup: read failed ({e:?})");
+                warn!("setup: [{slot}] read failed ({e:?})");
                 return None;
             }
         }
@@ -602,19 +665,22 @@ async fn read_request<'b>(
 
     let want = head.body_at.checked_add(head.content_length)?;
     if want > request.len() {
-        warn!("setup: body of {} bytes is too large", head.content_length);
+        warn!(
+            "setup: [{slot}] body of {} bytes is too large",
+            head.content_length
+        );
         return None;
     }
 
     while filled < want {
         match socket.read(&mut request[filled..]).await {
             Ok(0) => {
-                warn!("setup: connection closed mid-body");
+                warn!("setup: [{slot}] connection closed mid-body");
                 return None;
             }
             Ok(n) => filled += n,
             Err(e) => {
-                warn!("setup: read failed ({e:?})");
+                warn!("setup: [{slot}] read failed ({e:?})");
                 return None;
             }
         }
@@ -626,8 +692,10 @@ async fn read_request<'b>(
 
 /// Writes a response, headers and all.
 ///
-/// `Connection: close` on every one, because this serves a single socket and a
-/// browser holding it open with keep-alive would lock out its own next request.
+/// `Connection: close` on every one. There are only [`CONNECTIONS`] slots, and
+/// a browser holding one open with keep-alive would spend a third of them on a
+/// connection it has finished with — the same starvation [`serve_form`]
+/// describes, just slower to arrive.
 async fn send(socket: &mut TcpSocket<'_>, status: &str, body: &str) {
     let mut headers: String<160> = String::new();
     let _ = write!(
@@ -647,154 +715,4 @@ async fn send(socket: &mut TcpSocket<'_>, status: &str, body: &str) {
     if let Err(e) = socket.write_all(body.as_bytes()).await {
         warn!("setup: write failed ({e:?})");
     }
-}
-
-/// The page, with whatever was last typed still in the boxes.
-///
-/// `submitted` is the body of the rejected `POST`, or `""` for a first visit.
-/// Re-reading the fields out of it rather than carrying a parsed struct means
-/// a body that failed to parse *as a whole* can still give back the fields that
-/// were fine — which is exactly the case this runs in.
-///
-/// **Passwords are filled back in too.** They are the longest things on the
-/// form and the most miserable to retype on a phone, and clearing them on a
-/// typo in the port field is how someone ends up giving up. The response goes
-/// over the unit's own WPA2 link to the person who just typed it, in answer to
-/// a request that carried the same password, so echoing it back reaches nobody
-/// new. `Cache-Control: no-store` in [`send`] keeps it out of the browser's
-/// history.
-fn render_form(
-    page: &mut String<PAGE_LEN>,
-    submitted: &str,
-    error: Option<FormError>,
-    failure: Option<&str>,
-) {
-    page.clear();
-
-    let _ = page.push_str(
-        "<!doctype html><html lang=en><head><meta charset=utf-8>\
-         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
-         <title>cat-feeder setup</title><style>\
-         body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;\
-         max-width:26rem;background:#faf9f7;color:#222}\
-         h1{font-size:1.25rem;margin:0 0 1rem}\
-         label{display:block;margin:.75rem 0 .2rem;font-weight:600;font-size:.9rem}\
-         input{width:100%;box-sizing:border-box;padding:.55rem;font-size:1rem;\
-         border:1px solid #bbb;border-radius:.3rem;background:#fff}\
-         button{margin-top:1.25rem;width:100%;padding:.7rem;font-size:1rem;\
-         border:0;border-radius:.3rem;background:#2f6f4f;color:#fff}\
-         .err{background:#fdecea;border:1px solid #d9534f;border-radius:.3rem;\
-         padding:.6rem;margin-bottom:1rem}\
-         .hint{color:#666;font-size:.8rem;margin:.2rem 0 0}\
-         </style></head><body><h1>cat-feeder setup</h1>",
-    );
-
-    // The failure, if there was one, above the fields rather than beside them:
-    // there is only ever one, and a phone screen is short.
-    if let Some(message) = failure {
-        let _ = write!(page, "<p class=err>{}</p>", Escaped(message));
-    } else if let Some(error) = error {
-        let _ = write!(page, "<p class=err>{error}</p>");
-    }
-
-    let _ = page.push_str("<form method=post action=/save>");
-
-    text_field(page, "wifi_ssid", "Wi-Fi network", submitted, "text", None);
-    text_field(
-        page,
-        "wifi_password",
-        "Wi-Fi password",
-        submitted,
-        "password",
-        Some("Leave empty for an open network."),
-    );
-    text_field(
-        page,
-        "mqtt_host",
-        "Broker address",
-        submitted,
-        "text",
-        Some("An IP address such as 192.168.1.10. Names will not work."),
-    );
-    text_field(page, "mqtt_port", "Broker port", submitted, "text", None);
-    text_field(
-        page,
-        "mqtt_user",
-        "Broker username",
-        submitted,
-        "text",
-        None,
-    );
-    text_field(
-        page,
-        "mqtt_password",
-        "Broker password",
-        submitted,
-        "password",
-        None,
-    );
-
-    let _ = page.push_str("<button type=submit>Save and restart</button></form></body></html>");
-}
-
-/// One labelled input, with its previous value escaped back into it.
-///
-/// The `name` is the one [`record_from_form`] looks for. They are written out
-/// here rather than derived, so this file and `provisioning.rs` can be grepped
-/// for the same six strings.
-fn text_field(
-    page: &mut String<PAGE_LEN>,
-    name: &str,
-    label: &str,
-    submitted: &str,
-    kind: &str,
-    hint: Option<&str>,
-) {
-    // A field that failed to decode comes back empty rather than taking the
-    // whole page down with it: the rest of the form is still worth showing.
-    let value = field::<PASSWORD_LEN>(submitted, name)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-
-    let _ = write!(
-        page,
-        "<label for={name}>{label}</label>\
-         <input id={name} name={name} type={kind} value=\"{}\"",
-        Escaped(&value)
-    );
-    // The port is the only numeric one, and a phone showing a number pad for
-    // it saves a keyboard switch.
-    if name == "mqtt_port" {
-        let _ = page.push_str(" inputmode=numeric");
-    }
-    let _ = page.push_str(">");
-
-    if let Some(hint) = hint {
-        let _ = write!(page, "<p class=hint>{}</p>", Escaped(hint));
-    }
-}
-
-/// The page shown once, on the way out.
-fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
-    page.clear();
-    let _ = write!(
-        page,
-        "<!doctype html><html lang=en><head><meta charset=utf-8>\
-         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
-         <title>cat-feeder setup</title><style>\
-         body{{font:16px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;\
-         max-width:26rem;background:#faf9f7;color:#222}}\
-         </style></head><body><h1>Saved</h1>\
-         <p>This feeder is restarting and will join <b>{}</b>, then connect to \
-         the broker at <b>{}:{}</b>.</p>\
-         <p>Its setup network is about to disappear — that is what success \
-         looks like. Rejoin your own Wi-Fi.</p>\
-         <p>If it does not appear in Home Assistant, hold the button through a \
-         power cycle to erase and start again.</p>\
-         </body></html>",
-        Escaped(&record.wifi_ssid),
-        Escaped(&record.mqtt_host),
-        record.mqtt_port,
-    );
 }

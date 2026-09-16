@@ -732,18 +732,97 @@ An association line is evidence, not proof: `watch_stations` re-subscribes on
 each event, so one published in the gap is dropped. A `dhcp` line with no
 association above it is not a contradiction — the socket cannot miss those.
 
-### When the form is built
+### The form — *observed*
 
-Not written yet. What it must add, after the address above:
+One session, copied verbatim, including the bug it uncovered. The broker
+address was deliberately given as a hostname first, to exercise the rejection;
+the port was a throwaway `1234` rather than 1883.
 
 ```
-INFO - setup: GET /
-INFO - setup: POST /save, saving
-INFO - store: saved
-INFO - setup: restarting
+INFO (1245) - setup: form on http://192.168.4.1/, 3 connections
+INFO (67174) - setup: [0] Get / (0 byte body)
+INFO (67294) - setup: [1] Get /favicon.ico (0 byte body)
+INFO (68768) - setup: [0] Get / (0 byte body)
+INFO (68849) - setup: [1] Get /favicon.ico (0 byte body)
+INFO (87932) - setup: [0] Post /save (108 byte body)
+INFO (87938) - setup: form rejected (NotAnIp("mqtt_host"))
+INFO (88017) - setup: [1] Get /favicon.ico (0 byte body)
+INFO (100506) - setup: [0] Post /save (117 byte body)
+INFO (100546) - setup: saved fdlgrm  via 192.168.1.2:1234
+INFO (100622) - setup: [1] Get /favicon.ico (0 byte body)
+INFO (100840) - setup: saved, restarting
 ```
 
-then a clean boot straight into `store: configured for ...`.
+then a clean boot into the record that was just written:
+
+```
+INFO (306) - store: configured for fdlgrm  via 192.168.1.2:1234
+```
+
+**`saved fdlgrm  via` has two spaces, and that is the whole of the next
+section.** It is left in rather than tidied away, because it is the only place
+the trailing space is visible before the unit starts failing to associate — and
+because a transcript in this file is worth nothing if it has been cleaned up.
+Every line here is what the board printed.
+
+**The `[n]` is the connection slot, and two different numbers is the point.**
+A browser fetches `/favicon.ico` on a second connection while the first is
+still in use, and an idle one it opened speculatively is held until the 5 s
+timeout. With a single socket the next real request is refused with a RST —
+which is what pressing **Save** looked like before `CONNECTIONS` was 3:
+
+> This site can't be reached
+
+with the GET that drew the form having worked perfectly a moment earlier, and
+nothing in the log but a lone `read failed (ConnectionReset)` when the idle
+connection finally expired. If that symptom comes back, count the slots before
+suspecting anything else.
+
+**Failure signatures:**
+
+| What the console shows | What it means |
+|---|---|
+| `Get /` but no `Post /save` when Save is pressed | connections are starving each other — see above |
+| `form rejected (NotAnIp(..))` | a hostname was typed; this firmware has no resolver |
+| `form rejected (BadPort)` | the port was blank, zero, or not a number |
+| `could not save` | flash refused the write; the page says so rather than rebooting into nothing |
+| `[n] request head too large` | a browser sent more headers than `REQUEST_LEN` |
+| nothing at all on a page load | the phone is on its own cellular data, not the AP |
+
+### The trailing space, and why the SSID is trimmed
+
+Worth knowing because the symptom names the wrong thing entirely. The session
+above — the first real use of the form — went on to do this:
+
+```
+WARN (1979) - wifi: connect failed Disconnected(DisconnectedStationInfo { ssid: "fdlgrm ",
+              bssid: [0, 0, 0, 0, 0, 0], reason: NoAccessPointFound, rssi: -128 })
+```
+
+The phone keyboard offered `fdlgrm` as a completion and inserted the space that
+follows one. `NoAccessPointFound` reads as a wrong password or a unit out of
+range, and says nothing whatever about a space — and the two log lines above
+are the only place it is visible, because `saved fdlgrm  via` has two spaces
+where every other line has one.
+
+Both ends are fixed: the inputs carry `autocapitalize=off autocorrect=off
+spellcheck=false`, and `provisioning::trimmed` strips whitespace from the SSID,
+broker address, port and username. **Passwords are not trimmed** — one may
+legitimately end in a space, and trimming makes a correct credential impossible
+to enter.
+
+**Re-observed after the fix**, with the same phone and the same keyboard. One
+space before `via`, where the broken run had two:
+
+```
+INFO (305) - store: configured for fdlgrm via 192.168.68.108:1883
+INFO (1662) - wifi: associated
+INFO (11685) - wifi: connected, ip=192.168.68.123/24
+```
+
+Counting spaces is the check. `saved fdlgrm  via` and `saved fdlgrm via` differ
+by one character in a log line nobody reads closely, and everything downstream
+of the difference fails with a message about access points.
 
 **This one cannot be verified from the bench alone.** Joining the network and
 submitting the form needs a phone in someone's hand; the console only shows the
