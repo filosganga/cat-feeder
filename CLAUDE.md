@@ -1063,11 +1063,12 @@ on the LED**, which is the whole reason step 10 exists.
       and `Bus::health()` reads it, so the LED's blue flash comes from the same
       fact the boot path acted on rather than from a constant
 
-11. Move the broker and Home Assistant to the Raspberry Pi 5. **The Pi is set
-    up and Home Assistant runs on it.** Today the feeders still point at the
-    Mac's Docker stack, which is a laptop that is not always on.
-    - ✅ the Pi itself, with Home Assistant on it
-    - ⬜ Mosquitto on the Pi, and the feeder user in its password file
+11. Move the broker and Home Assistant to the Raspberry Pi 5. **Both run on the
+    Pi already**; what is left is the `cat_feeder` package and repointing the
+    units, which still talk to the Mac's Docker stack — a laptop that is not
+    always on.
+    - ✅ the Pi itself, with Home Assistant and Mosquitto on it, and the feeder
+      user in the broker's password file
     - ⬜ **install `homeassistant/packages/cat_feeder.yaml` on the Pi**,
       unchanged — it is tracked here precisely so it can be.
 
@@ -1106,7 +1107,7 @@ on the LED**, which is the whole reason step 10 exists.
 | 3, the DRV8833 and the detent interval | the part |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, and the third feeder being opened |
-| 11, the Pi | nothing; the Pi is set up and Home Assistant runs on it |
+| 11, the Pi | nothing; Home Assistant and Mosquitto both run on it |
 | a display | the 0.91" parts, ordered. **Not blocking**: a 1.3" development part is on the bench |
 
 **Both the Pi 5 and the three Zeros are now on the bench.** The only part still
