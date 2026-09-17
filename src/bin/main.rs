@@ -128,6 +128,11 @@ async fn main(spawner: Spawner) -> ! {
     let button = Switch::new(button_pin!(peripherals));
     let wipe = reset_held_at_boot(&button).await;
 
+    // Built here rather than after the branch below, so that setup mode can
+    // report its level too. A unit in setup mode is a unit on a bench being
+    // wired, which is exactly when knowing what this pin reads is worth most.
+    let switch = Switch::new(switch_pin!(peripherals));
+
     // No usable record means setup mode, and setup mode never returns. It is
     // entered before any task that assumes a network, because there is not
     // going to be one.
@@ -136,6 +141,7 @@ async fn main(spawner: Spawner) -> ! {
         Boot::Setup(store) => {
             BUS.setup.store(true, Ordering::Relaxed);
             spawner.spawn(button_task(button).expect("failed to create button task"));
+            log_setup_switch_level(&switch);
             cat_feeder::setup::run(spawner, peripherals.WIFI, id, AP_SECRET, store).await
         }
         Boot::Unconfigurable => halt_unconfigurable().await,
@@ -143,7 +149,6 @@ async fn main(spawner: Spawner) -> ! {
 
     spawner.spawn(button_task(button).expect("failed to create button task"));
 
-    let switch = Switch::new(switch_pin!(peripherals));
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
     spawner.spawn(feeder_task(LogMotor::new(), cfg).expect("failed to create feeder task"));
     spawner.spawn(schedule_task().expect("failed to create schedule task"));
@@ -520,6 +525,27 @@ const INDICATOR_TICK: Duration = Duration::from_millis(25);
 /// Worth a console line of its own: it is how the LED's behaviour gets checked
 /// during bring-up, and how a blink code seen across the room can be confirmed
 /// against what the firmware believed it was showing.
+/// The switch's resting level, for the setup path only.
+///
+/// `switch_task` prints this on every other boot, but it is deliberately not
+/// spawned in setup mode: nothing drains `CLICKS` there, so it would fill and
+/// then warn about a feeder that does not exist. The level is still worth a
+/// line, because setup mode is when a unit is on a bench with fresh solder on
+/// it — and a miswired hub switch is otherwise invisible until the unit is
+/// configured, by which point the wiring is behind a closed case.
+#[inline(never)]
+fn log_setup_switch_level(switch: &Switch<'static>) {
+    info!(
+        "switch: watching {}, currently {} (not counted yet, still in setup)",
+        cat_feeder::board::SWITCH_PIN,
+        if switch.is_pressed() {
+            "pressed"
+        } else {
+            "released"
+        }
+    );
+}
+
 #[inline(never)]
 fn log_indicator(status: Option<Status>) {
     if let Some(status) = status {
