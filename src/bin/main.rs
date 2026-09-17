@@ -736,7 +736,7 @@ async fn schedule_task() {
                     // never leaves `last_fed` claiming a meal that never ran.
                     match BUS.feed.try_send(portions) {
                         Ok(()) => {
-                            BUS.last_fed.set(now);
+                            BUS.last_fed.set(now, portions);
                             log_due(minute_of_day, portions);
                         }
                         Err(_) => warn!("schedule: feed queue full, slot dropped"),

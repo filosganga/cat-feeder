@@ -124,7 +124,9 @@ pub struct State {
     pub feeding: bool,
     pub jammed: bool,
     pub paused: bool,
-    pub last_fed: Option<Wall>,
+    /// The time and the portion count. Only the time reaches MQTT; the
+    /// count is for the display, which reads the same slot.
+    pub last_fed: Option<(Wall, u8)>,
 }
 
 impl State {
@@ -152,7 +154,7 @@ impl State {
             None => {
                 let _ = write!(json, "null}}");
             }
-            Some(at) => {
+            Some((at, _portions)) => {
                 let _ = write!(json, r#""{at}"}}"#);
             }
         }

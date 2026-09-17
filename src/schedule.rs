@@ -823,6 +823,42 @@ impl Scheduler {
             portions: slot.portions,
         }
     }
+
+    /// The next slot that will fire, without resolving anything.
+    ///
+    /// For the display, and **deliberately `&self`**. [`next_due`] marks a slot
+    /// consumed before it returns, so painting a screen with it would eat the
+    /// meal it was describing — the one bug this whole module exists to
+    /// prevent, arriving through the back door.
+    ///
+    /// Slots strictly *after* now, so a schedule that has run out today rolls
+    /// to tomorrow's earliest. A slot at exactly this minute is left out
+    /// because [`next_due`] is about to resolve it anyway: it is not the next
+    /// feed, it is this one.
+    ///
+    /// Says nothing about whether the unit *will* feed. A paused or
+    /// clock-less unit has an upcoming slot and will not act on it, and
+    /// deciding that is the caller's job — `display.rs` suppresses the line
+    /// rather than promising a meal that is not coming.
+    ///
+    /// [`next_due`]: Self::next_due
+    pub fn upcoming(&self, now: Wall) -> Option<Slot> {
+        let now_minute = now.minute_of_day();
+
+        self.schedule
+            .slots()
+            .iter()
+            .filter(|slot| slot.minute_of_day > now_minute)
+            .min_by_key(|slot| slot.minute_of_day)
+            // Nothing left today, so the next one is tomorrow's first.
+            .or_else(|| {
+                self.schedule
+                    .slots()
+                    .iter()
+                    .min_by_key(|slot| slot.minute_of_day)
+            })
+            .copied()
+    }
 }
 
 #[cfg(test)]
@@ -858,6 +894,77 @@ mod tests {
     /// Takes the baseline the way the real task does, before any slot is due.
     fn armed_at(scheduler: &mut Scheduler, now: Wall) {
         assert_eq!(scheduler.next_due(now, false), Due::Nothing);
+    }
+
+    // ---- upcoming, for the display ----
+
+    #[test]
+    fn upcoming_is_the_next_slot_later_today() {
+        let scheduler = two_meals();
+
+        assert_eq!(
+            scheduler.upcoming(wall(17, 12, 0)),
+            Some(Slot {
+                minute_of_day: 19 * 60,
+                portions: 3
+            })
+        );
+    }
+
+    #[test]
+    fn upcoming_rolls_to_tomorrow_once_the_day_is_done() {
+        let scheduler = two_meals();
+
+        assert_eq!(
+            scheduler.upcoming(wall(17, 21, 0)),
+            Some(Slot {
+                minute_of_day: 8 * 60,
+                portions: 2
+            }),
+            "after the last meal, the next one is tomorrow's first"
+        );
+    }
+
+    #[test]
+    fn upcoming_skips_the_slot_that_is_due_this_very_minute() {
+        let scheduler = two_meals();
+
+        // 08:00 is not the *next* feed, it is this one: `next_due` is about to
+        // resolve it. Reporting it would leave the screen claiming a future
+        // meal at a time that has already arrived.
+        assert_eq!(
+            scheduler.upcoming(wall(17, 8, 0)),
+            Some(Slot {
+                minute_of_day: 19 * 60,
+                portions: 3
+            })
+        );
+    }
+
+    #[test]
+    fn upcoming_has_no_answer_without_a_schedule() {
+        assert_eq!(Scheduler::new().upcoming(wall(17, 12, 0)), None);
+    }
+
+    /// The whole reason this is a separate method rather than a call to
+    /// `next_due`: painting a screen must never eat a meal.
+    #[test]
+    fn upcoming_resolves_nothing() {
+        let mut scheduler = two_meals();
+        armed_at(&mut scheduler, wall(17, 7, 0));
+
+        for _ in 0..50 {
+            scheduler.upcoming(wall(17, 7, 30));
+        }
+
+        // 08:00 still fires, exactly as if nothing had asked.
+        assert_eq!(
+            scheduler.next_due(wall(17, 8, 0), false),
+            Due::Feed {
+                minute_of_day: 8 * 60,
+                portions: 2
+            }
+        );
     }
 
     // ---- dates ----

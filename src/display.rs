@@ -164,10 +164,21 @@ fn fed_line(last: Option<Fed>) -> Line {
 
 /// `next 19:00  x2`, when there is an answer.
 fn next_line(view: &View) -> Line {
-    // Paused says it on the top line already, and repeating it here would waste
-    // the only line left. More importantly there *is* no next feed while
-    // paused: slots that fall due are marked consumed, not deferred.
-    if view.status == Status::Paused {
+    // Two states have an upcoming slot and will not act on it, and in both the
+    // honest answer is silence rather than a time.
+    //
+    // `Paused`: slots that fall due are marked consumed, not deferred, so the
+    // meal is not late, it is not happening.
+    //
+    // `NoTime`: the clock has never been handed a *live* time, so the schedule
+    // is holding and **this unit will not feed at all**. `Scheduler::upcoming`
+    // still answers, because it only reads the slot list — deciding whether the
+    // unit will act is this module's job, not its.
+    //
+    // Getting this wrong would be the worst thing the screen could do: print
+    // `next 19:00` on a feeder that has already decided not to, with the
+    // reason sitting one line above it.
+    if matches!(view.status, Status::Paused | Status::NoTime) {
         return Line::new();
     }
 
@@ -335,6 +346,26 @@ mod tests {
         assert_eq!(screen.lines[0], "PAUSED");
         assert_eq!(screen.lines[2], "", "a paused unit has no next feed");
         assert_fits(&screen);
+    }
+
+    /// The same rule as paused, for the state that is easiest to get wrong:
+    /// the schedule is holding, so the slot exists and will not be fed.
+    #[test]
+    fn no_trusted_time_promises_nothing_either() {
+        let screen = render(&View {
+            status: Status::NoTime,
+            next: Some(Slot {
+                minute_of_day: 19 * 60,
+                portions: 2,
+            }),
+            ..view()
+        });
+
+        assert_eq!(screen.lines[0], "WAITING FOR HA TIME");
+        assert_eq!(
+            screen.lines[2], "",
+            "a unit whose schedule is holding must not name a next feed"
+        );
     }
 
     #[test]

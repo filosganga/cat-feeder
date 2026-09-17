@@ -191,7 +191,14 @@ impl Connectivity {
 /// Recorded when the request is queued rather than when the hub finishes
 /// turning, because a jam discards whatever is pending and there is no moment
 /// afterwards that means "done".
-pub struct LastFed(Mutex<CriticalSectionRawMutex, Cell<Option<Wall>>>);
+/// Carries the **portion count** alongside the time, because the display shows
+/// both and "fed at 08:00" without a quantity answers half the question
+/// somebody standing at a feeder is asking.
+///
+/// Portions as requested, never clicks. `portions::clicks_for` runs downstream
+/// of this, so a unit with a portion scale would otherwise report a number that
+/// matches neither the schedule that asked nor Home Assistant's history.
+pub struct LastFed(Mutex<CriticalSectionRawMutex, Cell<Option<(Wall, u8)>>>);
 
 impl Default for LastFed {
     fn default() -> Self {
@@ -204,11 +211,11 @@ impl LastFed {
         Self(Mutex::new(Cell::new(None)))
     }
 
-    pub fn set(&self, at: Wall) {
-        self.0.lock(|slot| slot.set(Some(at)));
+    pub fn set(&self, at: Wall, portions: u8) {
+        self.0.lock(|slot| slot.set(Some((at, portions))));
     }
 
-    pub fn get(&self) -> Option<Wall> {
+    pub fn get(&self) -> Option<(Wall, u8)> {
         self.0.lock(Cell::get)
     }
 }
