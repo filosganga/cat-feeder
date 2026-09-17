@@ -25,6 +25,7 @@ extern crate alloc;
 // Pure logic. No esp-hal, testable on the host.
 pub mod button;
 pub mod dhcp;
+pub mod display;
 pub mod feeder;
 pub mod indicator;
 pub mod portions;
