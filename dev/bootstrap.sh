@@ -3,17 +3,44 @@
 # Run once, before the first `docker compose up`.
 #
 #   ./dev/bootstrap.sh                  # user "feeder", password "feeder-dev"
-#   ./dev/bootstrap.sh myuser mypass
+#   ./dev/bootstrap.sh --user myuser --password mypass
+#
+# The two are also positional, as they always were: `./dev/bootstrap.sh myuser
+# mypass` still works.
 #
 # The password file is git-ignored. Whatever you set here also goes into the
 # firmware's cfg.toml.
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
 
-MQTT_USER="${1:-feeder}"
-MQTT_PASS="${2:-feeder-dev}"
+MQTT_USER=""
+MQTT_PASS=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --user) need_value "$1" "${2:-}"; MQTT_USER="$2"; shift 2 ;;
+    --user=*) MQTT_USER="${1#*=}"; shift ;;
+    --password|--pass) need_value "$1" "${2:-}"; MQTT_PASS="$2"; shift 2 ;;
+    --password=*|--pass=*) MQTT_PASS="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) die "bootstrap: unknown option '$1'. Try --help." ;;
+    *)
+      if [ -z "$MQTT_USER" ]; then MQTT_USER="$1"
+      elif [ -z "$MQTT_PASS" ]; then MQTT_PASS="$1"
+      else die "bootstrap: unexpected argument '$1'. Try --help."
+      fi
+      shift
+      ;;
+  esac
+done
+
+MQTT_USER="${MQTT_USER:-feeder}"
+MQTT_PASS="${MQTT_PASS:-feeder-dev}"
 
 docker run --rm \
   -v "$PWD/dev/mosquitto:/config" \

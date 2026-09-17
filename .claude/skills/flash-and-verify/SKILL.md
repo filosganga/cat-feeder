@@ -16,16 +16,22 @@ they fail loudly on the mistakes that otherwise cost a whole run.
 
 ```sh
 ./dev/flash.sh                        # build, flash, capture 45 s
-./dev/flash.sh 90                     # ...capture 90 s instead
-BOARD=zero ./dev/flash.sh             # ...a Zero rather than the dev kit
-./dev/capture.sh 60 'feed:|switch:'   # capture without reflashing, filtered
+./dev/flash.sh --seconds 90           # ...capture 90 s instead
+./dev/flash.sh --board zero           # ...a Zero rather than the dev kit
+./dev/capture.sh --seconds 60 --filter 'feed:|switch:'   # no reflash, filtered
 ```
 
-**`BOARD` is not optional on a Zero.** It picks the feature set, which also
+**Pass the flags, not an environment prefix.** Every setting these scripts take
+has one — `--board`, `--port`, `--host` — and it wins over the matching
+variable. `BOARD=zero ./dev/flash.sh` still works, but it changes the start of
+the command line, which is what a permission rule in `.claude/settings.json`
+matches on, so the allow-rule for the script no longer covers it.
+
+**`--board` is not optional on a Zero.** It picks the feature set, which also
 picks `esp-println`'s output interface, so a dev-kit binary on a Zero boots and
 then prints into a UART that board does not have. The symptom is a console that
-stops after the bootloader — indistinguishable from a dead application. Set
-`ESPFLASH_PORT` to match as well; the two boards enumerate differently.
+stops after the bootloader — indistinguishable from a dead application. Pass
+`--port` to match as well; the two boards enumerate differently.
 
 Both print every line annotated with the milliseconds since the previous one,
 which is what makes a feed cycle readable, and both keep the unfiltered log and
@@ -66,6 +72,8 @@ Set the port once so `cargo run` never prompts:
 export ESPFLASH_PORT=/dev/cu.usbmodem5AAF2846061
 ```
 
+Or name it per run with `--port`, which wins over the variable.
+
 The serial number in that path is per-cable and per-board. Re-read it from
 `list-ports` after plugging in a different unit.
 
@@ -85,8 +93,8 @@ scripts are already bounded and non-interactive, so they are safe to call
 directly:
 
 ```sh
-./dev/flash.sh 60
-./dev/capture.sh 30 'mqtt:'
+./dev/flash.sh --seconds 60
+./dev/capture.sh --seconds 30 --filter 'mqtt:'
 ```
 
 Captures that need a button pressed at the right moment cannot be automated.

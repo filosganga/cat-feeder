@@ -2,15 +2,36 @@
 # Summarise an overnight capture from dev/soak.sh.
 #
 #   ./dev/soak-report.sh soak/2026-09-15_2040.log
+#   ./dev/soak-report.sh --log soak/2026-09-15_2040.log
 #   ./dev/soak-report.sh                          # the most recent one
 #
 # Answers, in order: did it stay up, did it feed, and did anything go wrong.
 
 set -uo pipefail
 
-cd "$(dirname "$0")/.."
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
 
-LOG="${1:-$(ls -t soak/*.log 2>/dev/null | head -1)}"
+LOG=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --log) need_value "$1" "${2:-}"; LOG="$2"; shift 2 ;;
+    --log=*) LOG="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) die "soak-report: unknown option '$1'. Try --help." ;;
+    *)
+      if [ -z "$LOG" ]; then LOG="$1"
+      else die "soak-report: unexpected argument '$1'. Try --help."
+      fi
+      shift
+      ;;
+  esac
+done
+
+LOG="${LOG:-$(ls -t soak/*.log 2>/dev/null | head -1)}"
 if [ -z "$LOG" ] || [ ! -f "$LOG" ]; then
   echo "No soak log. Run ./dev/soak.sh first." >&2
   exit 2

@@ -4,6 +4,9 @@
 #
 #   ./dev/ap-password.sh              # read the id off the board that is plugged in
 #   ./dev/ap-password.sh db0260 ...   # or name the ids
+#   ./dev/ap-password.sh --port /dev/cu.usbmodemXXXX
+#
+# --port wins over ESPFLASH_PORT; see dev/_common.sh.
 #
 # With no arguments it asks the connected board for its MAC, which is the
 # moment you are already holding the unit: flash it, run this, stick the label
@@ -20,7 +23,23 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
+
+PORT_ARG=""
+ids=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
+    --port=*) PORT_ARG="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) die "ap-password: unknown option '$1'. Try --help." ;;
+    *) ids+=("$1"); shift ;;
+  esac
+done
 
 if [ ! -f cfg.toml ]; then
   echo "cfg.toml not found. Copy cfg.toml.example and fill it in." >&2
@@ -41,17 +60,12 @@ EOF
   exit 2
 fi
 
-ids=("$@")
-
 if [ ${#ids[@]} -eq 0 ]; then
-  PORT="${ESPFLASH_PORT:-}"
-  if [ -z "$PORT" ]; then
-    PORT=$(awk -F'"' '/^ESPFLASH_PORT=/ {print $2}' .cargo/config.toml)
-  fi
+  PORT="$(resolve_port "$PORT_ARG")"
   if [ -z "$PORT" ]; then
     echo "No board id given and no serial port to ask. Either:" >&2
     echo "  $0 db0260" >&2
-    echo "  ESPFLASH_PORT=/dev/cu.usbmodemXXXX $0" >&2
+    echo "  $0 --port /dev/cu.usbmodemXXXX" >&2
     exit 2
   fi
 

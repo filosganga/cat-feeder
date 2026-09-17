@@ -12,8 +12,9 @@ persistence.
 docker compose up -d
 ```
 
-`bootstrap.sh` defaults to user `feeder` and password `feeder-dev`. Pass your
-own as two arguments if you prefer. The password file is git-ignored.
+`bootstrap.sh` defaults to user `feeder` and password `feeder-dev`. Pass
+`--user` and `--password` if you prefer your own. The password file is
+git-ignored.
 
 Broker only, skipping Home Assistant:
 
@@ -116,10 +117,10 @@ homeassistant:
 ```
 
 Then restart Home Assistant and watch the Pi's broker. This needs no feeder, and
-`MQTT_PASS` too if the feeder user there differs from the dev stack's:
+`--password` too if the feeder user there differs from the dev stack's:
 
 ```sh
-MQTT_HOST=<pi> ./dev/watch.sh 'feeder/time' 'feeder/schedule'
+./dev/watch.sh --host <pi> 'feeder/time' 'feeder/schedule'
 ```
 
 A line a minute on `feeder/time` says the Pi's half is done.
@@ -183,7 +184,7 @@ time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
 ```sh
 ./dev/watch.sh                          # tail feeder/# and homeassistant/#
 ./dev/watch.sh 'feeder/+/state'         # one filter instead
-MQTT_HOST=<pi> ./dev/watch.sh           # ...against the Pi's broker instead
+./dev/watch.sh --host <pi>              # ...against the Pi's broker instead
 
 docker compose logs -f mosquitto        # connects, disconnects, auth failures
 docker compose logs -f homeassistant

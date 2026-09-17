@@ -4,25 +4,49 @@
 #   ./dev/watch.sh                  # feeder/# and homeassistant/#
 #   ./dev/watch.sh 'feeder/#'       # just one filter
 #
-# Against another broker — the Pi, during roadmap step 11 — set MQTT_HOST, and
-# MQTT_PASS with it if that broker's feeder user has a different password:
+# Against another broker — the Pi, during roadmap step 11 — name it, and give it
+# a password too if that broker's feeder user has a different one:
 #
-#   MQTT_HOST=192.168.68.50 MQTT_PASS=... ./dev/watch.sh 'feeder/time'
+#   ./dev/watch.sh --host 192.168.68.126 'feeder/time'
+#   ./dev/watch.sh --host 192.168.68.126 --user feeder --password ... 'feeder/#'
+#
+# MQTT_HOST, MQTT_USER and MQTT_PASS still work; the flags win over them. See
+# dev/_common.sh for why both exist.
 #
 # Ctrl+C to stop.
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
 
-MQTT_HOST="${MQTT_HOST:-}"
-MQTT_USER="${MQTT_USER:-feeder}"
-MQTT_PASS="${MQTT_PASS:-feeder-dev}"
+HOST_ARG=""
+USER_ARG=""
+PASS_ARG=""
+topics=()
 
-if [ $# -gt 0 ]; then
-  topics=()
-  for t in "$@"; do topics+=(-t "$t"); done
-else
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) need_value "$1" "${2:-}"; HOST_ARG="$2"; shift 2 ;;
+    --host=*) HOST_ARG="${1#*=}"; shift ;;
+    --user) need_value "$1" "${2:-}"; USER_ARG="$2"; shift 2 ;;
+    --user=*) USER_ARG="${1#*=}"; shift ;;
+    --password|--pass) need_value "$1" "${2:-}"; PASS_ARG="$2"; shift 2 ;;
+    --password=*|--pass=*) PASS_ARG="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; while [ $# -gt 0 ]; do topics+=(-t "$1"); shift; done ;;
+    -*) die "watch: unknown option '$1'. Try --help." ;;
+    *) topics+=(-t "$1"); shift ;;
+  esac
+done
+
+MQTT_HOST="${HOST_ARG:-${MQTT_HOST:-}}"
+MQTT_USER="${USER_ARG:-${MQTT_USER:-feeder}}"
+MQTT_PASS="${PASS_ARG:-${MQTT_PASS:-feeder-dev}}"
+
+if [ ${#topics[@]} -eq 0 ]; then
   topics=(-t 'feeder/#' -t 'homeassistant/#')
 fi
 

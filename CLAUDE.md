@@ -778,9 +778,10 @@ firmware change, which is why `led.rs` sends 24 bits and not 48.
 - Generated with `esp-generate --chip esp32c6` with: `unstable-hal`, `alloc`,
   `wifi` (esp-radio), `embassy`, `log` + `esp-println`, `esp-backtrace`,
   board `esp32c6-wroom-1`. **No BLE, no probe-rs/defmt.**
-- `./dev/flash.sh [secs] [filter]` = build + flash + bounded capture, with each
+- `./dev/flash.sh [--seconds n] [--filter re] [--board devkit|zero] [--port p]`
+  = build + flash + bounded capture, with each
   line annotated by the gap since the previous one. `./dev/capture.sh` does the
-  same without reflashing. `./dev/soak.sh [hours]` captures overnight and
+  same without reflashing. `./dev/soak.sh [--hours n]` captures overnight and
   `./dev/soak-report.sh` summarises what happened: reboots, panics, scheduled
   feeds, reconnects. Logs land in `soak/`, which is git-ignored. Prefer these over a hand-written `espflash` command:
   they pin the right port and avoid `--no-reset`, which halts the application
@@ -891,6 +892,15 @@ each one.
   stand in for the motor when no driver is connected.
 - Keep changes small and flash-testable; every step should be verifiable on
   the serial console.
+- **Every dev script setting has a flag, and the flag wins over the matching
+  environment variable.** `--board`, `--port`, `--host`, `--user`,
+  `--password`, `--nvs-offset`, plus the per-run `--seconds`, `--filter` and
+  `--hours`. Prefer them: an `ENV=value ./dev/x.sh` prefix changes the start of
+  the command line, which is what a permission rule in `.claude/settings.json`
+  matches on, so an allow-rule for the script stops covering the call. The
+  variables still work, for a port or a broker exported once for a session.
+  `dev/_common.sh` holds the shared parsing and says why; the `dev-script`
+  skill has the conventions for writing a new one.
 - **When a constant becomes configurable, grep the whole repo for its old
   value.** Copies survive in log strings, doc comments, `README.md` and the
   transcripts under `.claude/skills/flash-and-verify/`, and no test can catch
@@ -1141,7 +1151,7 @@ on the LED**, which is the whole reason step 10 exists.
       feeder involved at all:
 
       ```sh
-      MQTT_HOST=<pi> ./dev/watch.sh 'feeder/time'
+      ./dev/watch.sh --host <pi> 'feeder/time'
       ```
 
       A line a minute means the Pi's half is done. Silence means Home Assistant

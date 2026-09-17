@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
 # Build, flash, and capture the serial console for a fixed window.
 #
-#   ./dev/flash.sh                 # flash, then capture 45 s
-#   ./dev/flash.sh 90              # flash, then capture 90 s
-#   ./dev/flash.sh 60 'feed:|motor:'   # ...showing only matching lines
+#   ./dev/flash.sh                          # flash, then capture 45 s
+#   ./dev/flash.sh --seconds 90             # flash, then capture 90 s
+#   ./dev/flash.sh --filter 'feed:|motor:'  # ...showing only matching lines
+#   ./dev/flash.sh --board zero             # ...a Zero rather than the dev kit
+#   ./dev/flash.sh --port /dev/cu.usbmodemXXXX
 #
-#   BOARD=zero ./dev/flash.sh      # ...a Zero rather than the dev kit
+# The first two are also positional, as they always were: `./dev/flash.sh 90
+# 'feed:'` still works.
 #
-# BOARD picks the feature set, and it is not cosmetic: it also decides which
+# Each flag has a matching environment variable — BOARD, ESPFLASH_PORT — and the
+# flag wins. See dev/_common.sh for why both exist.
+#
+# --board picks the feature set, and it is not cosmetic: it also decides which
 # interface `esp-println` writes to. A dev-kit binary on a Zero compiles, flashes
 # and boots, then prints nothing at all, because it is talking to a UART while
 # the Zero's only console is the chip's own USB. That looks exactly like a dead
-# application or a wrong port. Set BOARD to match the board in your hand.
+# application or a wrong port. Set it to match the board in your hand.
 #
-# The two boards also enumerate as different serial ports, so ESPFLASH_PORT
-# usually has to change with BOARD:
+# The two boards also enumerate as different serial ports, so --port usually has
+# to change with --board:
 #
 #   espflash list-ports --list-all-ports
 #
@@ -27,41 +33,57 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
 
-SECONDS_TO_CAPTURE="${1:-45}"
-FILTER="${2:-}"
+SECONDS_TO_CAPTURE=""
+FILTER=""
+BOARD_ARG=""
+PORT_ARG=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --board) need_value "$1" "${2:-}"; BOARD_ARG="$2"; shift 2 ;;
+    --board=*) BOARD_ARG="${1#*=}"; shift ;;
+    --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
+    --port=*) PORT_ARG="${1#*=}"; shift ;;
+    --seconds) need_value "$1" "${2:-}"; SECONDS_TO_CAPTURE="$2"; shift 2 ;;
+    --seconds=*) SECONDS_TO_CAPTURE="${1#*=}"; shift ;;
+    --filter) need_value "$1" "${2:-}"; FILTER="$2"; shift 2 ;;
+    --filter=*) FILTER="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) die "flash: unknown option '$1'. Try --help." ;;
+    *)
+      if [ -z "$SECONDS_TO_CAPTURE" ]; then SECONDS_TO_CAPTURE="$1"
+      elif [ -z "$FILTER" ]; then FILTER="$1"
+      else die "flash: unexpected argument '$1'. Try --help."
+      fi
+      shift
+      ;;
+  esac
+done
+
+SECONDS_TO_CAPTURE="${SECONDS_TO_CAPTURE:-45}"
 
 # Cargo features are additive, so selecting `board-zero` means *replacing* the
 # default rather than adding to it. Without --no-default-features both board
 # features end up on and esp-println's build script rejects the pair.
-BOARD="${BOARD:-devkit}"
+BOARD="${BOARD_ARG:-${BOARD:-devkit}}"
 case "$BOARD" in
   devkit) BOARD_FLAGS=() ;;
   zero) BOARD_FLAGS=(--no-default-features --features board-zero) ;;
-  *)
-    echo "flash: BOARD must be 'devkit' or 'zero', not '$BOARD'" >&2
-    exit 2
-    ;;
+  *) die "flash: --board must be 'devkit' or 'zero', not '$BOARD'" ;;
 esac
 
-# shellcheck disable=SC1090
-PORT="${ESPFLASH_PORT:-}"
-if [ -z "$PORT" ]; then
-  # .cargo/config.toml sets this for cargo-run, but not for a bare shell.
-  PORT=$(awk -F'"' '/^ESPFLASH_PORT=/ {print $2}' .cargo/config.toml)
-fi
-if [ -z "$PORT" ]; then
-  echo "No serial port. Set ESPFLASH_PORT, or see:" >&2
-  echo "  espflash list-ports --list-all-ports" >&2
-  exit 2
-fi
+PORT="$(require_port "$PORT_ARG")"
 
 BIN=target/riscv32imac-unknown-none-elf/debug/cat-feeder
 LOG=$(mktemp "${TMPDIR:-/tmp}/cat-feeder-flash.XXXXXX")
 
 echo "building for ${BOARD}..."
-cargo build "${BOARD_FLAGS[@]}"
+cargo build ${BOARD_FLAGS[@]+"${BOARD_FLAGS[@]}"}
 
 echo "flashing and capturing ${SECONDS_TO_CAPTURE}s on ${PORT}"
 echo
@@ -73,4 +95,4 @@ timeout "$((SECONDS_TO_CAPTURE + 60))" espflash flash \
   --monitor --non-interactive --chip esp32c6 --port "$PORT" "$BIN" \
   >"$LOG" 2>&1 || true
 
-exec "$(dirname "$0")/_render.sh" "$LOG" "$FILTER"
+exec "$DEV_DIR/_render.sh" "$LOG" "$FILTER"

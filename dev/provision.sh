@@ -5,6 +5,12 @@
 #   ./dev/provision.sh                          # the cfg.toml values
 #   ./dev/provision.sh --detent-ms 900          # ...with a measured interval
 #   ./dev/provision.sh --portion-scale 133      # ...and a measured portion size
+#   ./dev/provision.sh --port /dev/cu.usbmodemXXXX
+#   ./dev/provision.sh --nvs-offset 0x9000      # if the firmware reports another
+#
+# --port and --nvs-offset win over ESPFLASH_PORT and NVS_OFFSET; see
+# dev/_common.sh. Every other option is handed to `mkrecord`, which is what
+# validates it — run `cargo run --example mkrecord -- --help` for that list.
 #
 # The record lands in the `nvs` partition, which an application reflash never
 # touches — so a board provisioned once keeps its settings across every
@@ -22,15 +28,48 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
+
+PORT_ARG=""
+OFFSET_ARG=""
+MKRECORD_ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
+    --port=*) PORT_ARG="${1#*=}"; shift ;;
+    --nvs-offset) need_value "$1" "${2:-}"; OFFSET_ARG="$2"; shift 2 ;;
+    --nvs-offset=*) OFFSET_ARG="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    # The record's path is this script's business: it is a temporary file that
+    # is deleted on the way out, so letting it be redirected would leave the
+    # Wi-Fi password somewhere nobody cleans up.
+    --out|--out=*) die "provision: --out is not yours to set; the record is a temporary file." ;;
+    # Everything else belongs to mkrecord. Forwarded rather than listed here, so
+    # a new mkrecord option needs no change in this script — and a typo comes
+    # back as mkrecord's own usage rather than as a guess from here.
+    -*)
+      MKRECORD_ARGS+=("$1")
+      shift
+      if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
+        MKRECORD_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    *) die "provision: unexpected argument '$1'. Try --help." ;;
+  esac
+done
 
 # The default ESP-IDF table's nvs offset. The firmware finds its own through the
 # partition table and prints the answer at boot:
 #
 #   store: nvs at 0x9000, 24576 bytes
 #
-# If that ever disagrees with this, believe the firmware and set NVS_OFFSET.
-NVS_OFFSET="${NVS_OFFSET:-0x9000}"
+# If that ever disagrees with this, believe the firmware and pass --nvs-offset.
+NVS_OFFSET="${OFFSET_ARG:-${NVS_OFFSET:-0x9000}}"
 
 HOST_TARGET="$(rustc -vV | awk '/^host:/{print $2}')"
 
@@ -40,15 +79,7 @@ if [ ! -f cfg.toml ]; then
   exit 1
 fi
 
-PORT="${ESPFLASH_PORT:-}"
-if [ -z "$PORT" ]; then
-  PORT="$(awk -F'"' '/ESPFLASH_PORT/{print $2}' .cargo/config.toml 2>/dev/null || true)"
-fi
-if [ -z "$PORT" ]; then
-  echo "provision: no serial port. Set ESPFLASH_PORT, or see:" >&2
-  echo "           espflash list-ports --list-all-ports" >&2
-  exit 1
-fi
+PORT="$(require_port "$PORT_ARG")"
 
 # The record holds the Wi-Fi password in the clear, so it is built in a private
 # temporary file and removed on the way out rather than left in the working
@@ -60,7 +91,7 @@ trap cleanup EXIT
 
 echo "building the record..."
 cargo run --quiet --example mkrecord --target "$HOST_TARGET" -- \
-  --out "$RECORD" "$@"
+  --out "$RECORD" ${MKRECORD_ARGS[@]+"${MKRECORD_ARGS[@]}"}
 
 # Both espflash commands below hard-reset the chip when they finish, so the
 # board boots between them and again at the end. That is harmless today because

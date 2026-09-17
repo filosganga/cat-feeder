@@ -56,7 +56,7 @@ nobody is listening to.
 `./dev/flash.sh` builds the dev kit unless told otherwise, so on a Zero:
 
 ```sh
-BOARD=zero ESPFLASH_PORT=/dev/cu.usbmodemXXXX ./dev/flash.sh
+./dev/flash.sh --board zero --port /dev/cu.usbmodemXXXX
 ```
 
 Both halves matter and they fail the same way. The boards enumerate as different
@@ -126,6 +126,8 @@ Use the bridge port on the dev kit and pin it so nothing has to guess:
 ```sh
 export ESPFLASH_PORT=/dev/cu.usbmodem5AAF2846061
 ```
+
+`--port` on any of the dev scripts overrides it for one run.
 
 Both ports address the same chip, which `espflash board-info` confirms by
 reporting the same MAC on each.
