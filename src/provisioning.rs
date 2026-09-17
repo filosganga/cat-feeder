@@ -724,8 +724,12 @@ pub const PAGE_LEN: usize = 8192;
 /// typo in the port field is how someone ends up giving up. The response goes
 /// over the unit's own WPA2 link to the person who just typed it, in answer to
 /// a request that carried the same password, so echoing it back reaches nobody
-/// new. `Cache-Control: no-store` in [`send`] keeps it out of the browser's
-/// history.
+/// new. The `Cache-Control: no-store` that `setup::send` sets keeps it out of
+/// the browser's history.
+///
+/// That is a deliberate `code` span rather than a doc link: `setup` is private
+/// and gated on the board target, so a link would resolve on neither a host
+/// build nor `cargo doc`.
 pub fn render_form(
     page: &mut String<PAGE_LEN>,
     submitted: &str,

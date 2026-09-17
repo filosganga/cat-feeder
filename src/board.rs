@@ -194,7 +194,8 @@ macro_rules! motor_in2_pin {
 ///
 /// **An ESP32 pin floats until firmware configures it**, and that is the case
 /// this choice is really about. The DRV8833 pulls `nSLEEP` and both inputs down
-/// internally, so from power-on until `Motor::new` runs, the bridge is asleep
+/// internally, so from power-on until [`crate::motor::Drv8833::new`] runs,
+/// the bridge is asleep
 /// and the outputs are coasting. Strapping `nSLEEP` high removes that margin:
 /// the bridge is live through the whole boot, and only the input pull-downs
 /// stand between a floating pin and a hopper being emptied.

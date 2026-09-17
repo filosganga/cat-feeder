@@ -841,7 +841,8 @@ persistent state in this design lives in the broker's retained messages.
 src/
   bin/main.rs     wiring: peripherals, tasks, executor
   board.rs        pin map per board (feature-gated)
-  motor.rs        Motor { run_forward(), brake() } over two Output pins + nSLEEP
+  motor.rs        the MotorDriver trait, Drv8833 over IN1/IN2/nSLEEP, and a
+                  logging stand-in for running the feeder with no driver wired
   switch.rs       debounced click stream (async), 30 ms; reports every edge
   feeder.rs       owns motor + switch; FEED queue, align, per-unit spacing,
                   count, brake, jam timeout, portions -> clicks
@@ -1162,21 +1163,26 @@ on the LED**, which is the whole reason step 10 exists.
 
 | Step | Waiting for |
 |---|---|
-| 3, the DRV8833 and the detent interval | the part |
+| 3, the DRV8833 and the detent interval | **nothing — the driver has arrived**, to be wired |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, and the third feeder being opened |
 | 11, the Pi | nothing; both containers run. Home Assistant is not onboarded yet |
-| a display | the 0.91" parts, ordered. **Not blocking**: a 1.3" development part is on the bench |
+| a display | **nothing for development** — a 1.3" part is on the bench; the 0.91" ones that fit the case are ordered |
 
-**Both the Pi 5 and the three Zeros are now on the bench.** The only part still
-outstanding is the DRV8833, which blocks step 3 and therefore step 8.
+**Every part is now on the bench**: the Pi, the three Zeros, the DRV8833 and a
+display to develop against. Nothing in this project is waiting on the post any
+more, and the work is soldering rather than ordering.
 
-The next thing with no blocker in front of it is **step 6**: solder jumpers to
-one Zero and flash it. Pins are `board.rs` and *Which pins are usable* above —
-GPIO2 switch, GPIO3 button, GPIO8 LED, and note GPIO10/GPIO11 do not exist on
-that board. Watch the power-on sweep: it must show red, then green, then blue.
-If red and green swap, that board's WS2812 wants GRB and `led::wire_word` is the
-one line to change, possibly per board.
+So the next thing is **step 6 and step 3 together**, because they are the same
+soldering session: put a Zero on a board with the driver, the switch, the button
+and the display, and the pins are the assignment table in `board.rs`. Note
+GPIO10/GPIO11 do not exist on a Zero, which is why nothing uses them.
+
+Two things to watch on that first run, in order. The power-on sweep must show
+red, then green, then blue — if red and green swap, that board's WS2812 wants
+GRB and `led::wire_word` is the one line to change, possibly per board. Then
+**check the motor's direction before bolting anything to a feeder**:
+`Drv8833` was written from a truth table and has never driven a real bridge.
 
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
 manual feed works with the broker down; battery backup.

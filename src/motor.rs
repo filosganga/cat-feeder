@@ -31,8 +31,8 @@ pub trait MotorDriver {
 /// | 1 | 1 | brake |
 ///
 /// Written from the truth table in `CLAUDE.md` and **not yet tested against a
-/// board**: the breakout is still on order. Treat the first run as bring-up,
-/// and check the direction before bolting it to a feeder.
+/// board**, though the breakout is now on the bench. Treat the first run as
+/// bring-up, and check the direction before bolting it to a feeder.
 pub struct Drv8833<'d> {
     in1: Output<'d>,
     in2: Output<'d>,
