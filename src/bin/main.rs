@@ -354,7 +354,15 @@ async fn button_task(button: Switch<'static>) {
     let mut candidate = settled;
     let mut stable: u8 = 0;
 
-    info!("button: watching {}", cat_feeder::board::BUTTON_PIN);
+    // The level, not just the pin, exactly as `switch_task` reports it. A
+    // button stuck at ground is indistinguishable from a working one until the
+    // console says which it is, and the boot-gesture line only appears when the
+    // pin already reads pressed — so a fault looks like silence.
+    info!(
+        "button: watching {}, currently {}",
+        cat_feeder::board::BUTTON_PIN,
+        if settled { "pressed" } else { "released" }
+    );
 
     loop {
         Timer::after(TICK).await;
