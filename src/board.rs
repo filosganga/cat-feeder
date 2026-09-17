@@ -63,7 +63,31 @@
 //! | GPIO8 | also the onboard WS2812, so already committed |
 //!
 //! That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23
-//! on the back pads: thirteen usable against the seven this design needs.
+//! on the back pads: thirteen usable against the eight this design needs.
+//!
+//! ## What is wired where
+//!
+//! The whole map in one place, for soldering against. Every row is a macro
+//! below, and nothing outside this file may name a pin.
+//!
+//! | Pin | Goes to | Notes |
+//! |---|---|---|
+//! | GPIO0 | DRV8833 `AIN1` | edge |
+//! | GPIO1 | DRV8833 `AIN2` | edge |
+//! | GPIO14 | DRV8833 `nSLEEP` (`ULT`/`SLP`) | edge; high enables the bridge |
+//! | GPIO2 | hub microswitch | other side to GND, internal pull-up |
+//! | GPIO3 | outside button | other side to GND, internal pull-up |
+//! | GPIO8 | WS2812 `DIN` | onboard; also a back pad on the Zero |
+//! | GPIO18 | SSD1306 `SDA` | edge |
+//! | GPIO19 | SSD1306 `SCL` | edge |
+//!
+//! Neither switch needs a resistor: both enable the chip's internal pull-up and
+//! read a press as a **falling** edge. Power is `3V3` to the display, `5V` to
+//! the DRV8833's motor supply, and one ground shared by everything — including
+//! the 220 µF sitting across the DRV8833's 5 V and ground.
+//!
+//! GP6, GP7, GP20–GP22 and GP23 stay free, which is the margin for a part that
+//! turns out to need a pin nobody planned for.
 //!
 //! "No alternate function" was the rule that originally picked GPIO10 and
 //! GPIO11 on the dev kit. It does not really apply on the C6, where peripheral
@@ -141,8 +165,77 @@ macro_rules! led_pin {
     };
 }
 
-// When the DRV8833 arrives, its IN1, IN2 and nSLEEP pins belong in this file
-// too, as macros alongside `switch_pin!`. GP0, GP1 and GP14 are free and sit on
-// the Zero's edge castellations, which are easier to hand-solder than the back
-// pads. `nSLEEP` can be strapped high to 3V3 instead if a pin is ever needed
-// back.
+/// DRV8833 `AIN1`. **GPIO0** on both boards.
+///
+/// One channel drives the motor: `AIN1`/`AIN2` in, `AOUT1`/`AOUT2` out. The B
+/// channel is unused and its inputs can be left unconnected — they have
+/// internal pull-downs, so that channel stays coasting.
+#[macro_export]
+macro_rules! motor_in1_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO0
+    };
+}
+
+/// DRV8833 `AIN2`. **GPIO1** on both boards. See [`motor_in1_pin!`].
+#[macro_export]
+macro_rules! motor_in2_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO1
+    };
+}
+
+/// DRV8833 `nSLEEP`, labelled `ULT` or `SLP` on some breakouts. **GPIO14**.
+///
+/// Driven high to enable the bridge, low to sleep it. It could be strapped to
+/// 3V3 instead — the comment this replaced suggested exactly that — but a GPIO
+/// is worth the pin, because it makes "the motor is off" a state the firmware
+/// asserts rather than one it merely refrains from disturbing.
+///
+/// **An ESP32 pin floats until firmware configures it**, and that is the case
+/// this choice is really about. The DRV8833 pulls `nSLEEP` and both inputs down
+/// internally, so from power-on until `Motor::new` runs, the bridge is asleep
+/// and the outputs are coasting. Strapping `nSLEEP` high removes that margin:
+/// the bridge is live through the whole boot, and only the input pull-downs
+/// stand between a floating pin and a hopper being emptied.
+#[macro_export]
+macro_rules! motor_sleep_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO14
+    };
+}
+
+/// See [`SWITCH_PIN`]. Printed together as one line at boot.
+pub const MOTOR_IN1_PIN: &str = "GPIO0";
+/// See [`MOTOR_IN1_PIN`].
+pub const MOTOR_IN2_PIN: &str = "GPIO1";
+/// See [`MOTOR_IN1_PIN`].
+pub const MOTOR_SLEEP_PIN: &str = "GPIO14";
+
+/// The SSD1306's `SDA`. **GPIO18** on both boards.
+///
+/// I²C rather than SPI, so the display costs two pins. Both are ordinary GPIOs:
+/// the C6 routes peripheral signals through a matrix, so there is no dedicated
+/// I²C pair to respect and any free pin does.
+///
+/// GP18 and GP19 are chosen over GP6/GP7 — also free — because they are **edge
+/// castellations rather than back pads**, and this board is hand-soldered.
+#[macro_export]
+macro_rules! display_sda_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO18
+    };
+}
+
+/// The SSD1306's `SCL`. **GPIO19** on both boards. See [`display_sda_pin!`].
+#[macro_export]
+macro_rules! display_scl_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO19
+    };
+}
+
+/// See [`MOTOR_IN1_PIN`].
+pub const DISPLAY_SDA_PIN: &str = "GPIO18";
+/// See [`MOTOR_IN1_PIN`].
+pub const DISPLAY_SCL_PIN: &str = "GPIO19";

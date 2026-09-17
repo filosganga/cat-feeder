@@ -69,8 +69,9 @@ Then subtract what is already spoken for:
 | GPIO8 | also the onboard WS2812, so already committed |
 
 That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23 on
-the back pads — thirteen usable against seven needed, so the display and the
-LED both fit with room left.
+the back pads — thirteen usable against eight needed, so the display and the
+LED both fit with room left. **`board.rs` carries the assignment table**, which
+is the thing to solder against; it is not repeated here.
 
 Note the strapping list is five pins, not the three this file used to name:
 GPIO4 and GPIO5 are strapping on the C6 as well.
@@ -1093,9 +1094,16 @@ on the LED**, which is the whole reason step 10 exists.
     tree of `github.com/filosganga/home-assistant`. The feeders still talk to
     the Mac's Docker stack — a laptop that is not always on.
 
-    Note `ha.local` does not resolve from the Mac, so this is an address, and
-    `ha/config` is root-owned: the config edits below need `sudo` on the Pi and
-    belong in that repo rather than being dropped on the box.
+    Note the Pi is reached by **address, not by name**. `ha.local` exists only
+    over mDNS, and that is unreliable here: the Deco mesh reflects multicast
+    between its nodes and lets it go stale, so a lookup that worked ten minutes
+    ago fails now while the host is perfectly reachable by IP. Chrome never
+    resolves it at all — Secure DNS hands `.local` to the upstream resolver
+    rather than the LAN, so the browser gets NXDOMAIN every time regardless of
+    the mesh. An `/etc/hosts` entry on the Mac fixes both at once.
+
+    `ha/config` is also root-owned: the config edits below need `sudo` on the
+    Pi and belong in that repo rather than being dropped on the box.
     - ✅ Mosquitto, and it is configured correctly: `listener 1883`,
       `allow_anonymous false`, a password file, and — checked, because it is
       easy to omit — `persistence true`. Anonymous connections are refused, as
@@ -1140,10 +1148,12 @@ on the LED**, which is the whole reason step 10 exists.
     - ⬜ repoint the feeders. **This is a re-provision, not a rebuild**:
       `mqtt_host` lives in each unit's flash record, so it is
       `./dev/provision.sh` once per unit with the Pi's address, and no compile
-    - ⬜ give the Pi a static address or a DHCP reservation first. There is no
-      resolver in the firmware — `mqtt.rs` parses `mqtt_host` with
-      `Ipv4Addr::from_str` — so an address that moves takes all three feeders
-      off the air with no way back but re-provisioning each one
+    - ✅ the Pi's address is fixed first: **192.168.68.126**, reserved in the
+      Deco against `98:fe:54:29:a4:a2`. It had to come before provisioning any
+      unit, because there is no resolver in the firmware — `mqtt.rs` parses
+      `mqtt_host` with `Ipv4Addr::from_str` — so an address that moves takes
+      all three feeders off the air with no way back but re-provisioning each
+      one
     - ⬜ decide what happens to the Mac stack. Keeping it is fine; two brokers
       with the same retained topics are not, so a feeder should point at one or
       the other, never be moved back and forth casually
@@ -1192,8 +1202,9 @@ everything displaced two pixels with the edges wrapped. It looks like a broken
 framebuffer and is not one. The 0.91" parts are genuine SSD1306.
 
 Pins are not a constraint — I²C routes through the C6's GPIO matrix, so any free
-pair works. GP6/GP7 on the Zero's back pad row sit next to the GPIO8 LED pad, or
-GP18/GP19 on the edge. Whichever, the number goes in `board.rs` like every other.
+pair works. **Assigned: `SDA` on GPIO18, `SCL` on GPIO19**, both in `board.rs`
+with every other pin. They are edge castellations rather than the equally free
+GP6/GP7 back pads, which matters only because the board is hand-soldered.
 
 What sells it is setup mode. A unit currently cannot tell you the password of
 the network it just raised, which is the whole reason for the salted derivation,
