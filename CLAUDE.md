@@ -742,8 +742,29 @@ to each unit's topic.
 - Retained because there is no flash: a unit that reboots while paused must
   come back paused.
 
+**Home Assistant finds the units rather than being told them.** Pausing is the
+only command with no broadcast topic, so it is one publish per unit and
+therefore the one place that needs to know which units exist. It derives them
+from the device registry — discovery gives every feeder a device whose `model`
+is this firmware's and whose `identifiers` are `feeder_<id>` — so no device id
+is written down in `cat_feeder.yaml` and a new unit joins by itself. `model` is
+consequently a contract between `mqtt.rs` and the package: change it in one
+place and pause silently stops matching anything.
+
+**It publishes to the topic rather than calling `switch.turn_on` on the
+discovered switch**, and that is not a stylistic choice. Home Assistant drops
+unavailable entities from an entity service call, and every feeder's switch
+carries an `availability_topic` — so pausing while a unit is unplugged would do
+nothing at all, in the one direction where the failure is cats not being fed.
+Publishing always lands, and the broker holds it retained for a unit that is not
+listening yet, which is the whole point of the topic being retained.
+
 A feeder left paused is the one failure mode where cats do not eat and nothing
-alarms. Keep `paused` visible in the state payload and as a switch in HA.
+alarms. Keep `paused` visible in the state payload and as a switch in HA. There
+is deliberately no automation warning about it: these feeders are paused
+precisely when somebody is home to feed by hand, so the notification would fire
+on the normal case and be trained away. `dev/README.md` says what to add for a
+feeder that normally runs unattended.
 
 ## The RGB LED
 

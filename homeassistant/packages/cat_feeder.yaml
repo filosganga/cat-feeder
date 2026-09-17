@@ -10,11 +10,11 @@
 # used for the local Docker stack and for the Raspberry Pi.
 #
 # ---------------------------------------------------------------------------
-# WHEN THE ZERO BOARDS ARRIVE, two lists below name the units and both need the
-# new device ids:
-#   * `units` in "Cat feeder: pause the schedule when away"
-#   * `entity_id` in "Cat feeder: warn when paused for days"
-# Everything else is per-unit by topic and needs no change.
+# NO DEVICE ID APPEARS IN THIS FILE, and adding a feeder needs no edit here.
+# Time and schedule are shared retained topics; feed is a broadcast; and pause,
+# the one command with no broadcast topic, finds its units in the device
+# registry by the `model` that MQTT discovery published. See the `units`
+# variable in "Cat feeder: pause the schedule when away".
 # ---------------------------------------------------------------------------
 
 # Whether the automatic schedule should run at all. Drag the blocks in the UI
@@ -117,6 +117,14 @@ automation:
       Edit `meals` below to change feeding times, then reload automations. Up
       to 8 slots; a longer list is rejected by the firmware whole rather than
       truncated, and the unit keeps running the schedule it already had.
+
+      Editing YAML is the wrong answer for anyone who did not build this, and
+      there are two better ones, both written up in CLAUDE.md under "A second
+      version: the unit owns its clock and its schedule": near term, eight
+      input_datetime/input_number helpers defined by this package, with `meals`
+      templated from them so the times are set in the interface; properly, the
+      unit publishing its own slot entities over discovery, which needs no
+      package at all. Neither is built.
     mode: single
     variables:
       meals: >-
@@ -143,10 +151,31 @@ automation:
       One publish per unit. There is deliberately no feeder/all/paused, because
       two retained topics setting the same flag would race on reconnect with no
       defined winner.
+
+      This publishes to the topic rather than calling switch.turn_on on the
+      discovered switch, and that is load-bearing: entity service calls skip
+      entities that are unavailable, and a feeder that is offline is exactly the
+      one whose pause has to be waiting in the broker when it comes back.
     mode: single
     variables:
-      units:
-        - db0260
+      # Every feeder Home Assistant has been told about, found rather than
+      # listed. MQTT discovery gives each unit a device whose `model` is this
+      # firmware's and whose `identifiers` are ["mqtt", "feeder_<id>"] -- both
+      # from publish_discovery() in src/mqtt.rs, and neither of them changed by
+      # renaming the device in the UI. So a unit added to the broker joins this
+      # automation by itself, and no device id is written down anywhere here.
+      #
+      # `model` is a contract with the firmware: change it in mqtt.rs and this
+      # silently stops matching anything.
+      units: >-
+        {%- set ns = namespace(ids=[]) -%}
+        {%- for e in integration_entities('mqtt')
+                     | select('is_device_attr', 'model', 'cat-feeder ESP32-C6') -%}
+          {%- set ns.ids = ns.ids +
+              [(device_attr(e, 'identifiers') | list | first)[1]
+               | replace('feeder_', '')] -%}
+        {%- endfor -%}
+        {{ ns.ids | unique | list }}
     triggers:
       - trigger: state
         entity_id: schedule.cat_feeder_active
@@ -167,28 +196,3 @@ automation:
                 # failure that matters is cats not being fed.
                 payload: >-
                   {{ 'ON' if is_state('schedule.cat_feeder_active', 'off') else 'OFF' }}
-
-  - id: cat_feeder_paused_too_long
-    alias: "Cat feeder: warn when paused for days"
-    description: >-
-      A feeder left paused is the one state where the cats do not eat and
-      nothing else alarms. It stays online, it answers, and its schedule
-      quietly never fires. This is the only thing watching for it.
-    mode: single
-    triggers:
-      - trigger: state
-        entity_id:
-          - switch.cat_feeder_db0260_paused
-        to: "on"
-        for:
-          hours: 48
-    actions:
-      - action: persistent_notification.create
-        data:
-          notification_id: cat_feeder_paused_too_long
-          title: Cat feeder paused for two days
-          message: >-
-            {{ trigger.to_state.name }} has been paused since
-            {{ trigger.from_state.last_changed.strftime('%A %H:%M') }}.
-            Scheduled meals are being marked consumed without feeding.
-            Manual feeds still work.

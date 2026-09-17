@@ -232,23 +232,47 @@ time triggers, so a bank holiday is one drag in the user interface instead of an
 automation edit:
 
 ```yaml
-- trigger:
-    - platform: state
+- triggers:
+    - trigger: state
       entity_id: schedule.cats_at_home
-  action:
+  variables:
+    # Found, not listed: discovery gave each unit a device with this `model`
+    # and `identifiers` of ["mqtt", "feeder_<id>"], so a feeder added to the
+    # broker joins by itself and no device id is written down.
+    units: >-
+      {%- set ns = namespace(ids=[]) -%}
+      {%- for e in integration_entities('mqtt')
+                   | select('is_device_attr', 'model', 'cat-feeder ESP32-C6') -%}
+        {%- set ns.ids = ns.ids +
+            [(device_attr(e, 'identifiers') | list | first)[1]
+             | replace('feeder_', '')] -%}
+      {%- endfor -%}
+      {{ ns.ids | unique | list }}
+  actions:
     - repeat:
-        for_each: ["<id1>", "<id2>", "<id3>"]
+        for_each: "{{ units }}"
         sequence:
-          - service: mqtt.publish
+          - action: mqtt.publish
             data:
               topic: "feeder/{{ repeat.item }}/paused"
               retain: true
               payload: "{{ 'OFF' if trigger.to_state.state == 'on' else 'ON' }}"
 ```
 
-Add a reminder that fires if every feeder has been paused for more than a few
-days. A forgotten pause is silent by design, and it is the only state in this
-system where nothing alarms and the cats do not eat.
+⚠️ **Publish to the topic; do not call `switch.turn_on` on the discovered
+switch.** It looks equivalent and needs no id at all, but Home Assistant drops
+unavailable entities from an entity service call, and every feeder's switch
+carries an `availability_topic`. Pausing while a unit is offline would then do
+nothing — and an offline unit is exactly the one whose pause has to be waiting
+in the broker when it comes back.
+
+A reminder that fires if a feeder has been paused for more than a few days is
+an obvious addition, because a forgotten pause is silent by design and is the
+only state in this system where nothing alarms and the cats do not eat. It is
+**not** in the package, and that is a decision about how these feeders are
+used rather than an omission: the schedule here is paused when somebody is home
+to feed by hand, so the reminder would fire on the normal case. Add it for a
+feeder that normally runs unattended.
 
 ## Testing without hardware
 

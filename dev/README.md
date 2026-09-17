@@ -184,11 +184,19 @@ What the package sets up:
 | publish the time | every minute, on restart, and on `feeder/time/request` | `feeder/time`, retained |
 | publish the schedule | on restart, or the `cat_feeder_republish_schedule` event | `feeder/schedule`, retained |
 | pause when away | `schedule.cat_feeder_active` changes | `feeder/<id>/paused` per unit, retained |
-| warn when paused for days | a unit paused 48 hours | a notification, nothing on MQTT |
 
 Plus `script.cat_feeder_feed_all`, which publishes one `feeder/all/feed` so all
 three turn at the same instant rather than being staggered by three round
 trips.
+
+**Not included, but easy to add: a warning when a unit stays paused.** A
+forgotten pause is the one state where the cats do not eat and nothing else
+alarms, so an automation firing after 48 hours on `switch.cat_feeder_<id>_paused`
+is an obvious guard. It is deliberately absent here because of how these feeders
+are used: the schedule is paused precisely when somebody is home to feed by
+hand, which is most of the time, so the notification would fire on the normal
+case and be trained away. It is worth adding for the opposite pattern — a
+feeder that normally runs unattended, where a pause really is an accident.
 
 **`TZ: Europe/Rome` in `compose.yaml` is load-bearing.** Home Assistant owns the
 clock, the firmware reads the wall-clock fields and does not apply the offset,

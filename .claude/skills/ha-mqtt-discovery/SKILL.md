@@ -69,8 +69,11 @@ button as `1`, each schedule slot as its own `portions`.
 
 There is deliberately **no `feeder/all/paused`**. Two retained topics setting
 the same flag would race on reconnect, with no defined winner. Home Assistant
-pauses all three by publishing to each unit's own topic, which one automation
-does in three lines.
+pauses all three by publishing to each unit's own topic, in one automation that
+finds the units in the device registry by the `model` in the discovery payload
+rather than being given a list. That makes `model` a contract: change it here
+and pause quietly stops matching anything. See `references/payloads.md`, which
+also says why it must publish rather than call `switch.turn_on`.
 
 A feeder left paused is the one state where cats do not eat and nothing alarms,
 which is why `paused` appears both in the state payload and as a switch.
