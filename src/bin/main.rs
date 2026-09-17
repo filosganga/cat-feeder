@@ -11,6 +11,7 @@ use cat_feeder::button::{
     BOOT_RESET_HOLD_MS, Button as ButtonGesture, Event as ButtonEvent, held_at_boot,
 };
 use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
+use cat_feeder::display::{self, Fed, Screen, View};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
@@ -162,6 +163,7 @@ async fn main(spawner: Spawner) -> ! {
     );
     spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
     spawner.spawn(schedule_task().expect("failed to create schedule task"));
+    spawner.spawn(display_task().expect("failed to create display task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -726,27 +728,104 @@ async fn schedule_task() {
                     waiting_logged = true;
                 }
             }
-            Some(now) => match scheduler.next_due(now, BUS.is_paused()) {
-                Due::Nothing => {}
-                Due::Feed {
-                    minute_of_day,
-                    portions,
-                } => {
-                    // Recorded only once the request is queued, so a full queue
-                    // never leaves `last_fed` claiming a meal that never ran.
-                    match BUS.feed.try_send(portions) {
-                        Ok(()) => {
-                            BUS.last_fed.set(now, portions);
-                            log_due(minute_of_day, portions);
-                        }
-                        Err(_) => warn!("schedule: feed queue full, slot dropped"),
-                    }
-                }
-                Due::Consumed { minute_of_day, why } => log_skipped(minute_of_day, why),
-            },
+            Some(now) => resolve(&mut scheduler, now),
         }
 
         Timer::after(SCHEDULE_TICK).await;
+    }
+}
+
+/// One tick of the schedule, given a clock that can be trusted.
+///
+/// Out of line, and not for tidiness: `schedule_task` was already within a few
+/// dozen bytes of the crate's 1024-byte frame budget, and publishing the
+/// upcoming slot pushed it over. An async task's frame is held for the whole
+/// life of the future, so every `Due` temporary and every `info!` argument in
+/// here would be resident forever. `deny(clippy::large_stack_frames)` caught
+/// it, which is the third time that lint has paid for itself.
+#[inline(never)]
+fn resolve(scheduler: &mut Scheduler, now: Wall) {
+    // Before resolving, and with `&self`, so the screen describes the meal that
+    // is coming rather than the one this call is about to consume.
+    BUS.next.set(scheduler.upcoming(now));
+
+    match scheduler.next_due(now, BUS.is_paused()) {
+        Due::Nothing => {}
+        Due::Feed {
+            minute_of_day,
+            portions,
+        } => {
+            // Recorded only once the request is queued, so a full queue never
+            // leaves `last_fed` claiming a meal that never ran.
+            match BUS.feed.try_send(portions) {
+                Ok(()) => {
+                    BUS.last_fed.set(now, portions);
+                    log_due(minute_of_day, portions);
+                }
+                Err(_) => warn!("schedule: feed queue full, slot dropped"),
+            }
+        }
+        Due::Consumed { minute_of_day, why } => log_skipped(minute_of_day, why),
+    }
+}
+
+/// Renders the screen and, for now, says it on the console.
+///
+/// **There is no panel attached yet, and that is the point.** `display::render`
+/// is pure and host-tested, so what is unproven is not the layout but the
+/// *state* reaching it: whether `last_fed` is ever populated, whether the
+/// upcoming slot survives the trip through the bus, whether the banner tracks
+/// the same ladder the LED is showing. All of that is visible as text, and
+/// finding it here costs a capture rather than an I²C bring-up session.
+///
+/// When the driver lands this task keeps its shape: build the view, render,
+/// push. Only the push changes.
+#[embassy_executor::task]
+async fn display_task() {
+    let mut shown: Option<Screen> = None;
+
+    loop {
+        let screen = display::render(&View {
+            status: Status::of(BUS.health()),
+            // Setup mode never reaches this task: `setup::run` does not return,
+            // so the screen it wants is the driver's problem rather than one
+            // this loop can ever paint.
+            setup: None,
+            last_fed: BUS
+                .last_fed
+                .get()
+                .map(|(at, portions)| Fed { at, portions }),
+            next: BUS.next.get(),
+        });
+
+        // Only on a change, exactly as the LED does. A three-line screen logged
+        // every second would bury every other line on the console, and the
+        // interesting thing about a screen is when it changes anyway.
+        if shown.as_ref() != Some(&screen) {
+            log_screen(&screen);
+            shown = Some(screen);
+        }
+
+        Timer::after(DISPLAY_TICK).await;
+    }
+}
+
+/// How often the screen is rebuilt.
+///
+/// A second, matching the schedule task that feeds it: nothing here changes
+/// faster than the state behind it, and a panel refreshed more often than its
+/// inputs move is just I²C traffic.
+const DISPLAY_TICK: Duration = Duration::from_secs(1);
+
+/// The rendered screen, one line per console line.
+///
+/// Bordered so the 21-character budget is visible at a glance: a line that
+/// reaches the right-hand bar is a line that would be clipped on the panel.
+#[inline(never)]
+fn log_screen(screen: &Screen) {
+    info!("display: +---------------------+");
+    for line in screen.lines() {
+        info!("display: |{line:<21}|");
     }
 }
 

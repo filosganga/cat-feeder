@@ -11,7 +11,8 @@
 //!   mqtt      --paused-> schedule
 //!   mqtt      --time---> schedule
 //!   mqtt      --schedule schedule
-//!   schedule  --last_fed mqtt
+//!   schedule  --last_fed mqtt, display
+//!   schedule  --next---> display      (the upcoming slot)
 //! ```
 
 use core::cell::Cell;
@@ -23,7 +24,7 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
 use crate::indicator::Health;
-use crate::schedule::{Schedule, TimeSource, Wall};
+use crate::schedule::{Schedule, Slot, TimeSource, Wall};
 
 /// How many unread feed **requests** can be waiting before producers drop them.
 ///
@@ -191,6 +192,7 @@ impl Connectivity {
 /// Recorded when the request is queued rather than when the hub finishes
 /// turning, because a jam discards whatever is pending and there is no moment
 /// afterwards that means "done".
+///
 /// Carries the **portion count** alongside the time, because the display shows
 /// both and "fed at 08:00" without a quantity answers half the question
 /// somebody standing at a feeder is asking.
@@ -220,6 +222,40 @@ impl LastFed {
     }
 }
 
+/// The slot this unit will feed next, or `None` when it cannot say.
+///
+/// Written by `schedule`, read by `display`. It is carried across rather than
+/// queried because `Scheduler` belongs to the schedule task — and asking it is
+/// not free: `next_due` marks a slot consumed before it answers, so a reader
+/// after a screenful of text would eat the meal. `Scheduler::upcoming` is the
+/// `&self` answer, and this is where it lands.
+///
+/// `None` means the schedule genuinely has nothing to say: no slots, or no
+/// trusted time to measure "next" against. It does **not** mean paused — a
+/// paused unit still has an upcoming slot it will not feed, and suppressing
+/// that is the display's decision, not this one's.
+pub struct NextSlot(Mutex<CriticalSectionRawMutex, Cell<Option<Slot>>>);
+
+impl Default for NextSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NextSlot {
+    pub const fn new() -> Self {
+        Self(Mutex::new(Cell::new(None)))
+    }
+
+    pub fn set(&self, slot: Option<Slot>) {
+        self.0.lock(|cell| cell.set(slot));
+    }
+
+    pub fn get(&self) -> Option<Slot> {
+        self.0.lock(Cell::get)
+    }
+}
+
 /// Everything the tasks share.
 pub struct Bus {
     /// Portion requests. Written by `mqtt` and `schedule`, drained by `feeder`.
@@ -242,6 +278,8 @@ pub struct Bus {
     pub schedule: Signal<CriticalSectionRawMutex, Schedule>,
     /// Written by `schedule`, read by `mqtt`.
     pub last_fed: LastFed,
+    /// Written by `schedule`, read by `display`.
+    pub next: NextSlot,
     /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
     pub net: Connectivity,
     /// This unit is in setup mode, serving its own network.
@@ -272,6 +310,7 @@ impl Bus {
             time: Signal::new(),
             schedule: Signal::new(),
             last_fed: LastFed::new(),
+            next: NextSlot::new(),
             net: Connectivity::new(),
             setup: AtomicBool::new(false),
             button_armed: AtomicBool::new(false),
