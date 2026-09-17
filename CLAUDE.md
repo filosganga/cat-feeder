@@ -662,6 +662,7 @@ feeder/all/feed            <portions:u8>           cmd, all units at once
 feeder/<id>/paused         ON | OFF                cmd, retained, pause the schedule
 feeder/schedule            [{"time":"08:00","portions":2}, ...]   retained, from HA
 feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
+feeder/time/request        <id>                    cmd to HA, NOT retained  ⬜ not built
 feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"last_fed":"..."}
 ```
 
@@ -1021,6 +1022,82 @@ never guess*. Home Assistant cannot be told — it is the thing that is down —
 this used to be visible only on a serial console. It is now **three red flashes
 on the LED**, which is the whole reason step 10 exists.
 
+### Asking for the time instead of waiting for it
+
+⬜ **Not built.** Designed here so it can be picked up cold.
+
+**The problem, measured.** Home Assistant publishes on `minutes: "/1"`, so a
+unit that connects at 23:46:02 waits until 23:47:00 before anything counts as
+live. Observed on a Zero: MQTT connected at 12.7 s, schedule armed at 61.7 s.
+**Forty-nine seconds of a ninety-second boot spent waiting for a clock tick**,
+and the worst case is a full minute.
+
+It is not the broker being slow. The *retained* time arrives in under a second;
+it simply does not count, because a retained message proves only that Home
+Assistant published at some point, possibly hours ago. That rule is not
+negotiable — it is what stops a unit working through a whole day's slots at the
+wrong times — so the fix is to make a live one arrive sooner.
+
+**The design.** A new topic, `feeder/time/request`, published by a unit once per
+MQTT connection, carrying its device id. Home Assistant answers by publishing
+`feeder/time` immediately.
+
+- **On the firmware side**, publish it as the last step of the connection
+  sequence, *after* subscribing — a reply that arrives before the subscription
+  is a reply that is missed. Once per connection, never on a timer: the point
+  is to collapse the initial wait, and a unit that keeps asking is a unit in a
+  reconnect loop making it worse.
+- **On the Home Assistant side**, add an `mqtt` trigger on that topic to the
+  *existing* publish-the-time automation rather than writing a second one. Two
+  automations publishing the same topic is how they drift.
+- **Never retained.** A retained request would be replayed to Home Assistant on
+  every one of its own restarts. It is a command, and the same rule as the two
+  `feed` topics applies.
+
+**Why this and not simply publishing more often.** `/10` seconds would be a
+one-character change, but it is six times the traffic on a retained topic
+forever, it still leaves up to ten seconds of waiting, and it does nothing for
+the case that actually recurs — a unit reconnecting after the Wi-Fi drops,
+which happens far more often than a reboot.
+
+**The safety property survives.** A time published in answer to a request is
+still a live publish, and still proves Home Assistant is running *now*, which
+is the whole content of the live/retained distinction. It arrives with the
+retain flag cleared, exactly like the periodic one, because the subscription
+leaves `retain_as_published` off.
+
+**It degrades correctly**, which matters because the Pi's Home Assistant does
+not have the package installed at all yet: a unit whose request nobody answers
+simply waits for the next `/1` publish, i.e. today's behaviour. So the firmware
+half can ship before the automation half, in either order.
+
+**`mode: single` on that automation is fine.** Three feeders rebooting together
+send three requests within milliseconds and Home Assistant will drop two of
+them — but the one publish that does happen is forwarded live to all three
+subscribers, so every unit is served.
+
+### The other ten seconds: a lost DHCP DISCOVER
+
+⬜ **Not built**, and worth more than it sounds, because nothing is waiting on
+anything real for the whole of it.
+
+From `wifi: associated` to `wifi: connected`, four captures in a row measured
+10015, 10031, 10033 and 10059 ms. Real DHCP latency is milliseconds and varies;
+a constant within 60 ms of ten seconds, four times running, is a **timer**. It
+is `discover_timeout: Duration::from_secs(10)` in
+`smoltcp-0.13.1/src/socket/dhcpv4.rs:134`.
+
+So the first DISCOVER is being sent and lost, and nothing retries until that
+expires. The likeliest cause is ordering: `link_up` is set when the interface
+reports association — in the same capture, `link_up = true` at 1752 ms and
+`wifi: associated` at 1754 — which is *before* the access point will forward
+traffic on our behalf. The DISCOVER goes into the void, and the second one, ten
+seconds later, always works.
+
+Worth confirming before fixing, because the fix depends on the cause: if it is
+ordering, the stack should not start DHCP until the association is genuinely
+complete, or should reset the DHCP socket when it is.
+
 9. Provisioning: credentials from flash, setup over the unit's own access
    point. Independent of steps 3, 6 and 8 — see *Provisioning* above.
    - ✅ the flash record: format, CRC, and every single-bit flip and
@@ -1240,6 +1317,11 @@ red, then green, then blue — both boards are RGB, so a swap now means that
 board's WS2812 differs and `led::wire_word` becomes board-dependent. Then
 **check the motor's direction before bolting anything to a feeder**:
 `Drv8833` was written from a truth table and has never driven a real bridge.
+
+**Next, and both written up above with enough detail to start cold:**
+`feeder/time/request`, which removes up to a minute from every boot and every
+reconnect, and the lost DHCP DISCOVER, which is ten seconds of pure waiting on
+a ten-second timer. Together they are most of a ninety-second start-up.
 
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
 manual feed works with the broker down; battery backup.
