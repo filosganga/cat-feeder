@@ -53,9 +53,13 @@ pub const DEBOUNCE_MS: u64 = 30;
 pub struct Timings {
     /// Edges closer together than this cannot be real while the motor drives.
     ///
-    /// Just after the motor starts the hub is resting on an edge, and a
-    /// fraction of a turn can bounce the switch into a spurious falling edge at
-    /// zero rotation. This rejects that.
+    /// Braking parks the hub on an edge, so a run that starts with the switch
+    /// already closed can bounce out a spurious falling edge at zero rotation.
+    /// This rejects that.
+    ///
+    /// It does **not** apply while aligning: a run starting with the switch
+    /// open says the hub is not on a detent, so its first edge can legitimately
+    /// arrive at any time. See [`Feeder::on_click`].
     ///
     /// It is only valid because the motor guarantees a floor on how fast
     /// detents can arrive, which is exactly why it lives here and not in the
@@ -211,10 +215,28 @@ impl Feeder {
             return ClickOutcome::NotTurning;
         }
 
+        // **Only while counting.** The spacing floor exists because braking
+        // parks the hub *on* an edge, so a run that starts with the switch
+        // already closed can chatter out a spurious edge at zero rotation. That
+        // argument needs the hub to be on a detent, and while aligning it is
+        // not: the switch was open at `start`, so the rotor is somewhere
+        // unknown between detents and its first genuine edge can arrive at any
+        // time at all. Rejecting an early one would throw away the real
+        // alignment click and spend another whole detent finding the next —
+        // and that quarter turn dispenses food nothing counts, which is an
+        // over-feed on the one path the double-feed guard does not cover.
+        //
+        // Contact chatter during alignment is already handled: `switch.rs`
+        // debounces at 30 ms and only reports settled edges. The jam timeout
+        // is the only bound alignment needs, and it is the only one that can
+        // be justified without knowing where the rotor is.
+        //
         // Note the window is measured from the last *accepted* event. A
         // rejected edge must not move it, or sustained bounce would ratchet the
         // window forward indefinitely.
-        if now_ms.saturating_sub(self.since_ms) < self.timings.min_click_spacing_ms {
+        if self.phase == Phase::Counting
+            && now_ms.saturating_sub(self.since_ms) < self.timings.min_click_spacing_ms
+        {
             return ClickOutcome::TooSoon;
         }
         self.since_ms = now_ms;
@@ -550,14 +572,40 @@ mod tests {
     }
 
     #[test]
-    fn alignment_also_rejects_startup_bounce() {
+    fn alignment_accepts_an_edge_however_early() {
+        // The opposite of what this test used to assert, and the reason is the
+        // switch level at `start`. It was *open*, so the hub is not resting on
+        // a detent and there is nothing for the contact to chatter about; the
+        // rotor is simply somewhere unknown, possibly a millimetre short of the
+        // next detent. An edge 50 ms in is then a real one.
+        //
+        // Rejecting it would cost a whole extra detent of alignment, and that
+        // quarter turn dispenses food that nothing counts.
         let mut feeder = feeder();
         feeder.request(1);
         feeder.start(0, false);
 
-        assert_eq!(feeder.on_click(50), ClickOutcome::TooSoon);
-        assert_eq!(feeder.on_click(1_000), ClickOutcome::Aligned);
+        assert_eq!(feeder.on_click(50), ClickOutcome::Aligned);
+        assert_eq!(feeder.pending(), 1, "alignment must not spend a portion");
+    }
+
+    #[test]
+    fn counting_still_rejects_bounce_right_after_alignment() {
+        // Alignment ends on an edge, so from that instant the hub *is* on a
+        // detent and the spacing floor applies again — measured from the
+        // alignment click rather than from the motor starting.
+        let mut feeder = feeder();
+        feeder.request(1);
+        feeder.start(0, false);
+
+        assert_eq!(feeder.on_click(50), ClickOutcome::Aligned);
+        assert_eq!(feeder.on_click(100), ClickOutcome::TooSoon);
         assert_eq!(feeder.pending(), 1);
+
+        assert_eq!(
+            feeder.on_click(1_950),
+            ClickOutcome::Counted { remaining: 0 }
+        );
     }
 
     // --- per-unit calibration -----------------------------------------------

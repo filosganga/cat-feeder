@@ -136,13 +136,32 @@ Without the align phase, a run that starts with the switch free would make the
 first portion short of a full 90°.
 
 **Minimum spacing between clicks lives in `feeder.rs`, not in `switch.rs`, and
-is derived per unit** — 760 ms on the reference mechanism. Just after the motor
-starts, the hub is sitting right on an edge; a fraction of a turn can bounce the
-switch and produce a spurious falling edge at zero rotation. So inside the
-counting loop, an edge arriving sooner than that after the previous one, or
-after the motor started, is discarded. The threshold is two fifths of a detent,
-so it cannot reject a real click at any mechanism speed. It works together with
-the 30 ms debounce, not instead of it.
+is derived per unit** — 760 ms on the reference mechanism. Braking parks the hub
+*on* an edge, so a run that starts with the switch already closed can chatter
+out a spurious falling edge at zero rotation. So inside the counting loop, an
+edge arriving sooner than that after the previous one, or after the motor
+started, is discarded. The threshold is two fifths of a detent, so it cannot
+reject a real click at any mechanism speed. It works together with the 30 ms
+debounce, not instead of it.
+
+**The align phase is exempt, and that is not a detail.** The rule above needs
+the hub to be resting on a detent, which is exactly what a run starting with the
+switch *open* tells you it is not: the rotor is somewhere unknown between
+detents and may be a hair short of the next one, so its first genuine edge can
+arrive at any time. Rejecting an early one throws away the real alignment click
+and spends another whole detent finding the next — **and that quarter turn
+dispenses food that nothing counts**, which is an over-feed on the one path the
+never-double-feed guard does not cover.
+
+So while aligning, any debounced edge is accepted and the jam timeout is the
+only bound. It is also the only bound that can be justified, because nothing
+about the rotor's position is known. Contact chatter is already handled a layer
+down by the 30 ms debounce; the 760 ms figure was only ever about the
+start-on-a-detent case.
+
+This was found on a bench, by hand, and the console named it: repeated
+`feed: edge ignored, below 760ms minimum spacing` while alignment never
+completed.
 
 The placement matters. That detent floor only holds **while the motor is
 driving**. A bench button pressed twice quickly produces edges far closer

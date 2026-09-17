@@ -209,29 +209,43 @@ The hub normally rests with the switch already pressed, because that is where
 the previous feed braked. Test both starting positions, because only one of them
 exercises the alignment:
 
-| Hub parked | Expected | Meaning |
+| Hub parked | Start line | Then |
 |---|---|---|
-| On a detent, switch pressed | `feed: aligned` immediately, then full portions | nothing to align |
-| Between detents, switch free | a partial turn, then `feed: aligned`, then full portions | alignment ran |
+| On a detent, switch pressed | `feed: start, portions=N` | counts straight away; **no `aligned` line** |
+| Between detents, switch free | `feed: start, portions=N, needs aligning` | a partial turn, `feed: aligned`, then counting |
 
+The start line itself says which case you are in, so read it before the clicks.
 Starting free and getting a first portion noticeably shorter than 1.9 s means
 the align phase is missing and the first portion is a fraction of a turn.
 
-Then force the bounce case. Trigger a feed with the hub parked exactly on the
-edge, which is the normal resting position, and watch the first click:
+Then force the bounce case, which needs the hub parked **on** the edge — the
+normal resting position, because that is where the previous feed braked:
 
 ```
 INFO - feed: start, portions=1
-INFO - feed: aligned
-DEBUG - feed: edge ignored, below 760ms minimum spacing
+INFO - feed: edge ignored, below 760ms minimum spacing
 INFO - feed: done
 ```
 
 A feed that completes in well under a second has counted the startup bounce as a
-portion. The minimum spacing is what prevents that, and it is separate
-from the 30 ms debounce in `switch.rs`. Both must be present, in their own
-modules: the debounce filters contact bounce everywhere, the spacing rule
-rejects impossible-at-8-rpm edges and is only correct while the motor drives.
+portion. The minimum spacing is what prevents that, and it is separate from the
+30 ms debounce in `switch.rs`. Both must be present, in their own modules: the
+debounce filters contact bounce everywhere, the spacing rule rejects
+impossible-at-8-rpm edges and is only correct while the motor drives.
+
+**That rejection must not appear before `feed: aligned`.** Alignment is exempt
+from the spacing rule, because a run starting with the switch open says the hub
+is *not* on a detent, so its first edge can legitimately arrive at any time. If
+you see
+
+```
+INFO - feed: start, portions=1, needs aligning
+INFO - feed: edge ignored, below 760ms minimum spacing
+```
+
+then the exemption has been lost, and alignment is spending an extra detent —
+a quarter turn of food that nothing counts. Found exactly this way on a bench,
+with a button standing in for the hub.
 
 Cross-check against step 2. The same fast edges that `feeder.rs` rejects here
 must still be counted by the bench button test, because `switch.rs` reports
