@@ -132,16 +132,32 @@ pub const AWAKE_MS: u64 = 30_000;
 ///   when. A jam ends when a human intervenes, so it cannot outlast attention
 ///   the way a fault like `NO BROKER` can — and those *do* sleep, because a
 ///   broker down for a week must not burn itself into the panel.
+///
+/// **Boot counts as a wake**, so a unit is lit for the first [`AWAKE_MS`] after
+/// power-on and then sleeps like any other idle moment. Two things fall out of
+/// that, and the second is the reason:
+///
+/// - Plugging a feeder in shows what it is doing while it does it — the walk up
+///   from `NO WIFI` through `NO BROKER` to a next feeding time, which is
+///   precisely the window in which something might not come up.
+/// - **A dead panel stops looking like a sleeping one.** With sleep as the
+///   resting state those are otherwise identical, and the only honest way to
+///   tell them apart is to see the screen light of its own accord at least
+///   once. It is the same argument that keeps `led_selftest` in `main.rs`,
+///   answered here without a self-test to maintain.
 pub fn awake(status: Status, now_ms: u64, last_press_ms: Option<u64>) -> bool {
     if matches!(status, Status::Setup | Status::Jammed) {
         return true;
     }
 
+    // `unwrap_or(0)` is what makes boot a wake: with nothing pressed yet, the
+    // window is measured from time zero rather than from nothing at all.
+    //
     // `saturating_sub` rather than a comparison: `now_ms` is milliseconds since
     // boot as a u64, so it cannot wrap in any plausible life of a feeder, but a
     // press recorded fractionally ahead of a reading would otherwise underflow
     // into thirty million years of wakefulness.
-    last_press_ms.is_some_and(|pressed| now_ms.saturating_sub(pressed) < AWAKE_MS)
+    now_ms.saturating_sub(last_press_ms.unwrap_or(0)) < AWAKE_MS
 }
 
 /// Lays out one screen.
@@ -530,11 +546,27 @@ mod tests {
 
     // ---- sleeping ----
 
+    /// Boot is a wake: lit while the unit comes up, then dark like any other
+    /// idle moment. Without this a dead panel and a sleeping one are the same
+    /// thing to look at.
     #[test]
-    fn the_panel_starts_dark_and_stays_dark() {
-        // Nothing has been pressed since boot, so there is nobody to read it.
-        assert!(!awake(Status::Healthy, 0, None));
+    fn the_panel_is_lit_at_boot_and_sleeps_afterwards() {
+        assert!(awake(Status::Healthy, 0, None));
+        assert!(awake(Status::Healthy, AWAKE_MS - 1, None));
+
+        assert!(!awake(Status::Healthy, AWAKE_MS, None));
         assert!(!awake(Status::Healthy, 10 * 60 * 1_000, None));
+    }
+
+    /// The boot window covers the interesting part of a start-up — the walk
+    /// from no network to a next feeding time — which on the bench has taken
+    /// as long as twelve seconds to reach the broker.
+    #[test]
+    fn the_boot_window_outlasts_a_normal_start_up() {
+        assert!(
+            awake(Status::NoBroker, 12_000, None),
+            "a unit still finding the broker must still be readable"
+        );
     }
 
     #[test]
@@ -561,6 +593,29 @@ mod tests {
             assert!(
                 awake(status, 10 * 60 * 60 * 1_000, None),
                 "{status:?} must stay lit with nothing pressed for ten hours"
+            );
+        }
+    }
+
+    /// A press must light the screen from *any* state, which is the whole
+    /// point: a unit that is stuck is exactly the one worth walking over to
+    /// read, and it must not be the one that refuses to answer.
+    #[test]
+    fn a_press_lights_it_whatever_is_wrong() {
+        let long_after = AWAKE_MS * 100;
+
+        for status in [
+            Status::Healthy,
+            Status::NoLink,
+            Status::NoBroker,
+            Status::NoTime,
+            Status::Paused,
+            Status::Feeding,
+            Status::Armed,
+        ] {
+            assert!(
+                awake(status, long_after, Some(long_after)),
+                "{status:?} ignored a press"
             );
         }
     }
