@@ -221,6 +221,25 @@ pub const MOTOR_SLEEP_PIN: &str = "GPIO14";
 ///
 /// GP18 and GP19 are chosen over GP6/GP7 — also free — because they are **edge
 /// castellations rather than back pads**, and this board is hand-soldered.
+///
+/// ## The bench display is not the one going in the case
+///
+/// The 0.91" 128×32 modules that fit the LCD window are 4-pin I²C parts:
+/// `GND · VCC · SCL · SDA` and nothing else. The 1.3" 128×64 Adafruit breakout
+/// being developed against has **eight** pins — `Data · Clk · SA0 · Rst · CS ·
+/// 3v3 · Vin · Gnd` — because it speaks SPI as well. `Data` and `Clk` are the
+/// same two wires; the rest are mode and address selection.
+///
+/// Two differences survive the swap and neither is the size:
+///
+/// - **The I²C address.** Adafruit's 128×64 answers on `0x3D` by default, while
+///   the 0.91" modules answer on `0x3C`. Do not hardcode either — scan, log
+///   what answered, and take it from there.
+/// - **`Rst` and `CS`.** The 4-pin modules have neither. On the breakout, newer
+///   revisions ship with the I²C jumpers closed and an auto-reset circuit, so
+///   both can be left alone; older ones want `CS` at ground and the jumpers
+///   soldered. If nothing answers a scan, that is the first thing to check —
+///   before suspecting these two pins.
 #[macro_export]
 macro_rules! display_sda_pin {
     ($peripherals:expr) => {
