@@ -35,6 +35,7 @@ usage: mkrecord [options]
 
   --config <path>        default: cfg.toml
   --out <path>           default: record.bin
+  --host <ip>            override cfg.toml's mqtt_host, as a literal IPv4
   --detent-ms <ms>       override the measured detent interval
   --portion-scale <pct>  override the portion scale, 100 = unchanged
 
@@ -119,7 +120,13 @@ fn build(config: &toml::Table, args: &Args) -> Result<Record, String> {
     let record = Record {
         wifi_ssid: text(config, "wifi_ssid")?,
         wifi_password: optional_text(config, "wifi_password")?,
-        mqtt_host: text(config, "mqtt_host")?,
+        mqtt_host: match &args.host {
+            Some(host) => host
+                .as_str()
+                .try_into()
+                .map_err(|_| format!("--host {host} is longer than the record allows"))?,
+            None => text(config, "mqtt_host")?,
+        },
         mqtt_port: number(config, "mqtt_port").unwrap_or(1883),
         mqtt_user: optional_text(config, "mqtt_user")?,
         mqtt_password: optional_text(config, "mqtt_password")?,
@@ -171,6 +178,7 @@ fn number(config: &toml::Table, key: &str) -> Option<u16> {
 struct Args {
     config: String,
     out: String,
+    host: Option<String>,
     detent_ms: Option<u16>,
     portion_scale: Option<u16>,
 }
@@ -180,6 +188,7 @@ impl Args {
         let mut args = Self {
             config: "cfg.toml".into(),
             out: "record.bin".into(),
+            host: None,
             detent_ms: None,
             portion_scale: None,
         };
@@ -194,6 +203,7 @@ impl Args {
             match flag.as_str() {
                 "--config" => args.config = value()?,
                 "--out" => args.out = value()?,
+                "--host" => args.host = Some(value()?),
                 "--detent-ms" => args.detent_ms = Some(parse_u16(&value()?)?),
                 "--portion-scale" => args.portion_scale = Some(parse_u16(&value()?)?),
                 "-h" | "--help" => return Err(USAGE.into()),

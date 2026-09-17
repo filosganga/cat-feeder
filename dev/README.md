@@ -39,9 +39,31 @@ Read the LAN address with:
 ipconfig getifaddr en0
 ```
 
-It comes from DHCP and will change eventually. When the firmware suddenly
-cannot connect and nothing else changed, check this first. Giving the Mac a
-DHCP reservation on the router avoids the whole problem.
+It comes from DHCP and **will** change. When it does, every unit provisioned
+before the move keeps pointing at an address that now belongs to something
+else, and each one sits flashing red twice — which is correct behaviour for
+"no broker" and indistinguishable from a broker that is genuinely down. This
+has already cost a session.
+
+So do not write it down. `cfg.toml` ships with
+
+```toml
+mqtt_host = "auto"
+```
+
+which `./dev/provision.sh` resolves to this machine's current address when it
+builds the record — from the default route's interface, not a hardcoded `en0`.
+The value stored in flash is always a literal IPv4, because `mqtt.rs` parses it
+with `Ipv4Addr::from_str` and there is no resolver on the device.
+
+Point one unit somewhere else without editing the file:
+
+```sh
+./dev/provision.sh --host 192.168.68.126     # the Pi
+```
+
+`auto` is a development convenience. For anything permanent, give the broker's
+machine a DHCP reservation and write that address down instead.
 
 ## Connect Home Assistant to the broker
 

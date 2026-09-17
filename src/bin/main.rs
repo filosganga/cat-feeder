@@ -14,14 +14,16 @@ use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
-use cat_feeder::motor::{LogMotor, MotorDriver};
+use cat_feeder::motor::{Drv8833, MotorDriver};
 use cat_feeder::portions::{Added, MAX_CLICKS};
 use cat_feeder::provisioning::{DecodeError, Record};
 use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
 use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::wiring::{Bus, now_ms};
-use cat_feeder::{button_pin, led_pin, mqtt, switch_pin};
+use cat_feeder::{
+    button_pin, led_pin, motor_in1_pin, motor_in2_pin, motor_sleep_pin, mqtt, switch_pin,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, Either3, select, select3};
@@ -150,7 +152,15 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(button_task(button).expect("failed to create button task"));
 
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
-    spawner.spawn(feeder_task(LogMotor::new(), cfg).expect("failed to create feeder task"));
+
+    // The real bridge. Its inputs and nSLEEP all have internal pull-downs, so
+    // the motor stayed coasting from power-on until this line ran.
+    let motor = Drv8833::new(
+        motor_in1_pin!(peripherals),
+        motor_in2_pin!(peripherals),
+        motor_sleep_pin!(peripherals),
+    );
+    spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
     spawner.spawn(schedule_task().expect("failed to create schedule task"));
 
     let station = WifiConfig::Station(
@@ -558,7 +568,7 @@ fn log_indicator(status: Option<Status>) {
 /// Every rule belongs to `feeder::Feeder`, which is pure and host-tested. This
 /// task performs the action it is told to and reports what happened.
 #[embassy_executor::task]
-async fn feeder_task(mut motor: LogMotor, cfg: Config) {
+async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
     let mut feeder = Feeder::new(cfg.timings, cfg.portion_scale_pct);
     log_calibration(cfg);
 

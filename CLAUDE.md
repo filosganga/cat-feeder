@@ -545,6 +545,7 @@ portions x133%`.
 ```sh
 ./dev/provision.sh                      # the cfg.toml default
 ./dev/provision.sh --detent-ms 900      # the odd one out
+./dev/provision.sh --host 192.168.68.126  # ...and pointed at the Pi
 ```
 
 ### Per-unit portion size
@@ -837,8 +838,11 @@ docker compose down -v      # stop and wipe every retained message
 ```
 
 Same broker, three addresses: `localhost` from the Mac, `mosquitto` from the
-Home Assistant container, the Mac's LAN address (`ipconfig getifaddr en0`) from
-the ESP32. `down -v` is the only way to test a cold boot, since every piece of
+Home Assistant container, the Mac's LAN address from the ESP32 — which is why
+`cfg.toml` says `mqtt_host = "auto"` and `dev/provision.sh` resolves it when it
+builds the record. That address is a DHCP lease and moves; a unit provisioned
+before a move sits flashing red twice, which is correct for "no broker" and
+looks exactly like a broker that is down. `down -v` is the only way to test a cold boot, since every piece of
 persistent state in this design lives in the broker's retained messages.
 
 ## Code organisation

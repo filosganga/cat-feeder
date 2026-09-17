@@ -17,10 +17,25 @@
 wifi_ssid     = "your-wifi"
 wifi_password = "your-wifi-password"
 
-# The broker. For the local dev stack this is the Mac's LAN address, which you
-# can read with `ipconfig getifaddr en0`. An IP address, not a hostname:
-# there is no DNS lookup in the firmware yet.
-mqtt_host     = "192.168.68.108"
+# The broker, as an IP address. Not a hostname: `mqtt.rs` parses this with
+# `Ipv4Addr::from_str` and there is no resolver on the device, so a name would
+# be stored, survive the reboot, and leave the unit retrying forever.
+#
+# `auto` means "this machine's LAN address", worked out by ./dev/provision.sh
+# when it builds the record. That is almost always what you want for the local
+# dev stack, because the Mac's address comes from DHCP and moves — and when it
+# moves, every unit provisioned before it keeps the old one and sits flashing
+# red twice. That is correct behaviour for "no broker" and indistinguishable
+# from a broker that is actually down.
+#
+# Override per unit without editing this file:
+#
+#   ./dev/provision.sh --host 192.168.68.126    # the Pi, for a real install
+#
+# For production, give the broker's machine a DHCP reservation and write that
+# address here. `auto` is a development convenience, not a fix for an address
+# that ought to be stable.
+mqtt_host     = "auto"
 mqtt_port     = 1883
 mqtt_user     = "feeder"
 mqtt_password = "feeder-dev"

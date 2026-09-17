@@ -18,7 +18,6 @@
       "Bash(timeout * ./dev/watch.sh *)",
       "WebFetch(domain:waveshare.com)",
       "WebFetch(domain:espressif.com)",
-      "Bash(awk -F'[\\(\\)]' '{t=$2+0; if\\(NR>1\\) printf \"%-64s \\(+%d ms\\)\\\\n\",$0,t-p; else print; p=t}')",
       "Bash(./dev/flash.sh *)",
       "Bash(./dev/soak-report.sh *)",
       "Bash(./dev/watch.sh *)",
@@ -27,7 +26,8 @@
       "Bash(python3 -)",
       "Edit(/.claude/skills//**)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(timeout * ./dev/provision.sh *)"
     ],
     "additionalDirectories": [
       "/Users/filippodeluca/Documents/development/personal/cat-feeder",

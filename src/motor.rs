@@ -38,6 +38,8 @@ pub struct Drv8833<'d> {
     in2: Output<'d>,
     /// Held high for the life of the driver.
     _sleep: Output<'d>,
+    /// Only so transitions can be logged once rather than on every call.
+    running: bool,
 }
 
 impl<'d> Drv8833<'d> {
@@ -56,19 +58,40 @@ impl<'d> Drv8833<'d> {
             in1: Output::new(in1, Level::High, config),
             in2: Output::new(in2, Level::High, config),
             _sleep: Output::new(nsleep, Level::High, config),
+            running: false,
         }
     }
 }
 
+/// Logged exactly as [`LogMotor`] logs it, and for the same reason.
+///
+/// The motor is the one output with no other channel: a jam, a reversed pair
+/// and a bridge that never woke all look alike from across a room. `motor:
+/// forward` next to the `switch: click` lines is what makes a feed readable
+/// against the timestamps, and it is the only way to tell "the firmware never
+/// asked" from "the firmware asked and nothing turned".
+///
+/// Transitions only. `Action::Idle` brakes on every pass of the loop, so
+/// logging each call would bury everything else.
 impl MotorDriver for Drv8833<'_> {
     fn run_forward(&mut self) {
         self.in1.set_high();
         self.in2.set_low();
+
+        if !self.running {
+            self.running = true;
+            info!("motor: forward");
+        }
     }
 
     fn brake(&mut self) {
         self.in1.set_high();
         self.in2.set_high();
+
+        if self.running {
+            self.running = false;
+            info!("motor: brake");
+        }
     }
 }
 

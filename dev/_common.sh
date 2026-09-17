@@ -58,6 +58,48 @@ resolve_port() { # resolve_port [value of --port]
   fi
 }
 
+# This machine's address on the LAN, which is what a feeder has to be told: the
+# firmware has no resolver, so `mqtt.rs` parses `mqtt_host` with
+# `Ipv4Addr::from_str` and a name would be stored, survive a reboot and never
+# connect.
+#
+# It comes from DHCP and moves. When it does, every provisioned unit is pointing
+# at an address that now belongs to something else — or to nothing, which is
+# what happened here: a board sat flashing red twice, which is *correct*
+# behaviour for "no broker" and looks exactly like a broken broker. Resolving it
+# at provisioning time is what stops that being written into flash by hand.
+#
+# The default route's interface rather than a hardcoded en0, because that is
+# Wi-Fi on one machine and Ethernet or a dock on the next.
+lan_ip() {
+  local iface ip
+  iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2}')"
+  if [ -n "$iface" ]; then
+    ip="$(ipconfig getifaddr "$iface" 2>/dev/null || true)"
+    [ -n "$ip" ] && { printf '%s' "$ip"; return 0; }
+  fi
+
+  # Linux, and a macOS fallback if the route lookup found nothing usable.
+  ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="src") print $(i+1)}')"
+  [ -n "$ip" ] && { printf '%s' "$ip"; return 0; }
+
+  return 1
+}
+
+# `auto` anywhere a broker address is expected means "this machine".
+#
+# It is a literal in cfg.toml rather than the default, so that a file naming a
+# real address still means that address. Only `auto` opts in to something that
+# changes under you.
+resolve_broker_host() { # resolve_broker_host <host>
+  if [ "${1:-}" != "auto" ]; then
+    printf '%s' "${1:-}"
+    return 0
+  fi
+
+  lan_ip || die "$(prog): --host auto could not work out this machine's LAN address"
+}
+
 require_port() { # require_port [value of --port]
   local port
   port="$(resolve_port "${1:-}")"

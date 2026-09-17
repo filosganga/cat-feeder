@@ -5,12 +5,19 @@
 #   ./dev/provision.sh                          # the cfg.toml values
 #   ./dev/provision.sh --detent-ms 900          # ...with a measured interval
 #   ./dev/provision.sh --portion-scale 133      # ...and a measured portion size
+#   ./dev/provision.sh --host auto              # ...this Mac, whatever its address
+#   ./dev/provision.sh --host 192.168.68.126    # ...the Pi
 #   ./dev/provision.sh --port /dev/cu.usbmodemXXXX
 #   ./dev/provision.sh --nvs-offset 0x9000      # if the firmware reports another
 #
-# --port and --nvs-offset win over ESPFLASH_PORT and NVS_OFFSET; see
-# dev/_common.sh. Every other option is handed to `mkrecord`, which is what
-# validates it — run `cargo run --example mkrecord -- --help` for that list.
+# --port, --host and --nvs-offset win over ESPFLASH_PORT, MQTT_HOST and
+# NVS_OFFSET; see dev/_common.sh. Every other option is handed to `mkrecord`,
+# which is what validates it — run `cargo run --example mkrecord -- --help`.
+#
+# `--host auto`, or `mqtt_host = "auto"` in cfg.toml, resolves to this machine's
+# LAN address at provisioning time. The firmware has no resolver — mqtt.rs parses
+# the stored value with Ipv4Addr::from_str — so a name can never be stored, and
+# a hand-written address goes stale the next time DHCP moves the Mac.
 #
 # The record lands in the `nvs` partition, which an application reflash never
 # touches — so a board provisioned once keeps its settings across every
@@ -35,12 +42,15 @@ cd "$DEV_DIR/.."
 
 PORT_ARG=""
 OFFSET_ARG=""
+HOST_ARG=""
 MKRECORD_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
     --port=*) PORT_ARG="${1#*=}"; shift ;;
+    --host) need_value "$1" "${2:-}"; HOST_ARG="$2"; shift 2 ;;
+    --host=*) HOST_ARG="${1#*=}"; shift ;;
     --nvs-offset) need_value "$1" "${2:-}"; OFFSET_ARG="$2"; shift 2 ;;
     --nvs-offset=*) OFFSET_ARG="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -70,6 +80,23 @@ done
 #
 # If that ever disagrees with this, believe the firmware and pass --nvs-offset.
 NVS_OFFSET="${OFFSET_ARG:-${NVS_OFFSET:-0x9000}}"
+
+# The broker's address: --host, then MQTT_HOST, then cfg.toml's own value.
+#
+# `auto` in any of the three means this machine's LAN address, which is what the
+# dev stack actually lives at. It has to be resolved *here* rather than in the
+# firmware, because there is no resolver on the device: `mqtt.rs` parses this
+# with `Ipv4Addr::from_str`, so only a literal address can ever work.
+#
+# Worth the machinery because the failure is so quiet. A Mac's DHCP lease moves,
+# every unit provisioned before the move keeps the old address, and each one
+# sits flashing red twice — which is exactly right for "no broker" and looks
+# identical to a broker that is down. Cost a session here.
+HOST="${HOST_ARG:-${MQTT_HOST:-$(awk -F'"' '/^[[:space:]]*mqtt_host/{print $2}' cfg.toml 2>/dev/null)}}"
+HOST="$(resolve_broker_host "$HOST")"
+if [ -n "$HOST" ]; then
+  MKRECORD_ARGS+=(--host "$HOST")
+fi
 
 HOST_TARGET="$(rustc -vV | awk '/^host:/{print $2}')"
 
