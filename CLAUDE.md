@@ -614,16 +614,44 @@ units, or its history stops matching its own automations.
 ### The outside button
 
 GPIO3, outside the case, distinct from the hub microswitch on GPIO2 which is
-sealed inside the mechanism. Two runtime gestures and one boot gesture, all in
+sealed inside the mechanism. Four runtime gestures and one boot gesture, all in
 `button.rs` as pure logic.
 
 | Gesture | Effect |
 |---|---|
-| hold 2 s | **arm**. LED blinks cyan twice a second |
+| hold 2 s while locked | **arm**. LED blinks cyan twice a second |
 | tap while armed | feed one portion, and refresh the window |
-| tap while locked | nothing, but says so on the console |
+| hold 2 s while armed | **lock** again, without waiting out the window |
+| tap while locked | wake the screen, and step through its pages |
 | nothing for 10 s | locks again |
 | **held through power-on, 3 s** | erase the record |
+
+**Hold toggles the mode; a tap does whatever the mode means.** That is the whole
+vocabulary, and it is worth the symmetry: the previous version had no way out of
+armed but waiting, and wasted the locked tap on a log line. Three rules keep it
+honest:
+
+- **A lock has to come from a different press than the arm.** Arming fires
+  *while* the button is still held, so without this a four-second hold would arm
+  at two seconds and lock at four, and read as a button that does nothing.
+  `Button::armed_this_press` already exists for the neighbouring reason — one
+  hold must not arm twice, and its release must not count as a tap — and this is
+  the same flag.
+- **Waking always shows the first page.** A tap on a sleeping panel lights it
+  and shows page one; taps after that advance. Otherwise the first press shows
+  whatever page you left it on days ago, which reads as a screen stuck on the
+  wrong thing.
+- **Cats are unaffected.** Every locked tap is still foodless, which is the
+  property the whole design rests on — a cat that learns to press gets a lit
+  screen and nothing else, and the screen sleeps by itself.
+
+Locking needs no separate confirmation: a hold is a press, any press wakes the
+panel, and the banner stops saying `TAP TO FEED`.
+
+⬜ **Two rows of that table are not built yet** — the lock hold, and a locked tap
+stepping the screen. Today a locked tap only logs. Arming, feeding, the ten
+second window and the boot gesture all work and are verified on a Zero. See
+*The screen's pages*.
 
 **The adversary is cats, not clumsiness.** A button on the outside of a cat
 feeder that dispenses food when pressed is a button cats will learn to press —
@@ -1406,12 +1434,12 @@ The salt is still needed — it is what stops a stranger deriving the password
 from the MAC in the beacon — but the sticker drops from required to backup.
 
 It does not make the LED redundant: at 0.91" you read a screen standing at the
-feeder, while the LED answers *is anything wrong* from the doorway. Three things
-to settle first: OLED burn-in over years of showing `next 08:00` (blank it, and
-wake on the GPIO3 button — which then collides with short-press-to-feed above,
-so those need splitting), that the same blanking handles night glare, and that
-the split stays the same as everywhere else in this codebase — a pure layer
-deciding *what to show*, host-tested, and a gated task that pushes pixels.
+feeder, while the LED answers *is anything wrong* from the doorway. Burn-in over years of showing `next 08:00` is
+handled by sleeping and waking on a press, and the collision that used to imply
+— a press that both wakes the screen and feeds — is resolved by the gesture
+table above: a tap only feeds while armed. Night glare is the same blanking. The
+split stays what it is everywhere else in this codebase: a pure layer deciding
+*what to show*, host-tested, and a gated task that pushes pixels.
 
 **Dropped, after investigation: sound.** The feeder's `cicalino` turned out to
 be a *loudspeaker*, not a buzzer — mylar cone, `SPK+`/`SPK−` on the original
@@ -1429,3 +1457,231 @@ a different zone from the feeders. It means carrying timezone rules on the
 device, which is precisely the weight the current design avoids, so it is a
 deliberate trade rather than an obvious improvement. The offset is already
 parsed and kept in `Wall::offset_minutes`, so the input is there when needed.
+
+### A second version: the unit owns its clock and its schedule
+
+**Decided in principle, not started, and not to be smuggled in one commit at a
+time.** It contradicts *No local RTC, no NTP, no flash persistence* above, and
+it is meant to: that rule is right for a system whose only user owns the broker,
+and wrong for a feeder somebody else is given. What follows is one decision with
+seven consequences, not seven options.
+
+The question that forces it: what does a person who did not build this have to
+install before the feeder works? Today the answer is a YAML package in Home
+Assistant, and without it the unit connects, publishes discovery, shows a Feed
+button that works — and never feeds, sitting `online` flashing red ×3. That is
+correct behaviour and indistinguishable from a fault. Every comparable product —
+PetLibro, SureFeed, Aqara, Shelly, Tasmota, an ESPHome device — answers it the
+same way: **the device owns its configuration and the app is a control surface**.
+
+**1. The unit owns its schedule, and a new unit starts blank.** Being given a
+schedule is an explicit act, not something a unit inherits by connecting. The
+present design has the opposite property — `feeder/schedule` is one shared
+retained topic, so a unit that joins is immediately feeding meals nobody chose
+for it. That is a hazard *today*: a board on the bench pointed at the house
+broker will start turning. A blank unit fails toward not feeding, which is the
+direction this project chooses everywhere else — *a missed meal is preferable to
+a double one*, and *power-cycled and no broker → wait, never guess*.
+
+Blank is only defensible because (5) gives it somewhere to be filled in that is
+not Home Assistant: the first schedule is typed into the feeder's own page, or
+pushed to it deliberately. Without that page, "starts blank" would mean "needs
+Home Assistant before it can feed at all", which is the dependency this whole
+section exists to remove.
+
+**2. Which forces flash persistence.** If the schedule lives only in retained
+per-unit topics, the broker is the unit's memory, and a wiped broker — `down -v`,
+a migration to another host, a Mosquitto without `persistence true` — silently
+blanks every feeder with nothing left to republish it. Today that recovers by
+itself because Home Assistant republishes on restart; with Home Assistant out of
+the loop, nothing does. So the schedule goes in the record in `nvs`, beside the
+credentials and the per-unit timings that are already there. Device-owned
+schedules and flash persistence are the same decision.
+
+**3. Which forces the clock.** A unit that keeps its own schedule and waits for
+someone to tell it the time has moved the dependency rather than removed it. So
+SNTP, and with it real timezone rules on the device: the *configured feeder
+timezone* note above stops being optional, because SNTP gives UTC and nothing
+else. That weight is exactly what today's design avoids by assuming the broker
+shares a timezone, and it is the price of the unit standing alone.
+
+**4. The editor is the unit's own entities, so nothing is installed.** MQTT
+discovery has the platforms for it — `time`, `number`, `select`, `text` and
+`datetime` all exist and all build on `MQTT_RW_SCHEMA`, which is
+`command_topic` + `retain` + `state_topic`: the same shape as the `paused`
+switch that already works here. Eight `time` plus eight `number` entities in the
+unit's own device block means a feeding time is a time picker on the feeder's
+page in Home Assistant, with no package, no helpers and no YAML. (Checked
+against the Home Assistant in `compose.yaml`, 2026.9.2.) The unit's own web
+server is the other surface, since `setup.rs` already serves a form — which is
+what Tasmota and Shelly do.
+
+**5. The unit serves its own admin page, in station mode and not only during
+setup.** Most of it is already built: `setup.rs` parses a request line and a
+`Content-Length`, renders a form and parses it back, and runs three connections
+with their own buffers, and a configured unit already has a network stack. What
+is new is running the listener alongside MQTT, authenticating it, and a page for
+the schedule.
+
+It is also the re-provisioning route the button was always a poor substitute
+for. *The value is in re-provisioning, not first boot* is already written above,
+and "hold the button through power-on, then set it up again from a phone" is a
+heavy price for a Wi-Fi password that changed under three units screwed into
+place. It adds no boot state: the boot decision stays *no valid record → setup
+mode*, and the admin page is one more writer of the same record, so *One way in,
+not two* still holds.
+
+Four rules it comes with:
+
+- **The admin password is derived by default**, `base32(sha256("<ap_secret>:<id>"))`
+  — the same string the sticker carries and `./dev/ap-password.sh` prints. A unit
+  is then never unauthenticated, even if the field is left blank during setup,
+  and recovery needs no password-reset flow because the boot gesture erases the
+  record. The physical button stays the root of trust, which is the right answer
+  for a device with no other identity.
+- **Never render a stored secret back into a form.** The setup page re-fills
+  fields on error, and that must not extend to passwords once the page is
+  reachable from the house network. Mutations are POST only. It is plaintext
+  HTTP on the LAN, like every comparable device — worth stating rather than
+  implying otherwise.
+- **`configuration_url` in the discovery `device` block** (abbreviated `cu`, and
+  accepted by the schema — checked) gives Home Assistant a *Visit device* link
+  at whatever address the unit had when it connected, republished on every
+  reconnect. mDNS is not an option here, for the reasons the Pi's entry gives
+  about `.local` on the Deco mesh. The display is the other backstop, but **it
+  does not show the address yet**: `display::render` puts one on screen only in
+  setup mode, and the station screen spends its three lines on the status
+  banner, the last feed and the next one. The gesture is not the missing part —
+  any press already wakes the panel — the content is, and it is **this version's
+  work rather than v2's**: see *The screen's pages* below.
+- **Saving Wi-Fi or the broker reboots; saving a schedule must not.** A feeder
+  that restarts when a mealtime is adjusted drops its clock trust and goes back
+  to waiting for a live time.
+
+The cost is RAM and a permanent listener. Three connections exist because a
+browser opens several at once, and those buffers would now coexist with MQTT,
+the feeder, the schedule task, the indicator and the display — that wants
+measuring on a Zero rather than estimating. An always-on HTTP server is also
+permanent attack surface on the house network, which is the real reason the
+authentication above is not optional.
+
+**6. Synchronising three feeders is an explicit broadcast.** `feeder/all/schedule`,
+**not retained**, applied by each unit and echoed into its own per-unit retained
+state. No retained topic races another, because only the per-unit topic is state
+— the same command/state split that already separates `feeder/all/feed` from
+`feeder/<id>/paused`. It is also the right shape for the decision in (1): one
+deliberate gesture saying *these three eat the same meals*, rather than
+inheritance by accident.
+
+**Subsets are a Home Assistant label, not a firmware feature.** A label is an
+arbitrary tag put on devices in the interface, and `label_devices('<name>')`
+returns their device ids — from which `device_attr(d, 'identifiers')` gives
+`feeder_<id>` directly, so a labelled subset is the same template as the one
+pause already uses with `model` swapped for the label, and one hop shorter.
+`area_devices` does the same by room. That covers *feed only the two upstairs*
+with **no new topic and no firmware change**, because Home Assistant never
+actually broadcasts: it publishes to each unit's own topic, and a label only
+changes which units it loops over. Areas and labels are both in the version in
+`compose.yaml`.
+
+A group *in the firmware* — `feeder/group/<name>/schedule`, each unit
+subscribing to its own — is only needed when the sync happens with no Home
+Assistant in it, from the unit's web page or a bare `mosquitto_pub`, because
+then nothing is there to expand a list. It is not worth building before that,
+and it costs three rules if it ever is: `feeder/all/*` must keep meaning
+everyone regardless of group, so a misconfigured unit stays reachable; groups
+must apply to `feed` as well as `schedule`, or *all* quietly means two different
+things on two topics; and membership is per-unit config that can be silently
+wrong, so a unit with a typo'd or unset group never receives a broadcast and
+looks perfectly healthy — the same silent failure as (7), and it belongs in the
+state payload and on the console for the same reason.
+
+**7. Blank has to be visible.** Once "no schedule yet" is a legitimate state, a
+unit that is online, connected and clock-trusted with no meals configured looks
+exactly like a working feeder: dark LED, nothing wrong, never feeds. That is the
+same silent failure as a feeder left paused, which is already the one state where
+nothing alarms. It needs its own indication — an LED code, or a line on the
+display, which is what the display is best at.
+
+**What dies with it.** The shared retained `feeder/schedule`, and with it the
+property that a replacement unit comes back already knowing the house's meals.
+That loss is the point of (1), but it is a real loss and it should be a
+deliberate one. Home Assistant also stops being able to see the schedule as one
+fact; it sees three units' worth of entities.
+
+**What Home Assistant is left doing**, and it is worth having: the button, the
+pause switch, the jam sensor, history, and *optionally* a "copy this feeder's
+schedule to those feeders" automation. **That is where a blueprint finally
+fits** — one automation, no helpers to create, and, crucially, not load-bearing:
+a recipient who never imports it sets three schedules on the feeders' own pages
+and they still feed. The present package is the opposite, which is why shipping *it* as a
+blueprint was the wrong idea. Blueprints cannot define helpers or bundle three
+automations, so as long as Home Assistant owns the schedule, the package stays.
+
+**Until then, today's design stands**, and the near-term answer to *how does a
+person change the feeding times* is `input_datetime` and `input_number` helpers
+defined by the package — eight slots, so the UI cannot express a schedule the
+firmware would reject — with `meals` templated from them instead of being a YAML
+literal. That is an afternoon's work in one file and no firmware change, and it
+is worth doing only if schedule editing has to be user-facing before v2.
+
+Pausing already finds its units rather than being told them — see *Pause stops
+the schedule, not the feeder*. That one was cheap enough to do immediately, and
+it is what any of these futures wants anyway.
+
+### The screen's pages
+
+**This version, not v2.** The panel and the button both exist; what is missing
+is that the unit cannot tell you its own address, or anything else about how it
+is configured, without a serial cable.
+
+The wake half is already built. `main.rs` records `BUS.last_press` on the
+**press** edge rather than the release, deliberately, so the panel is lit before
+a finger lifts, and `display::awake` reads that timestamp. What is missing is
+content: `display::render` puts an address on screen only in setup mode, and the
+station screen spends its three lines on the status banner, the last feed and
+the next one.
+
+A locked tap steps through pages, per the gesture table above:
+
+| Page | Lines |
+|---|---|
+| 1 | status banner, last feed, next feed — today's screen, unchanged |
+| 2 | the unit's address, and the SSID it is on |
+| 3 | the broker: host, port, username |
+| 4 | device id, firmware version, and what this unit was calibrated for |
+
+Page one is the existing screen rather than *last feed* and *next feed* being
+two pages of their own: three lines already show both at once, so splitting them
+would cost a tap to see something that was never hidden.
+
+Page four is worth its place because of something already true of the console:
+*a feeder behaving oddly is either mis-measured or mis-provisioned and nothing
+else tells them apart*, and today the calibration is printed once at boot and
+then only over USB. On the panel it is readable at the feeder, which is where
+somebody stands when the portions look wrong.
+
+Four rules:
+
+- **No page shows a password**, ever. Setup mode is not an exception to this so
+  much as a different thing: the password it shows is one the unit generated for
+  a network it raised itself, and showing it is the entire point. A stored Wi-Fi
+  or broker password is never rendered, on the panel or in a form — the same
+  rule the admin page will need.
+- **Twenty-one columns is the budget**, so lines are built against `COLS` like
+  every other line in `display.rs`. `192.168.68.114` is fourteen characters and
+  fits; `http://192.168.68.114` is exactly twenty-one and would fit only for
+  addresses that short, so print the address bare and let whoever reads it type
+  the scheme.
+- **Sleep resets to page one**, as the button section says, so the first press
+  never lands on a page left over from days ago.
+- **Pages are a locked gesture only.** While armed a tap feeds, and a screen
+  control that dispenses food is exactly what arming exists to prevent.
+
+Keep the list short. A screen with a menu is a screen nobody reads to the end,
+and everything here is either the feeder's purpose or an answer to *how do I
+reach this unit* — which is the question the admin page in (5) makes routine.
+
+The split is unchanged: `button.rs` gains a lock gesture and a page-step event,
+`display.rs` gains a page to render, both pure and host-tested, and the task
+still only pushes pixels.
