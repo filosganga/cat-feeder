@@ -5,6 +5,7 @@
 #   ./dev/flash.sh --seconds 90             # flash, then capture 90 s
 #   ./dev/flash.sh --filter 'feed:|motor:'  # ...showing only matching lines
 #   ./dev/flash.sh --board zero             # ...a Zero rather than the dev kit
+#   ./dev/flash.sh --board zero-128x64      # ...a Zero with the 1.3" bench panel
 #   ./dev/flash.sh --port /dev/cu.usbmodemXXXX
 #
 # The first two are also positional, as they always were: `./dev/flash.sh 90
@@ -74,6 +75,7 @@ BOARD="${BOARD_ARG:-${BOARD:-devkit}}"
 case "$BOARD" in
   devkit) BOARD_FLAGS=() ;;
   zero) BOARD_FLAGS=(--no-default-features --features board-zero) ;;
+  zero-128x64) BOARD_FLAGS=(--no-default-features --features board-zero,panel-128x64) ;;
   *) die "flash: --board must be 'devkit' or 'zero', not '$BOARD'" ;;
 esac
 

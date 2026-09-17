@@ -27,7 +27,9 @@
       "Edit(/.claude/skills//**)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(timeout * ./dev/provision.sh *)"
+      "Bash(timeout * ./dev/provision.sh *)",
+      "WebFetch(domain:crates.io)",
+      "WebFetch(domain:www.adafruit.com)"
     ],
     "additionalDirectories": [
       "/Users/filippodeluca/Documents/development/personal/cat-feeder",

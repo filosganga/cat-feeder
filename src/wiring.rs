@@ -13,6 +13,7 @@
 //!   mqtt      --schedule schedule
 //!   schedule  --last_fed mqtt, display
 //!   schedule  --next---> display      (the upcoming slot)
+//!   button    --pressed> display      (wakes the panel)
 //! ```
 
 use core::cell::Cell;
@@ -256,6 +257,42 @@ impl NextSlot {
     }
 }
 
+/// When the outside button was last pressed, for waking the screen.
+///
+/// **Every press**, not only the ones the gesture machine makes something of.
+/// Waking the panel is not a gesture and must not compete with one: a tap while
+/// locked still does nothing to the feeder, and now lights the screen, which is
+/// about the most useful thing an ignored tap could do.
+///
+/// A mutex rather than an atomic because this is a `u64` and **there is no
+/// `AtomicU64` on 32-bit RISC-V**. An `AtomicU32` of milliseconds would wrap
+/// every 49 days and wake or blank the panel once per wrap — the same trap
+/// `indicator.rs` documents for its own one-shot timing. Uncontended, and read
+/// once a second, so the lock costs nothing worth measuring.
+pub struct LastPress(Mutex<CriticalSectionRawMutex, Cell<Option<u64>>>);
+
+impl Default for LastPress {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LastPress {
+    pub const fn new() -> Self {
+        Self(Mutex::new(Cell::new(None)))
+    }
+
+    pub fn set(&self, at_ms: u64) {
+        self.0.lock(|cell| cell.set(Some(at_ms)));
+    }
+
+    /// `None` means the button has not been touched since boot, which is why
+    /// the panel starts dark.
+    pub fn get(&self) -> Option<u64> {
+        self.0.lock(Cell::get)
+    }
+}
+
 /// Everything the tasks share.
 pub struct Bus {
     /// Portion requests. Written by `mqtt` and `schedule`, drained by `feeder`.
@@ -280,6 +317,8 @@ pub struct Bus {
     pub last_fed: LastFed,
     /// Written by `schedule`, read by `display`.
     pub next: NextSlot,
+    /// Written by `button`, read by `display`.
+    pub last_press: LastPress,
     /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
     pub net: Connectivity,
     /// This unit is in setup mode, serving its own network.
@@ -311,6 +350,7 @@ impl Bus {
             schedule: Signal::new(),
             last_fed: LastFed::new(),
             next: NextSlot::new(),
+            last_press: LastPress::new(),
             net: Connectivity::new(),
             setup: AtomicBool::new(false),
             button_armed: AtomicBool::new(false),

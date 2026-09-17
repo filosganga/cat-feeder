@@ -16,6 +16,7 @@ use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
 use cat_feeder::motor::{Drv8833, MotorDriver};
+use cat_feeder::oled::Oled;
 use cat_feeder::portions::{Added, MAX_CLICKS};
 use cat_feeder::provisioning::{DecodeError, Record};
 use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
@@ -23,7 +24,8 @@ use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::wiring::{Bus, now_ms};
 use cat_feeder::{
-    button_pin, led_pin, motor_in1_pin, motor_in2_pin, motor_sleep_pin, mqtt, switch_pin,
+    button_pin, display_scl_pin, display_sda_pin, led_pin, motor_in1_pin, motor_in2_pin,
+    motor_sleep_pin, mqtt, switch_pin,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
@@ -163,7 +165,29 @@ async fn main(spawner: Spawner) -> ! {
     );
     spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
     spawner.spawn(schedule_task().expect("failed to create schedule task"));
-    spawner.spawn(display_task().expect("failed to create display task"));
+    // The panel is optional: a feeder with no screen still feeds cats, so a
+    // missing or miswired one is a warning and the task runs regardless,
+    // reporting to the console alone.
+    //
+    // `mk_static!` rather than moving it into the task: an `Oled` is 584 bytes,
+    // almost all of it the frame buffer, and an async task's frame is live for
+    // the whole life of the future. Passing it by value put `display_task` at
+    // 1268 bytes against the crate's 1024 budget. A buffer that lives forever
+    // belongs in a static; the task carries a pointer.
+    let oled: Option<&'static mut Oled<'static>> = match Oled::new(
+        peripherals.I2C0,
+        display_sda_pin!(peripherals),
+        display_scl_pin!(peripherals),
+    )
+    .await
+    {
+        Ok(oled) => Some(mk_static!(Oled<'static>, oled)),
+        Err(e) => {
+            warn!("oled: no panel ({e:?}), showing the screen on the console only");
+            None
+        }
+    };
+    spawner.spawn(display_task(oled).expect("failed to create display task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -395,6 +419,14 @@ async fn button_task(button: Switch<'static>) {
 
         if candidate != settled && stable >= STABLE {
             settled = candidate;
+
+            // Any press wakes the screen, whatever the gesture machine makes
+            // of it. Deliberately on the press rather than the release, so the
+            // panel is already lit by the time a finger lifts.
+            if settled {
+                BUS.last_press.set(now);
+            }
+
             if let Some(event) = gesture.on_change(now, settled) {
                 on_button(event);
             }
@@ -781,12 +813,14 @@ fn resolve(scheduler: &mut Scheduler, now: Wall) {
 /// When the driver lands this task keeps its shape: build the view, render,
 /// push. Only the push changes.
 #[embassy_executor::task]
-async fn display_task() {
+async fn display_task(mut oled: Option<&'static mut Oled<'static>>) {
     let mut shown: Option<Screen> = None;
+    let mut lit: Option<bool> = None;
 
     loop {
+        let status = Status::of(BUS.health());
         let screen = display::render(&View {
-            status: Status::of(BUS.health()),
+            status,
             // Setup mode never reaches this task: `setup::run` does not return,
             // so the screen it wants is the driver's problem rather than one
             // this loop can ever paint.
@@ -803,7 +837,23 @@ async fn display_task() {
         // interesting thing about a screen is when it changes anyway.
         if shown.as_ref() != Some(&screen) {
             log_screen(&screen);
+            if let Some(oled) = oled.as_mut() {
+                oled.show(&screen).await;
+            }
             shown = Some(screen);
+        }
+
+        // Blanked on a timer and woken by the outside button. The buffer is
+        // still written while dark, so a wake shows current state rather than
+        // whatever was on screen when it slept.
+        let awake = display::awake(status, now_ms(), BUS.last_press.get());
+
+        if lit != Some(awake) {
+            if let Some(oled) = oled.as_mut() {
+                oled.set_power(awake).await;
+            }
+            info!("display: {}", if awake { "awake" } else { "asleep" });
+            lit = Some(awake);
         }
 
         Timer::after(DISPLAY_TICK).await;

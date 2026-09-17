@@ -100,6 +100,50 @@ pub struct View<'a> {
     pub next: Option<Slot>,
 }
 
+/// How long the panel stays lit after a press.
+///
+/// Longer than the button's ten-second armed window on purpose: reading the
+/// screen and arming the button are different intentions, and a screen that
+/// went dark while you were still reading it would be worse than one that
+/// stayed on a little too long.
+pub const AWAKE_MS: u64 = 30_000;
+
+/// Whether the panel should be lit.
+///
+/// **OLEDs burn in.** A feeder spends years showing the same `next 08:00` in
+/// the same pixels, which is the worst case for the technology: a static image
+/// on a panel that is never off. So the screen sleeps, and a press on the
+/// outside button wakes it.
+///
+/// This costs nothing in reporting, because the screen is not the always-on
+/// channel — the LED is. The division is the same one that makes them worth
+/// having separately: the LED answers *is anything wrong* from the doorway, and
+/// the screen answers *what exactly* when you walk over and press the button.
+/// You are at the feeder either way by the time the screen matters.
+///
+/// Two states are exempt, and both for the same reason — the screen is the only
+/// place the information exists:
+///
+/// - **Setup.** The SSID and password are *why* this display was fitted. A unit
+///   cannot tell you them any other way, and blanking them while somebody is
+///   typing into a phone would defeat the whole feature. Burn-in does not apply
+///   to a state that lasts minutes and happens once.
+/// - **Jammed.** Solid red on the LED says come and look; this says at what and
+///   when. A jam ends when a human intervenes, so it cannot outlast attention
+///   the way a fault like `NO BROKER` can — and those *do* sleep, because a
+///   broker down for a week must not burn itself into the panel.
+pub fn awake(status: Status, now_ms: u64, last_press_ms: Option<u64>) -> bool {
+    if matches!(status, Status::Setup | Status::Jammed) {
+        return true;
+    }
+
+    // `saturating_sub` rather than a comparison: `now_ms` is milliseconds since
+    // boot as a u64, so it cannot wrap in any plausible life of a feeder, but a
+    // press recorded fractionally ahead of a reading would otherwise underflow
+    // into thirty million years of wakefulness.
+    last_press_ms.is_some_and(|pressed| now_ms.saturating_sub(pressed) < AWAKE_MS)
+}
+
 /// Lays out one screen.
 pub fn render(view: &View) -> Screen {
     // Setup mode takes the whole panel. There is nothing else worth showing:
@@ -482,6 +526,63 @@ mod tests {
                 "{status:?} left the top line blank, which reads as healthy"
             );
         }
+    }
+
+    // ---- sleeping ----
+
+    #[test]
+    fn the_panel_starts_dark_and_stays_dark() {
+        // Nothing has been pressed since boot, so there is nobody to read it.
+        assert!(!awake(Status::Healthy, 0, None));
+        assert!(!awake(Status::Healthy, 10 * 60 * 1_000, None));
+    }
+
+    #[test]
+    fn a_press_lights_it_for_the_window_and_no_longer() {
+        assert!(awake(Status::Healthy, 1_000, Some(1_000)));
+        assert!(awake(Status::Healthy, 1_000 + AWAKE_MS - 1, Some(1_000)));
+        assert!(!awake(Status::Healthy, 1_000 + AWAKE_MS, Some(1_000)));
+    }
+
+    #[test]
+    fn a_second_press_starts_the_window_again() {
+        let first = 1_000;
+        let second = first + AWAKE_MS - 500;
+
+        assert!(!awake(Status::Healthy, second + AWAKE_MS, Some(first)));
+        assert!(awake(Status::Healthy, second + AWAKE_MS - 1, Some(second)));
+    }
+
+    /// The two states where the screen is the only place the information
+    /// exists. Setup is the whole reason the panel is fitted.
+    #[test]
+    fn setup_and_jammed_never_sleep() {
+        for status in [Status::Setup, Status::Jammed] {
+            assert!(
+                awake(status, 10 * 60 * 60 * 1_000, None),
+                "{status:?} must stay lit with nothing pressed for ten hours"
+            );
+        }
+    }
+
+    /// A broker down for a week must not burn itself into the panel. The LED is
+    /// the channel that stays on; this one is read on demand.
+    #[test]
+    fn an_ordinary_fault_still_sleeps() {
+        for status in [Status::NoLink, Status::NoBroker, Status::NoTime] {
+            assert!(
+                !awake(status, AWAKE_MS * 100, Some(1_000)),
+                "{status:?} kept the panel lit indefinitely"
+            );
+        }
+    }
+
+    /// A press stamped fractionally ahead of the reading must not underflow
+    /// into effectively permanent wakefulness.
+    #[test]
+    fn a_press_from_the_future_does_not_wedge_it_on() {
+        assert!(awake(Status::Healthy, 500, Some(1_000)));
+        assert!(!awake(Status::Healthy, 1_000 + AWAKE_MS, Some(1_000)));
     }
 
     /// A long SSID is clipped rather than dropped, because a clipped one is

@@ -240,6 +240,21 @@ pub const MOTOR_SLEEP_PIN: &str = "GPIO14";
 ///   both can be left alone; older ones want `CS` at ground and the jumpers
 ///   soldered. If nothing answers a scan, that is the first thing to check —
 ///   before suspecting these two pins.
+///
+/// ⚠️ **An SSD1306 will ACK its address with no ground connected, and stay
+/// dark.** Cost an evening. With the `Gnd` pin unwired, the board still finds a
+/// return path through the ESD protection diodes on `SDA`, `SCL` and anything
+/// else tied to the ground rail — `CS`, in the case here. That is enough to
+/// power the logic, so the address ACKs, the whole init sequence is accepted
+/// and every flush succeeds. It is nowhere near enough for the charge pump that
+/// makes the ~7.5 V the OLED matrix needs, so not one pixel lights.
+///
+/// The symptom is therefore a driver that reports success at every step next to
+/// a blank panel, which reads as a software fault and is not one. A missing
+/// ground usually announces itself by nothing working at all; this is the
+/// nastier presentation. `Gnd` is the only pin built to carry that return —
+/// grounding `CS` does not substitute for it, and pushing supply current
+/// through a protection diode stresses a structure meant for static discharge.
 #[macro_export]
 macro_rules! display_sda_pin {
     ($peripherals:expr) => {

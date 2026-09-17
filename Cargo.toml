@@ -23,6 +23,16 @@ default      = ["board-devkit"]
 board-devkit = ["esp-println/uart"]
 board-zero   = ["esp-println/jtag-serial"]
 
+# Which OLED is attached. The default is the production part: the 0.91" 128x32
+# that fits the original LCD window, and the geometry `display.rs` lays out for.
+#
+# A compile-time choice because ssd1306 takes the size as a *type* parameter,
+# and it is not cosmetic — it sets the multiplex ratio, so a 128x64 panel
+# initialised as 128x32 shows a garbled half-height image rather than a small
+# one. The 1.3" 128x64 on the bench needs this; the layout is unchanged and
+# simply leaves the bottom half dark.
+panel-128x64 = []
+
 # Portable dependencies. These build for the host too, so the pure-logic
 # modules can be tested with `cargo test`.
 [dependencies]
@@ -34,6 +44,20 @@ log      = "0.4.27"
 # modules alone is not enough, because cargo still builds the dependencies.
 [target.'cfg(target_os = "none")'.dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32c6", "log-04", "unstable"] }
+
+# The SSD1306 panel. Gated with everything else hardware-only: `display.rs`
+# decides what to show and is host-tested, `oled.rs` pushes the pixels and is
+# not, so the host test build needs neither of these.
+#
+# esp-hal 1.1.2 implements `embedded_hal::i2c::I2c` for `I2c<'_, Dm>` in any
+# driver mode (src/i2c/master/mod.rs:680) and the async trait for `Async`
+# (:1418), so the bus can be handed straight to this driver.
+# `async` swaps the crate's whole API from embedded-hal to embedded-hal-async.
+# Worth it: a 128x32 frame is 512 bytes, which at 400 kHz is milliseconds of
+# blocking, and a blocking write inside an Embassy task stalls every other task
+# -- including the one that counts switch edges.
+ssd1306 = { version = "0.10.0", features = ["async"] }
+embedded-graphics = "0.8.1"
 
 esp-rtos = { version = "0.3.0", features = [
   "embassy",
