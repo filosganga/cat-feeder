@@ -1223,6 +1223,31 @@ mod tests {
     }
 
     #[test]
+    fn a_clock_too_old_to_project_starts_over_rather_than_re_arming() {
+        // `now` gives up past MAX_ROLLOVER_DAYS, so an already-trusted clock
+        // that has free-run beyond it reports `Started` again on the next live
+        // time — trusted, but not armed, because trust was never lost.
+        //
+        // Pinned because it is the one path to `Change::Started` with
+        // `trusted`, and a reading of `align` that misses it concludes the
+        // console's `clock: started, <time>` line is dead code.
+        let mut clock = LocalClock::new();
+        clock.align(0, wall(14, 8, 0), TimeSource::Live);
+
+        let elapsed_ms = (MAX_ROLLOVER_DAYS + 1) * 24 * 3600 * 1_000;
+        assert!(clock.now(elapsed_ms).is_none(), "the anchor must be stale");
+
+        let restarted = clock.align(elapsed_ms, wall(14, 9, 0), TimeSource::Live);
+
+        assert_eq!(restarted.change, Change::Started);
+        assert!(restarted.trusted);
+        assert!(
+            !restarted.armed_now,
+            "trust was never lost, so nothing re-arms"
+        );
+    }
+
+    #[test]
     fn trust_survives_home_assistant_disappearing() {
         // Offline is not the same as untold. A unit that has been told the time
         // keeps feeding on its own clock, which is the documented behaviour.

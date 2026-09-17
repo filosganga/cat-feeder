@@ -7,7 +7,9 @@
 //! 2. The three retained discovery configs.
 //! 3. `online`, retained.
 //! 4. Subscribe to the command topics.
-//! 5. The first state — but only after the retained `paused` has had a chance
+//! 5. Ask for the time — after the subscriptions, or the answer arrives before
+//!    anything is listening for it.
+//! 6. The first state — but only after the retained `paused` has had a chance
 //!    to arrive, or Home Assistant briefly shows a paused feeder as running.
 //!
 //! Discovery is retained, so Home Assistant re-reads it after a restart on its
@@ -74,6 +76,12 @@ const PAYLOAD_OFFLINE: &str = "offline";
 const TOPIC_ALL_FEED: &str = "feeder/all/feed";
 const TOPIC_SCHEDULE: &str = "feeder/schedule";
 const TOPIC_TIME: &str = "feeder/time";
+
+/// Asks Home Assistant to publish `feeder/time` now. Carries this unit's id,
+/// and is deliberately **not** retained: a retained request would be replayed
+/// to Home Assistant on every one of its own restarts, which is the same rule
+/// the two `feed` topics follow.
+const TOPIC_TIME_REQUEST: &str = "feeder/time/request";
 
 /// Shown in Home Assistant's device page, nowhere else.
 const SW_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -271,6 +279,23 @@ async fn session(
         subscribe(&mut client, filter).await?;
     }
     info!("mqtt: subscribed");
+
+    // Home Assistant publishes the time once a minute and only a *live* one
+    // arms the schedule, so a unit that connects just after a tick waits up to
+    // a full minute with nothing to do. Asking collapses that wait; the answer
+    // is an ordinary live publish and proves Home Assistant is running now,
+    // which is the whole content of the live/retained distinction.
+    //
+    // **After the subscriptions, and that is the trick**: a reply that arrives
+    // before the subscription exists is a reply nobody hears. Once per
+    // connection and never on a timer — this exists to collapse the initial
+    // wait, and a unit that keeps asking is a unit in a reconnect loop making
+    // it worse.
+    //
+    // Nobody may answer, and that is fine: a unit whose request is ignored
+    // simply waits for the next periodic publish, which is the old behaviour.
+    publish(&mut client, TOPIC_TIME_REQUEST, id.as_bytes(), false).await?;
+    info!("mqtt: asked for the time");
 
     // The retained `paused`, `schedule` and `time` arrive right after the
     // subscriptions. Hold the first state publish back until they have had

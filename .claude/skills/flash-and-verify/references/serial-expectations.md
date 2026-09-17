@@ -345,11 +345,31 @@ INFO (12170) - mqtt: feeder/schedule received, 61 bytes, not handled yet (+4 ms)
 INFO (12207) - mqtt: feeder/time received, 27 bytes, not handled yet    (+37 ms)
 ```
 
-The order is the contract: discovery, then `online`, then the subscriptions.
-Note the last three lines — every retained message landed within 46 ms of
-subscribing, comfortably inside the one-second grace the firmware waits before
-publishing its first state. Widen that grace only if those lines start arriving
-after it.
+That capture predates two things and is kept for the ordering alone: the
+schedule and time topics are handled now, and `mqtt: asked for the time` follows
+`mqtt: subscribed` — see the Zero capture below for what a current one looks
+like.
+
+The order is the contract: discovery, then `online`, then the subscriptions,
+then `mqtt: asked for the time`. Note the retained messages — every one landed
+within 46 ms of subscribing, comfortably inside the one-second grace the
+firmware waits before publishing its first state. Widen that grace only if those
+lines start arriving after it.
+
+The last step is a publish to `feeder/time/request`, and it must come **after**
+`mqtt: subscribed` or the answer arrives before anything is listening. Observed
+on a Zero:
+
+```
+INFO (12088) - mqtt: subscribed                                         (+81 ms)
+INFO (12110) - mqtt: asked for the time                                 (+22 ms)
+INFO (12111) - mqtt: paused = OFF                                        (+1 ms)
+INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed (+625 ms)
+```
+
+Check the seconds field on that time: the periodic publishes land on the minute
+at `:00`, so anything else is an answer to the request. Without one, the same
+boot waits up to a full minute for the next tick.
 
 Verify on the broker too, not only on the console: three retained configs under
 `homeassistant/`, then `online` retained on `feeder/<id>/availability`.
@@ -487,7 +507,10 @@ Then step the clock with further retained publishes to `feeder/time`. The whole
 sequence below took 120 seconds. `dev/` in the scratchpad of the session that
 first ran it has a script; it is nothing more than the publishes in order.
 
-Observed, with the gaps between lines stripped for readability:
+Observed, with the gaps between lines stripped for readability. This capture
+predates the live/retained rule: a hand `pub -r` to a unit that is already
+subscribed is forwarded with the retain flag cleared, so the third line reads
+`clock: live time ..., schedule armed` today. Everything below it is unchanged.
 
 ```
 INFO - clock: no trusted time yet, schedule holding  # before the broker is up
@@ -528,8 +551,22 @@ Five rules, each of which will silently feed the cats twice if it breaks:
 
 ### The schedule holds until a live time arrives
 
-Against a broker that already has a retained `feeder/time`, the boot sequence
-has an extra step that is easy to mistake for a fault:
+Against a Home Assistant that answers `feeder/time/request`, this is now over in
+well under a second and prints a single line:
+
+```
+INFO (12110) - mqtt: asked for the time
+INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed (+625 ms)
+INFO (12737) - schedule: 2 slots
+```
+
+The retained time the broker replays at subscribe usually leaves no line at all,
+because the answer overtakes it inside the schedule task's one-second tick and
+`Bus::time` is a `Signal` that keeps only the newest value. Nothing is lost —
+the live one is the one worth having.
+
+**Against a broker nobody is publishing to, the old sequence is what you see**,
+and it is easy to mistake for a fault:
 
 ```
 INFO (14578) - clock: started, 2026-09-15T21:45:00+02:00 (retained; waiting for a live time)
@@ -541,15 +578,17 @@ INFO (34600) - schedule: slot 19:00 already past at startup
 The unit sat for twenty seconds knowing the time and refusing to use it. That
 is correct: a retained `feeder/time` is whatever the broker last stored, which
 is arbitrarily old if Home Assistant stopped, and the baseline must not run
-against a stale clock. Up to a minute of this is normal, since Home Assistant
-publishes on the minute.
+against a stale clock. It is what a unit does when its request goes unanswered
+— a broker with no Home Assistant behind it, or one whose package is not
+installed, which is the state of the Pi until step 11.
 
 **A unit that never prints `schedule armed` will never feed on schedule.** If
 it is still holding after a couple of minutes, Home Assistant is not publishing
 — check that its container is up and the publish-the-time automation is
-enabled. `./dev/soak-report.sh` calls this out for exactly that reason.
+enabled, including its `mqtt` trigger on `feeder/time/request`.
+`./dev/soak-report.sh` calls this out for exactly that reason.
 
-**Read the offset on that first line.** The firmware does not apply it — slots
+**Read the offset on that line.** The firmware does not apply it — slots
 are local wall-clock times and the feeders share a house with the broker — so it
 is printed precisely because nothing else would notice if it were wrong. An
 automation publishing `utcnow()` instead of `now()` still looks like a valid
@@ -636,7 +675,7 @@ schedule arriving from Home Assistant rather than from a hand publish, and slots
 firing at their real times:
 
 ```
-INFO - clock: started, 2026-09-15T19:56:00+02:00
+INFO - clock: live time 2026-09-15T19:56:00+02:00, schedule armed
 INFO - schedule: 2 slots
 INFO - schedule: slot 19:56 due, feeding 3
 ```
@@ -648,9 +687,9 @@ whole path ran rather than just the publish:
 "last_fed":"2026-09-15T19:56:00+02:00"
 ```
 
-**Check the offset on that `clock: started` line against where you live.** Home
-Assistant's container defaults to UTC, and `TZ` in `compose.yaml` is what makes
-it local. Get it wrong and every meal lands an hour or two out while every
+**Check the offset on that clock line against where you live** — whichever of
+`live time` or `started` the unit printed; both carry it. Home Assistant's
+container defaults to UTC, and `TZ` in `compose.yaml` is what makes it local. Get it wrong and every meal lands an hour or two out while every
 entity still looks healthy — this line is the only place it shows.
 
 Then the requirement the whole design exists for, once all three units are
@@ -897,10 +936,13 @@ the transcript above shows why it is worth having. The clock *started* at
 live one arrived — **46 seconds of red ×3**, because Home Assistant publishes
 once a minute and this boot landed just after a tick.
 
-That window is the whole point of the feature. For those 46 seconds the unit was
-connected, correct, and would not have fed; before step 10 the only way to know
-was a serial console. It only indicates a fault if it *stays* — past about 90
-seconds, Home Assistant's publish-the-time automation is not running.
+That capture predates `feeder/time/request`. Against a Home Assistant that
+answers it, `NoTime` now lasts under a second and the sweep through the ladder
+is too fast to read off the board — which is the point of that feature, not a
+loss. The long version is still exactly what a unit shows when nobody answers:
+connected, correct, and not feeding, which before step 10 was visible only on a
+serial console. It indicates a fault when it *stays* — past about 90 seconds,
+Home Assistant's publish-the-time automation is not running.
 
 ### What to look at, not just read
 
@@ -912,7 +954,7 @@ All of these were observed on the dev kit:
 | self-test | any boot | red, green, blue, two seconds each, named on the console |
 | ×1 — no Wi-Fi | turn the AP off, or set a wrong SSID | red, one flash every 3 s |
 | ×2 — no broker | point `mqtt_host` at an unused address | red, two flashes every 3 s |
-| ×3 — no time | boot and wait: it sits here until HA's next time tick | red, three flashes every 3 s |
+| ×3 — no time | stop Home Assistant, leave the broker up, reboot the unit | red, three flashes every 3 s |
 | healthy | a live `feeder/time` arrives | green ×2, then **dark and staying dark** |
 | paused | `feeder/<id>/paused` ← `ON` | amber, one flash every 5 s |
 | feeding | `feeder/<id>/feed` ← `1` | solid white for the turn |

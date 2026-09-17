@@ -98,25 +98,29 @@ setup`, and there is no third answer.
 A healthy boot looks like this:
 
 ```
-INFO (277)   - board: devkit, id=db0260
-INFO (11670) - wifi: connected, ip=192.168.68.123/24
-INFO (11834) - mqtt: connected, id=feeder_db0260
-INFO (11924) - mqtt: discovery published
-INFO (11944) - mqtt: online
-INFO (12061) - mqtt: subscribed
-INFO (12578) - clock: started, 2026-09-15T21:45:00+02:00 (retained; waiting for a live time)
-INFO (12588) - schedule: 2 slots
-INFO (34593) - clock: live time 2026-09-15T21:46:00+02:00, schedule armed
+INFO (303)   - board: zero, id=99177c
+INFO (11852) - wifi: connected, ip=192.168.68.115/24
+INFO (11923) - mqtt: connected, id=feeder_99177c
+INFO (11989) - mqtt: discovery published
+INFO (12007) - mqtt: online
+INFO (12088) - mqtt: subscribed
+INFO (12110) - mqtt: asked for the time
+INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed
+INFO (12737) - schedule: 2 slots
 ```
 
 The device id comes from the MAC, so one binary flashes all three units and
 they still address distinct MQTT topics.
 
-The gap before `schedule armed` is deliberate, not a fault. A retained
-`feeder/time` is whatever the broker last stored, and if Home Assistant has
-stopped it can be any age; the schedule waits for a live message before
-trusting the clock. Up to a minute of this is normal. A unit that *never* prints
-`schedule armed` will never feed on schedule — check Home Assistant is running.
+`mqtt: asked for the time` is a publish to `feeder/time/request`, sent once per
+connection after subscribing. The schedule only starts on a *live* time — a
+retained one may be any age if Home Assistant has stopped — and without asking,
+a unit waits for the next minute boundary, up to a full minute of doing nothing.
+
+So `schedule armed` normally follows within a second. If instead the console
+shows `clock: started, ... (retained; waiting for a live time)` and stops there,
+nobody answered: the broker is up but Home Assistant is not publishing, and that
+unit will not feed on schedule until it does.
 
 The board flashes both boards from one source:
 
@@ -220,8 +224,11 @@ information and nobody would look at it. Count the flashes rather than judging
 the colour: one, two and three point at three different things to fix, and
 counting works across a dark room and for a colour-blind reader.
 
-Red ×3 for up to a minute after a reboot is normal — the unit is waiting for
-Home Assistant's next time publish. It only means something if it stays.
+Red ×3 should be a flicker on the way up, not something you can count: the unit
+asks for the time on connecting and Home Assistant answers within a second. Red
+×3 you can actually sit and count means nobody answered — Home Assistant is down
+or its publish-the-time automation is missing — and that unit will not feed on
+schedule until it is fixed.
 
 The button:
 
@@ -245,6 +252,7 @@ feeder/all/feed            <portions>                all units at once
 feeder/<id>/paused         ON | OFF                  retained, pauses the schedule
 feeder/schedule            [{"time":"08:00","portions":2}]   retained, from HA
 feeder/time                "2026-09-14T08:00:00+02:00"       retained, from HA
+feeder/time/request        <id>                      never retained, to HA
 feeder/<id>/state          {"feeding":…,"jammed":…,"paused":…,"last_fed":…}
 ```
 

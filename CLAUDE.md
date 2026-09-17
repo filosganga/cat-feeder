@@ -662,7 +662,7 @@ feeder/all/feed            <portions:u8>           cmd, all units at once
 feeder/<id>/paused         ON | OFF                cmd, retained, pause the schedule
 feeder/schedule            [{"time":"08:00","portions":2}, ...]   retained, from HA
 feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
-feeder/time/request        <id>                    cmd to HA, NOT retained  ⬜ not built
+feeder/time/request        <id>                    cmd to HA, NOT retained
 feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"last_fed":"..."}
 ```
 
@@ -703,8 +703,8 @@ The assumption this rests on is **the broker and the feeders share a
 timezone**. The one realistic way to break it is publishing `utcnow()` instead
 of `now()`, which would still look like a valid time while moving every meal by
 the offset. That is why the offset is kept and printed at startup
-(`clock: started, 2026-09-15T09:00:00+02:00`) rather than dropped: it turns a
-silent hour-long error into the first line on the console.
+(`clock: live time 2026-09-18T00:07:18+02:00, schedule armed`) rather than
+dropped: it turns a silent hour-long error into the first line on the console.
 
 `last_fed` is reported the same way, local with the published offset, and
 covers scheduled feeds only — a manual feed reaches the feeder task, which has
@@ -1015,6 +1015,14 @@ INFO - clock: started, 2026-09-15T21:45:00+02:00 (retained; waiting for a live t
 INFO - clock: live time 2026-09-15T21:46:00+02:00, schedule armed
 ```
 
+**Since `feeder/time/request`, a healthy connect usually prints only the second
+line**, and that is not a regression. The two messages now arrive within a
+second of each other, and `Bus::time` is a `Signal` holding one value between
+the schedule task's one-second ticks, so the live answer overtakes the retained
+replay and the first line never happens. It comes back exactly when it is worth
+reading: when nobody answers the request, which is the case this whole
+distinction exists for.
+
 The consequence to know about: a unit that reboots while Home Assistant is down
 but the broker is up will **not feed at all** until Home Assistant returns.
 That is deliberate, and the same rule as *power-cycled and no broker → wait,
@@ -1024,9 +1032,20 @@ on the LED**, which is the whole reason step 10 exists.
 
 ### Asking for the time instead of waiting for it
 
-⬜ **Not built.** Designed here so it can be picked up cold.
+✅ **Built, both halves**, and it did what it was designed to do: on the same
+Zero, the schedule now arms **626 ms after the request goes out** instead of
+forty-nine seconds later.
 
-**The problem, measured.** Home Assistant publishes on `minutes: "/1"`, so a
+```
+INFO (12088) - mqtt: subscribed
+INFO (12110) - mqtt: asked for the time
+INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed
+```
+
+The `:18` is the proof it was an answer rather than a coincidence — the
+periodic publishes land on the minute boundary, at `:00`.
+
+**The problem it removed.** Home Assistant publishes on `minutes: "/1"`, so a
 unit that connects at 23:46:02 waits until 23:47:00 before anything counts as
 live. Observed on a Zero: MQTT connected at 12.7 s, schedule armed at 61.7 s.
 **Forty-nine seconds of a ninety-second boot spent waiting for a clock tick**,
@@ -1042,14 +1061,14 @@ wrong times — so the fix is to make a live one arrive sooner.
 MQTT connection, carrying its device id. Home Assistant answers by publishing
 `feeder/time` immediately.
 
-- **On the firmware side**, publish it as the last step of the connection
-  sequence, *after* subscribing — a reply that arrives before the subscription
-  is a reply that is missed. Once per connection, never on a timer: the point
-  is to collapse the initial wait, and a unit that keeps asking is a unit in a
-  reconnect loop making it worse.
-- **On the Home Assistant side**, add an `mqtt` trigger on that topic to the
-  *existing* publish-the-time automation rather than writing a second one. Two
-  automations publishing the same topic is how they drift.
+- **On the firmware side**, `mqtt.rs` publishes it as the last step of the
+  connection sequence, *after* subscribing — a reply that arrives before the
+  subscription is a reply that is missed. Once per connection, never on a
+  timer: the point is to collapse the initial wait, and a unit that keeps
+  asking is a unit in a reconnect loop making it worse.
+- **On the Home Assistant side**, an `mqtt` trigger on that topic was added to
+  the *existing* publish-the-time automation rather than a second one being
+  written. Two automations publishing the same topic is how they drift.
 - **Never retained.** A retained request would be replayed to Home Assistant on
   every one of its own restarts. It is a command, and the same rule as the two
   `feed` topics applies.
@@ -1066,10 +1085,11 @@ is the whole content of the live/retained distinction. It arrives with the
 retain flag cleared, exactly like the periodic one, because the subscription
 leaves `retain_as_published` off.
 
-**It degrades correctly**, which matters because the Pi's Home Assistant does
-not have the package installed at all yet: a unit whose request nobody answers
-simply waits for the next `/1` publish, i.e. today's behaviour. So the firmware
-half can ship before the automation half, in either order.
+**It degrades correctly**, which still matters because the Pi's Home Assistant
+does not have the package installed at all yet: a unit whose request nobody
+answers simply waits for the next `/1` publish, which is the old behaviour. The
+two halves were therefore independent, and a feeder repointed at the Pi before
+step 11 installs the package loses the speed-up and nothing else.
 
 **`mode: single` on that automation is fine.** Three feeders rebooting together
 send three requests within milliseconds and Home Assistant will drop two of
@@ -1318,10 +1338,10 @@ board's WS2812 differs and `led::wire_word` becomes board-dependent. Then
 **check the motor's direction before bolting anything to a feeder**:
 `Drv8833` was written from a truth table and has never driven a real bridge.
 
-**Next, and both written up above with enough detail to start cold:**
-`feeder/time/request`, which removes up to a minute from every boot and every
-reconnect, and the lost DHCP DISCOVER, which is ten seconds of pure waiting on
-a ten-second timer. Together they are most of a ninety-second start-up.
+**Next, and written up above with enough detail to start cold:** the lost DHCP
+DISCOVER, ten seconds of pure waiting on a ten-second timer. It is now the
+single largest thing in a start-up, `feeder/time/request` having taken the
+other forty-nine seconds out.
 
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
 manual feed works with the broker down; battery backup.

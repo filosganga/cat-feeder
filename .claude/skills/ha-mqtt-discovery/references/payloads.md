@@ -161,13 +161,30 @@ Home Assistant owns the clock and the schedule. Both are retained, published to
 topics with no `<id>`, so all three feeders read the same thing.
 
 ```yaml
-# publish every minute
-- service: mqtt.publish
-  data:
-    topic: feeder/time
-    retain: true
-    payload: "{{ now().isoformat() }}"
+# publish every minute, on restart, and whenever a feeder asks
+triggers:
+  - trigger: time_pattern
+    minutes: "/1"
+  - trigger: homeassistant
+    event: start
+  - trigger: mqtt
+    topic: feeder/time/request
+actions:
+  - action: mqtt.publish
+    data:
+      topic: feeder/time
+      retain: true
+      payload: "{{ now().isoformat() }}"
 ```
+
+**The `feeder/time/request` trigger belongs on this automation, not a second
+one.** A feeder arms its schedule only on a *live* time and asks for one as the
+last step of connecting; without this trigger it waits for the next minute
+boundary instead, which is up to a minute of every boot and every reconnect
+spent not feeding. Two automations publishing the same topic is how they drift,
+so it goes here. `mode: single` is fine — three feeders rebooting together send
+three requests within milliseconds, two are dropped, and the one publish that
+happens is forwarded live to all three.
 
 **`now()`, never `utcnow()`.** The firmware reads the wall-clock fields and does
 not apply the offset: schedule slots are local times and the feeders share a

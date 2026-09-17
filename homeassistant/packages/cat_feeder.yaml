@@ -71,6 +71,19 @@ automation:
       The only thing that tells the feeders what time it is. Every minute,
       retained, so a feeder that reboots is told again within a minute.
 
+      Also answers feeder/time/request. A feeder only arms its schedule on a
+      *live* time, so one that connects just after a tick would otherwise sit
+      idle for up to a full minute; it asks once per MQTT connection and this
+      replies at once. The answer is an ordinary publish, so it still proves
+      Home Assistant is running now, which is the whole point of the live
+      versus retained rule.
+
+      That trigger belongs here rather than in a second automation: two
+      automations publishing the same topic is how they drift apart. mode:
+      single is fine — three feeders rebooting together send three requests
+      within milliseconds and two are dropped, but the one publish that happens
+      is forwarded live to all three subscribers.
+
       Must be now(), never utcnow(). The firmware reads the wall-clock fields
       and does not apply the offset, because slots are local times and the
       feeders share a house with the broker. Publishing UTC would still look
@@ -82,6 +95,11 @@ automation:
         minutes: "/1"
       - trigger: homeassistant
         event: start
+      # Published by a feeder as the last step of connecting, carrying its id.
+      # Never retained, so this cannot be replayed at Home Assistant's own
+      # restart.
+      - trigger: mqtt
+        topic: feeder/time/request
     actions:
       - action: mqtt.publish
         data:

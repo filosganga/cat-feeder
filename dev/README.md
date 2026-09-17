@@ -181,7 +181,7 @@ What the package sets up:
 
 | Automation | When | Publishes |
 |---|---|---|
-| publish the time | every minute, and on restart | `feeder/time`, retained |
+| publish the time | every minute, on restart, and on `feeder/time/request` | `feeder/time`, retained |
 | publish the schedule | on restart, or the `cat_feeder_republish_schedule` event | `feeder/schedule`, retained |
 | pause when away | `schedule.cat_feeder_active` changes | `feeder/<id>/paused` per unit, retained |
 | warn when paused for days | a unit paused 48 hours | a notification, nothing on MQTT |
@@ -194,8 +194,16 @@ trips.
 clock, the firmware reads the wall-clock fields and does not apply the offset,
 and the container defaults to UTC. Without that variable every meal lands an
 hour or two out while everything still looks healthy. The feeder prints the
-offset it received at startup — `clock: started, 2026-09-15T19:56:00+02:00` —
-which is the only place the mistake shows.
+offset it received at startup — `clock: live time 2026-09-18T00:07:18+02:00,
+schedule armed` — which is the only place the mistake shows.
+
+**The `mqtt` trigger on `feeder/time/request` is what makes a feeder start
+quickly.** A unit only arms its schedule on a live time, and asks for one as the
+last step of connecting; without that trigger it waits for the next minute
+boundary instead, which is up to a minute of a boot spent doing nothing. Nothing
+breaks without it — see *Asking for the time instead of waiting for it* in
+CLAUDE.md — but a unit repointed at a Home Assistant that has not got the
+package gets the slow path back.
 
 To change feeding times, edit `meals` in the package, copy it in again, and
 restart. Verified end to end: a slot published this way fired at exactly its
