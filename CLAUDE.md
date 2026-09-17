@@ -763,8 +763,13 @@ empirical, from the dev kit: sending GRB inverted the whole palette, so every
 red fault code blinked green and the healthy confirmation flashed red — with the
 console still cheerfully logging `led: Jammed` next to a green LED. The two
 boards are not guaranteed to carry the same part, so the power-on sweep names
-each primary as it shows it and settles the question on a Zero in one flash.
-`led::wire_word` is the single place to change it.
+each primary as it shows it.
+
+**Both boards are RGB — settled by eye on the first Zero**, which showed red,
+then green, then blue in the order the console announced them. So `wire_word`
+stays one function rather than becoming board-dependent, which was the fallback
+if they had disagreed. It remains the single place to change if a later part
+differs.
 
 **Getting it outside the case costs nothing.** On the Zero, GPIO8 is on the
 back pad row as well as being the onboard LED's DIN. An external WS2812 wired
@@ -938,7 +943,13 @@ each one.
    The Zero's pad map has now been checked, and it cost the two pins the design
    had picked: **GPIO10 and GPIO11 are not brought out on that board**, so the
    switch moved to GPIO2 and the reset button to GPIO3, on both boards rather
-   than diverging. Still to do: flash the three production units
+   than diverging.
+
+   **The first Zero is now flashed and running**, id `99177c`: the console comes
+   up over the chip's own USB, the power-on sweep showed red/green/blue in the
+   right order, both GPIO2 and GPIO3 read correctly, and the outside button's
+   whole gesture chain works — hold to arm, LED cyan, tap to feed. Two units
+   still to build.
 7. ✅ Home Assistant: automations publishing time (every minute) + schedule,
    the pause helper and a feed-all script, in
    `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
@@ -1090,7 +1101,10 @@ on the LED**, which is the whole reason step 10 exists.
     - ✅ a red/green/blue sweep at power-on (`led_selftest` in `main.rs`). Kept,
       not a leftover: with dark as the healthy state, a dead LED otherwise looks
       exactly like a unit with nothing to report, and this is the only moment
-      that distinction is made
+      that distinction is made.
+      **Confirmed by eye on a Zero as well as the dev kit**, in the order the
+      console announces, so the two boards agree on channel order and
+      `wire_word` stays one function
     - ⬜ tune the palette once a unit is in a kitchen. The constants in
       `indicator.rs` are dim on purpose but were picked by eye, and green reads
       much brighter than blue at the same number
@@ -1183,14 +1197,24 @@ on the LED**, which is the whole reason step 10 exists.
 display to develop against. Nothing in this project is waiting on the post any
 more, and the work is soldering rather than ordering.
 
-So the next thing is **step 6 and step 3 together**, because they are the same
-soldering session: put a Zero on a board with the driver, the switch, the button
-and the display, and the pins are the assignment table in `board.rs`. Note
-GPIO10/GPIO11 do not exist on a Zero, which is why nothing uses them.
+The first Zero is on a breadboard with the driver, the switch, the button and
+the display, and it boots, sweeps its LED and answers both buttons. **What it
+does not do yet is drive anything**: `main.rs` still hands the feeder task a
+`LogMotor`, so GPIO0/GPIO1/GPIO14 are wired and idle, and there is no display
+module at all. Those two are the next code, and they are what is left of step 3.
 
-Two things to watch on that first run, in order. The power-on sweep must show
-red, then green, then blue — if red and green swap, that board's WS2812 wants
-GRB and `led::wire_word` is the one line to change, possibly per board. Then
+One wiring lesson from that first board, because it cost an hour and will
+recur on the other two: **both buttons were wired with their GPIO and ground
+legs in the same row group**, which grounds the pin and bypasses the switch
+entirely. It presents as a unit that erases its own configuration on every
+boot, which reads as a flash fault rather than a wiring one. The console now
+names the level of both pins at boot — `currently pressed` on an untouched
+button is the whole diagnosis — and pulling the jumper is the confirming test:
+a floating pin with the internal pull-up must read `released`.
+
+When wiring the next one, watch these in order. The power-on sweep must show
+red, then green, then blue — both boards are RGB, so a swap now means that
+board's WS2812 differs and `led::wire_word` becomes board-dependent. Then
 **check the motor's direction before bolting anything to a feeder**:
 `Drv8833` was written from a truth table and has never driven a real bridge.
 
