@@ -144,10 +144,10 @@ for each roadmap step, the log lines that step must emit and the physical action
 that triggers them. Treat it as the acceptance test: implement the lines it
 names, then flash and read them back.
 
-Most steps carry real transcripts now. The ones still unobserved are 3 (the
-motor itself), 6 (flashing the Zeros), 8, the form half of 9, and the
-visual half of 10 — every one of them waiting on hardware, a phone, or someone
-looking at the board. Those describe what the console *must* show, and whoever
+Most steps carry real transcripts now. The ones still unobserved are 8 and the
+hub half of 3 — the motor and bridge are verified, but with a button standing
+in for the microswitch, so the detent interval is still unmeasured. Those
+describe what the console *must* show, and whoever
 first reaches one should correct the file with what it actually showed.
 
 ## Rules

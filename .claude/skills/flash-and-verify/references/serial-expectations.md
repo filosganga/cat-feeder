@@ -130,6 +130,30 @@ of it: it proves the debounce, the pull-up, and that every edge is reported.
 
 ## Step 3 — motor and feed(n)
 
+Status: observed on a Zero with a real DRV8833 and motor, with a button
+standing in for the hub microswitch. Three consecutive feeds, both starting
+positions:
+
+```
+INFO (13889) - feed: start, portions=1, needs aligning
+INFO (14362) - feed: aligned                              (+473 ms)
+INFO (15414) - feed: done                                 (+1052 ms)
+INFO (15414) - motor: brake                               (+0 ms)
+
+INFO (22971) - feed: start, portions=1                    # started pressed
+INFO (24379) - feed: done                                 (+1408 ms)
+INFO (24380) - motor: brake                               (+1 ms)
+```
+
+Note the first alignment landed **473 ms** in, well inside the 760 ms spacing
+floor, and was accepted. That is the exemption described below, and this
+transcript is what it looks like when it works. The second feed shows the other
+start case: no `needs aligning`, no `aligned`, straight to counting.
+
+What is still unobserved is the hub itself — these clicks came from a finger,
+so the detent interval has not been measured and the mechanical figures are
+still the defaults.
+
 Do this in two passes. First with the onboard RGB LED on GPIO8 standing in for
 the motor, with no driver wired. Then with the DRV8833 connected.
 
