@@ -992,10 +992,14 @@ each one.
 
 1. ✅ Toolchain + blinky on the DEV-KIT
 2. ✅ Switch task: debounced clicks on the console, on a bench button
-3. `feed(n)`: ✅ state machine host-tested and verified on hardware with a
-   logging fake motor (align, spacing rejection, counting, jam, accumulation).
-   Still to do: the DRV8833, and with it the one measurement that matters —
-   the **detent interval**, the time from one click to the next under power.
+3. `feed(n)`: ✅ state machine host-tested (align, spacing rejection, counting,
+   jam, accumulation), and ✅ driving the real DRV8833 — verified on the first
+   Zero with the yellow bench button standing in for the hub switch: a feed
+   request ran the bridge, the first click aligned, the second counted, and the
+   motor braked.
+   Still to do: the one measurement that matters — the **detent interval**, the
+   time from one click to the next under power, which needs the motor turning
+   the actual mechanism rather than a bare shaft on the bench.
    That belongs here rather than in step 2: the hub can be back-driven by hand,
    but the gear reduction makes turning it steadily impossible, so a hand-turned
    interval is meaningless. The motor gives it at the speed the mechanism
@@ -1356,7 +1360,7 @@ complete, or should reset the DHCP socket when it is.
 
 | Step | Waiting for |
 |---|---|
-| 3, the DRV8833 and the detent interval | **nothing — the driver has arrived**, to be wired |
+| 3, the detent interval | **nothing — the bridge is wired and driving**; it needs the motor on a real mechanism |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, and the third feeder being opened |
 | 11, the Pi | nothing; both containers run. Home Assistant is not onboarded yet |
@@ -1367,10 +1371,14 @@ display to develop against. Nothing in this project is waiting on the post any
 more, and the work is soldering rather than ordering.
 
 The first Zero is on a breadboard with the driver, the switch, the button and
-the display, and it boots, sweeps its LED and answers both buttons. **What it
-does not do yet is drive anything**: `main.rs` still hands the feeder task a
-`LogMotor`, so GPIO0/GPIO1/GPIO14 are wired and idle, and there is no display
-module at all. Those two are the next code, and they are what is left of step 3.
+the display, and it boots, sweeps its LED, answers both buttons, drives the
+bridge and draws on the panel. `main.rs` builds a real `Drv8833` from the
+`board.rs` pins, and a feed request has been watched turning a motor with the
+yellow bench button standing in for the hub switch — align, count, brake.
+
+What is left of step 3 is therefore the **measurement**, not the driver: the
+detent interval wants the motor turning a feeder's actual mechanism, because
+that is what sets the speed, and a bare shaft on a breadboard does not.
 
 One wiring lesson from that first board, because it cost an hour and will
 recur on the other two: **both buttons were wired with their GPIO and ground
@@ -1384,8 +1392,10 @@ a floating pin with the internal pull-up must read `released`.
 When wiring the next one, watch these in order. The power-on sweep must show
 red, then green, then blue — both boards are RGB, so a swap now means that
 board's WS2812 differs and `led::wire_word` becomes board-dependent. Then
-**check the motor's direction before bolting anything to a feeder**:
-`Drv8833` was written from a truth table and has never driven a real bridge.
+**check the motor's direction before bolting anything to a feeder**. The
+bridge itself is proven now, but proven on a bare motor: which way `IN1=1,
+IN2=0` turns a hub that has a mechanism bolted to it is still unobserved, and
+finding out afterwards means taking it apart again.
 
 **Next, and written up above with enough detail to start cold:** the lost DHCP
 DISCOVER, ten seconds of pure waiting on a ten-second timer. It is now the

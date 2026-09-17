@@ -31,7 +31,7 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Wi-Fi, DHCP | working |
 | MQTT connect, auth, last will, retained availability | working |
 | State topic | working, real values |
-| Debounced switch, feeding logic, jam detection | working, against a logging fake motor |
+| Debounced switch, feeding logic, jam detection | working, against a real bridge |
 | Home Assistant discovery, commands, pause | working |
 | Schedule, clock, double-feed guard | working |
 | Home Assistant automations publishing time and schedule | working |
@@ -39,12 +39,19 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Outside button: hold to arm, tap to feed | working |
 | Per-board provisioning from the host (`dev/provision.sh`) | working |
 | Per-unit mechanical calibration | working, defaults until measured |
-| Driving the actual motor | written, **never run against a bridge** |
+| Driving the actual motor | working — align, count and brake watched on a bench motor |
+| OLED: driver, probed address, a screen that sleeps | working, on the 1.3" bench panel |
 | Setup over the unit's own Wi-Fi | working, driven from a phone |
 
-Nothing has run on a production board yet. All of the above was verified on the
-Waveshare ESP32-C6-DEV-KIT-N8, with a bench button standing in for the hub
-microswitch and log lines standing in for the motor.
+Most of that was verified on the Waveshare ESP32-C6-DEV-KIT-N8, with a bench
+button standing in for the hub microswitch. The first production board — a
+Zero, id `99177c` — now runs as well, on a breadboard with the driver, the
+switch, the button and a panel: it drives the bridge and draws on the glass.
+
+What has *not* happened is any of it turning a feeder's own mechanism. The
+motor has been watched aligning, counting and braking on the bench, but a bare
+shaft, so the detent interval each unit needs is still unmeasured and which way
+the hub turns under `IN1=1, IN2=0` is still unobserved.
 
 Every part has now arrived — the three Zeros, the DRV8833, a display — and the
 Raspberry Pi 5 runs both containers, though Home Assistant there is not set up
