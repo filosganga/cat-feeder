@@ -48,6 +48,23 @@ once a second.
 On the ESP32-C6-Zero the answer is `jtag-serial` instead, because that board has
 no bridge chip and its USB-C port is the chip's native USB.
 
+**Which of the two you get is chosen by the board feature**, so a binary built
+for the wrong board produces this exact symptom on a perfectly good one. A
+dev-kit build on a Zero compiles, flashes and runs, and prints into a UART
+nobody is listening to.
+
+`./dev/flash.sh` builds the dev kit unless told otherwise, so on a Zero:
+
+```sh
+BOARD=zero ESPFLASH_PORT=/dev/cu.usbmodemXXXX ./dev/flash.sh
+```
+
+Both halves matter and they fail the same way. The boards enumerate as different
+ports — the dev kit through its WCH bridge, the Zero as the chip's own USB — and
+the default in `.cargo/config.toml` is the dev kit's. **The first `INFO` line
+names the board it was built for** (`board: zero, id=99177c`), which settles
+this in one glance; silence means look here first.
+
 Second possible cause, if the interface is already explicit: the log level.
 `ESP_LOG` is set to `info` in `.cargo/config.toml` and is read by
 `esp-println`'s build script, so it is compiled into the binary by

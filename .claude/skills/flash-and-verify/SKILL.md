@@ -17,8 +17,15 @@ they fail loudly on the mistakes that otherwise cost a whole run.
 ```sh
 ./dev/flash.sh                        # build, flash, capture 45 s
 ./dev/flash.sh 90                     # ...capture 90 s instead
+BOARD=zero ./dev/flash.sh             # ...a Zero rather than the dev kit
 ./dev/capture.sh 60 'feed:|switch:'   # capture without reflashing, filtered
 ```
+
+**`BOARD` is not optional on a Zero.** It picks the feature set, which also
+picks `esp-println`'s output interface, so a dev-kit binary on a Zero boots and
+then prints into a UART that board does not have. The symptom is a console that
+stops after the bootloader — indistinguishable from a dead application. Set
+`ESPFLASH_PORT` to match as well; the two boards enumerate differently.
 
 Both print every line annotated with the milliseconds since the previous one,
 which is what makes a feed cycle readable, and both keep the unfiltered log and
