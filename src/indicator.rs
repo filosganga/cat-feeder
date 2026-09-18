@@ -447,11 +447,18 @@ mod tests {
     }
 
     #[test]
-    fn an_armed_button_outranks_every_fault() {
+    fn an_armed_button_outranks_the_network_faults() {
         // The case that decides this: the broker is down, and manual feeding is
         // exactly what the button is for. Being re-told the network is out is
         // less useful than knowing the tap will land — and the fault is still
         // there ten seconds later when the arm lapses.
+        //
+        // **The network faults, not every fault.** A jam still wins, and
+        // `a_jam_outranks_everything` pins that with `button_armed` set: red
+        // has to keep warning while somebody has their hands in the mechanism.
+        // The cost is that arming a jammed feeder shows nothing at all on the
+        // LED, which is why `display::render` puts the confirmation on the
+        // panel instead.
         let offline = Health {
             button_armed: true,
             link: false,

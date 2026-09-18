@@ -40,6 +40,7 @@
 //! here, even though it is not a fault. A feeder left paused is the one state
 //! where cats do not eat and nothing alarms, so it earns the line.
 
+use crate::button::ARM_HOLD_MS;
 use crate::indicator::Status;
 use crate::schedule::{Slot, Wall};
 use heapless::String;
@@ -115,6 +116,18 @@ pub struct View<'a> {
     /// The next slot due, or `None` when the schedule cannot say — no schedule,
     /// no trusted time, or paused.
     pub next: Option<Slot>,
+    /// Whether the outside button is armed, straight from
+    /// [`Health::button_armed`](crate::wiring::Health).
+    ///
+    /// Carried separately because [`Status`] cannot express it during a jam:
+    /// `Status::of` puts `Jammed` above `Armed`, deliberately, so that the LED
+    /// keeps warning while somebody has their hands in the mechanism. The panel
+    /// is the one surface that can show both at once, and a jam is exactly when
+    /// both matter — see [`render`].
+    ///
+    /// Named for `Health`'s field rather than shortened to `armed`, which in
+    /// that struct means the *schedule* is armed and is a different fact.
+    pub button_armed: bool,
 }
 
 /// How long the panel stays lit after a press.
@@ -188,6 +201,42 @@ pub fn render(view: &View) -> Screen {
         };
     }
 
+    // A jam takes the middle line for an instruction, because it is the one
+    // state the panel can do something about.
+    //
+    // A jammed feeder recovers by being asked to feed again: nothing in
+    // `feeder::Feeder` gates on the flag, and `on_click` clears it as soon as
+    // the mechanism moves. The outside button already sends that request —
+    // hold to arm, tap to feed — so the recovery gesture is built and always
+    // was. What it lacked was any sign that it had landed, because
+    // `Status::of` reports `Jammed` over `Armed` and the LED therefore stays
+    // solid red through the whole hold. Without this line the only honest
+    // reading of the panel is that the button is dead while jammed, which is
+    // how a jam turns into a power cycle.
+    //
+    // The LED keeps its red: that ordering guards fingers in the mechanism and
+    // is not this module's to overturn. The panel says what to do instead,
+    // which it can afford because a jam is one of the two states `awake`
+    // exempts from sleeping, so the line is still there whenever somebody
+    // walks over to look.
+    //
+    // `next` is dropped rather than squeezed in, for the reason `next_line`
+    // already drops it while paused or untrusted: a unit that will not reach
+    // its next slot unaided should not print a time implying it will.
+    if view.status == Status::Jammed {
+        return Screen {
+            lines: [
+                banner(view.status),
+                if view.button_armed {
+                    clip("TAP TO RETRY")
+                } else {
+                    arm_hint()
+                },
+                fed_line(view.last_fed),
+            ],
+        };
+    }
+
     Screen {
         lines: [
             banner(view.status),
@@ -221,6 +270,46 @@ fn banner(status: Status) -> Line {
     };
 
     clip(text)
+}
+
+/// `HOLD 2s TO ARM`, with the 2 taken from [`ARM_HOLD_MS`] rather than typed.
+///
+/// A duration written into a string is this repo's own recurring bug — three
+/// copies of the old 800 ms spacing, three of the 5 s jam timeout — and this
+/// would be the worst place yet for it, because it is the line somebody reads
+/// off a jammed feeder when a meal did not happen. Being told to hold for a
+/// time that no longer arms anything reads as a dead button.
+///
+/// Delegates to [`arm_hint_for`] so the rule can be tested across durations
+/// instead of only at whichever value the constant happens to hold. A test
+/// that can only see one value cannot tell a derivation from a literal.
+fn arm_hint() -> Line {
+    arm_hint_for(ARM_HOLD_MS)
+}
+
+/// The hint for an arbitrary hold, in whole seconds, **rounded up**.
+///
+/// Rounding up is the whole point and is not interchangeable with rounding to
+/// nearest. This line is an *instruction*, so the two directions fail very
+/// differently: holding for longer than the printed time always arms, while
+/// holding for exactly the printed time may not. Flooring 2 500 ms to `2s`
+/// would print an instruction that does not work, which is the failure this
+/// function exists to prevent rather than a rounding detail.
+///
+/// It also disposes of the sub-second case for free: 500 ms prints `1s` rather
+/// than a `0s` nobody can act on.
+///
+/// The seconds count saturates at `u8::MAX` because [`push_u8`] takes one. A
+/// hold of over four minutes is absurd, but a silent wrap would print a small
+/// number — the unsafe direction again, and for the same reason.
+fn arm_hint_for(hold_ms: u64) -> Line {
+    let seconds = hold_ms.div_ceil(1_000).min(u8::MAX as u64) as u8;
+
+    let mut line = Line::new();
+    push(&mut line, "HOLD ");
+    push_u8(&mut line, seconds);
+    push(&mut line, "s TO ARM");
+    line
 }
 
 /// `fed  08:00  x2`, or an honest admission that it has not.
@@ -346,6 +435,7 @@ mod tests {
             setup: None,
             last_fed: None,
             next: None,
+            button_armed: false,
         }
     }
 
@@ -378,6 +468,150 @@ mod tests {
         assert_eq!(screen.lines[1], "fed  08:00  x2");
         assert_eq!(screen.lines[2], "next 19:00  x2");
         assert_fits(&screen);
+    }
+
+    // --- a jam says how to get out of it -------------------------------------
+
+    #[test]
+    fn a_jam_offers_the_gesture_that_recovers_it() {
+        let screen = render(&View {
+            status: Status::Jammed,
+            last_fed: Some(Fed {
+                at: wall(8, 0),
+                portions: 2,
+            }),
+            ..view()
+        });
+
+        assert_eq!(screen.lines[0], "** JAMMED **");
+        assert_eq!(screen.lines[1], "HOLD 2s TO ARM");
+        assert_eq!(screen.lines[2], "fed  08:00  x2");
+        assert_fits(&screen);
+    }
+
+    #[test]
+    fn an_armed_jam_says_the_tap_will_land() {
+        let screen = render(&View {
+            status: Status::Jammed,
+            button_armed: true,
+            ..view()
+        });
+
+        assert_eq!(screen.lines[0], "** JAMMED **");
+        assert_eq!(screen.lines[1], "TAP TO RETRY");
+        assert_fits(&screen);
+    }
+
+    /// The whole point of carrying `button_armed` beside `status`.
+    ///
+    /// `Status::of` reports `Jammed` over `Armed`, so a screen driven by the
+    /// status alone cannot tell these two apart — and they are the two the
+    /// person standing at a jammed feeder is trying to distinguish.
+    #[test]
+    fn arming_changes_the_jam_screen_although_the_status_does_not() {
+        let locked = render(&View {
+            status: Status::Jammed,
+            ..view()
+        });
+        let armed = render(&View {
+            status: Status::Jammed,
+            button_armed: true,
+            ..view()
+        });
+
+        assert_eq!(locked.lines[0], armed.lines[0], "both still shout JAMMED");
+        assert_ne!(locked.lines[1], armed.lines[1]);
+    }
+
+    /// A jammed unit will not reach its next slot without someone intervening,
+    /// so printing one would promise a meal that is not coming — the same rule
+    /// `next_line` already applies to `Paused` and `NoTime`.
+    #[test]
+    fn a_jam_does_not_promise_the_next_meal() {
+        let screen = render(&View {
+            status: Status::Jammed,
+            next: Some(Slot {
+                minute_of_day: 19 * 60,
+                portions: 2,
+            }),
+            ..view()
+        });
+
+        for line in screen.lines() {
+            assert!(!line.contains("19:00"), "{line:?} promises the next slot");
+        }
+    }
+
+    /// The hint is the only thing arming changes; the warning stays put.
+    ///
+    /// Not a claim about food — this module cannot make one — only that a
+    /// screen never stops shouting about a jam merely because somebody armed
+    /// the button. The LED cannot say both, which is why this one must.
+    #[test]
+    fn arming_never_removes_the_jam_warning() {
+        for button_armed in [false, true] {
+            let screen = render(&View {
+                status: Status::Jammed,
+                button_armed,
+                ..view()
+            });
+
+            assert_eq!(screen.lines[0], "** JAMMED **");
+            assert_fits(&screen);
+        }
+    }
+
+    /// The hint follows [`ARM_HOLD_MS`] rather than a typed-in `2`.
+    ///
+    /// Exercised through [`arm_hint_for`] across durations, because a test that
+    /// only ever sees the one value the constant currently holds cannot tell a
+    /// derivation from a literal — `clip("HOLD 2s TO ARM")` would satisfy any
+    /// assertion made solely about `ARM_HOLD_MS == 2_000`.
+    #[test]
+    fn the_arm_hint_never_asks_for_less_than_it_takes() {
+        // An instruction may overstate a hold and must never understate one:
+        // holding longer than the printed time always arms, holding for
+        // exactly a floored figure need not. 2_500 ms is the case that made
+        // this explicit — flooring prints `2s`, and 2 s would arm nothing.
+        for hold_ms in [1, 500, 999, 1_000, 1_001, 2_000, 2_500, 2_999, 3_000, 10_000] {
+            let line = arm_hint_for(hold_ms);
+            let seconds = printed_seconds(&line) as u64;
+
+            assert!(
+                seconds * 1_000 >= hold_ms,
+                "{line:?} asks for less than the {hold_ms} ms it takes"
+            );
+            assert!(
+                seconds * 1_000 < hold_ms + 1_000,
+                "{line:?} overstates a {hold_ms} ms hold by a whole second"
+            );
+        }
+    }
+
+    #[test]
+    fn the_jam_screen_renders_that_hint_rather_than_its_own() {
+        let screen = render(&View {
+            status: Status::Jammed,
+            ..view()
+        });
+
+        assert_eq!(screen.lines[1], arm_hint_for(ARM_HOLD_MS));
+        // Spelled out as well, so a reader sees what the panel says today.
+        assert_eq!(screen.lines[1], "HOLD 2s TO ARM");
+    }
+
+    /// Reads the number back out of a rendered hint.
+    ///
+    /// Measuring what the panel shows rather than what the arithmetic intended
+    /// is also the only width check that can fail here: `Line` truncates at
+    /// [`COLS`], so an over-long hint loses its `s TO ARM` tail and this
+    /// stops parsing. Asserting `len() <= COLS` could never fail.
+    fn printed_seconds(line: &Line) -> u8 {
+        line.strip_prefix("HOLD ")
+            .and_then(|rest| rest.strip_suffix("s TO ARM"))
+            .expect("the hint kept its shape")
+            .parse()
+            .expect("the hint's number")
     }
 
     #[test]

@@ -343,6 +343,34 @@ loop {
 - **A jam discards whatever is pending.** Resuming a queue into a jammed
   mechanism is worse than dropping a meal. The jam flag clears by itself when
   a portion is next counted.
+- **Nothing gates on the jam flag, and that is what makes a jam recoverable.**
+  `request`, `start` and `on_click` all behave normally while jammed, so the
+  next feed request simply tries again, and the first click it produces clears
+  the flag. The outside button is one such producer — **hold two seconds to
+  arm, then tap** — so a jam never needs a power cycle, and never has.
+
+  What that gesture lacked was any sign it had landed: `Status::of` reports
+  `Jammed` over `Armed`, so the LED stays solid red through the whole hold.
+  That ordering is deliberate and stays — red has to keep warning while
+  somebody has their hands in the mechanism — so **the panel carries the
+  confirmation instead**, showing the arm hint and then `TAP TO RETRY` under
+  the `** JAMMED **` banner. A jam is one of the two states `display::awake`
+  never sleeps in — setup is the other — so the line is there whenever somebody
+  walks over to look.
+
+  The hint's duration comes from `button::ARM_HOLD_MS` through
+  `display::arm_hint_for`, and is **rounded up** rather than to nearest: an
+  instruction may overstate a hold but must never understate one, because
+  holding longer than the printed time always arms and holding for exactly a
+  floored figure need not. It is deliberately not spelled out here either, so
+  this paragraph cannot become the copy that still says `2s`.
+
+  ⚠️ **Retrying is not unjamming.** The motor has no reverse, deliberately
+  (`motor.rs`: reversing "could jam the mechanism against its own geometry"),
+  so a retry drives forward into the same obstruction and reports a jam again
+  one budget later. It recovers a *transient* stall; a real blockage still
+  wants a hand. Whether these mechanisms jam transiently at all is unknown —
+  none has jammed yet — and that is a bench observation, not a design choice.
 - Producers use `try_send` and log the discard, so a full queue never blocks
   the MQTT or clock task.
 - Reading the switch level is I/O, so it is an input to `start` rather than
@@ -770,10 +798,20 @@ with three units already screwed into place. Requiring a power cycle means it
 cannot happen by accident at all. It costs one GPIO read on an ordinary boot —
 only a boot that begins with the button held waits the three seconds.
 
-Arming outranks every fault on the LED. The case that settles it: the broker is
-down, which is precisely when manual feeding matters, and being re-told the
-network is out is less useful than seeing that the tap will land. Whatever it
-hides is still there ten seconds later.
+Arming outranks the **network** faults on the LED. The case that settles it: the
+broker is down, which is precisely when manual feeding matters, and being
+re-told the network is out is less useful than seeing that the tap will land.
+Whatever it hides is still there ten seconds later.
+
+**A jam is the exception, and it beats arming.** Red keeps warning because
+somebody may have their hands in a hub that a tap can start turning, which no
+ten-second window makes safe. The cost is that arming a jammed feeder shows
+nothing at all on the LED — so the panel says `TAP TO RETRY` instead, and
+*The feeder task owns the motor* has the rest.
+
+(This used to read "every fault", which was wrong for the one fault where
+manual feeding matters most. `indicator.rs`'s test is now named
+`an_armed_button_outranks_the_network_faults` to stop it drifting back.)
 
 **Verifying this needs a phone.** The console can show the access point
 starting, a station associating, and a request arriving, but joining the network

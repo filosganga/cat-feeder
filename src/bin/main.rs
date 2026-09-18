@@ -885,7 +885,12 @@ async fn display_task(
     let mut lit: Option<bool> = None;
 
     loop {
-        let status = Status::of(BUS.health());
+        // One snapshot, read twice: `Status::of` collapses the ladder and hides
+        // `button_armed` behind a jam, which is the one case the panel wants
+        // both halves of. Sampling `BUS.health()` again for the flag could
+        // straddle a press and render a screen no single instant produced.
+        let health = BUS.health();
+        let status = Status::of(health);
         let screen = display::render(&View {
             status,
             // Constant for the life of setup mode, so this loop renders the same
@@ -896,6 +901,7 @@ async fn display_task(
                 .get()
                 .map(|(at, portions)| Fed { at, portions }),
             next: BUS.next.get(),
+            button_armed: health.button_armed,
         });
 
         // Only on a change, exactly as the LED does. A three-line screen logged
