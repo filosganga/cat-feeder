@@ -10,12 +10,56 @@ same instant, coordinated by Home Assistant over MQTT.
 | Part | Notes |
 |---|---|
 | Waveshare ESP32-C6-DEV-KIT-N8-M | **dev board only** (breadboard, pin headers). WROOM-1 module, 8 MB flash |
-| Waveshare ESP32-C6-Zero ×3 | **production boards**, one per feeder. Bare C6FH8, 8 MB flash |
+| Waveshare ESP32-C6-Zero ×3 | **production boards**, one per feeder. Bare C6, **8 MB flash — measured, not read off the schematic**, which shows an `ESP32-C6FH4` and would have you believe 4 MB. `espflash board-info` on unit `99177c` reports 8 MB, and the chip is the authority |
 | DRV8833 breakout (black 10-pin) | H-bridge. `nSLEEP`/`ULT` **must be driven high** or the motor won't run |
 | Motor DRF-W500CA, 5 V, 8 rpm | geared reducer → stops dead on brake, no coasting past a detent; ~1.9 s between detents. Back-drivable by hand, but stiff enough that turning the hub is a poor way to test anything |
 | Microswitch on output hub | **1 click = 1 portion.** That is the entire contract |
 | 220 µF 16 V electrolytic | across 5 V/GND next to the DRV8833 (brown-out on motor start) |
 | 5 V from the feeder's original USB port | ≥1 A adapter. **No batteries in v1** |
+
+### Two supplies, and one of them is a laptop
+
+A feeder on the bench can have its own 5 V adapter *and* a USB cable to a
+laptop, and the two meet at the Zero's `5V` pad. **That is safe, and the board
+is why.** The ESP32-C6-Zero carries a **B5819WS Schottky, `D1`**, between the
+USB connector's `VBUS` and `VCC_5V` — and `VCC_5V` is both the regulator's input
+and `P8` pin 1, the `5V` pad. It conducts `VBUS → VCC_5V` only, so feeding the
+pad cannot push current back into the laptop. **Do not fit an external diode;
+there is already one.** (Waveshare's published schematic, sheet 1, the `USB`
+block. The orientation follows from function rather than from pin numbering: the
+board runs from USB, so `D1` must conduct that way and must block the other.)
+
+**~4.8 V on the `5V` pad is that diode, not a sagging supply.** A B5819WS drops
+about 0.2 V at the current an idle C6 draws, so a port at ~5.05 V reads ~4.83 V
+at the pad — measured. It looks like a fault and is not one; the ME6217C33M5G
+behind it needs far less headroom than that. Do not try to infer the diode's
+presence *from* that number in the other direction, either: a direct connection
+through a lossy cable lands in the same place, which is why the schematic is
+what settles it.
+
+With the adapter on, the rail sits above `VBUS − Vf`, `D1` stops conducting, and
+the adapter supplies everything while the laptop supplies nothing. During the
+motor's inrush the rail dips, and if it falls far enough the laptop briefly
+helps through `D1` — milliseconds, well inside the part's surge rating.
+
+**Ground is shared, and must be.** The DRV8833's `AIN1`, `AIN2` and `nSLEEP` are
+referenced to the Zero's ground, so the adapter's ground, the driver's and the
+board's are one node. Sharing ground while the 5 V rails are separately sourced
+reads as contradictory and is not.
+
+The rail itself is one node with three taps — adapter, `VM`, and the Zero's
+pad — so motor current flows adapter → rail → `VM` and never crosses the pad.
+The pad is a load on that node, not a link in the path.
+
+⚠️ **The one combination to avoid is provoking a jam on USB alone.** With no
+adapter, the motor's current *is* drawn through `D1` and `P8` pin 1. That is
+fine for a running motor at a couple of hundred milliamps — it is how every
+bench test so far has run — but a stall held for the whole jam budget is more
+than a 1 A Schottky should carry. Plug the adapter in before testing a jam.
+
+Both supplies live is also exactly what the **detent interval** measurement
+needs: the motor turning a real mechanism on its real adapter, with the console
+on USB.
 
 ### The third feeder is a different brand
 

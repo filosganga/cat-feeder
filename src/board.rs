@@ -86,6 +86,14 @@
 //! the DRV8833's motor supply, and one ground shared by everything — including
 //! the 220 µF sitting across the DRV8833's 5 V and ground.
 //!
+//! On a bench that `5V` can arrive from two places at once — the feeder's own
+//! adapter and a laptop's USB cable — and they meet at the Zero's `5V` pad. It
+//! is safe: the board already carries a Schottky between `VBUS` and that pad,
+//! so the pad cannot back-feed the laptop, and an external diode would be a
+//! second one. See *Two supplies, and one of them is a laptop* in `CLAUDE.md`
+//! for the part, why ~4.8 V on the pad is normal, and the one combination that
+//! is worth avoiding.
+//!
 //! GP6, GP7, GP20–GP22 and GP23 stay free, which is the margin for a part that
 //! turns out to need a pin nobody planned for.
 //!
