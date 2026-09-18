@@ -63,7 +63,12 @@
 //! | GPIO8 | also the onboard WS2812, so already committed |
 //!
 //! That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23
-//! on the back pads: thirteen usable against the eight this design needs.
+//! on the back pads: **thirteen usable, seven of them spent today.**
+//!
+//! Seven and not eight, though the table below has eight rows: GPIO8 is not one
+//! of the thirteen, having been struck out twice just above as strapping and as
+//! the onboard WS2812. It is wired, but it was never available to spend. Count
+//! the free pins against seven or the arithmetic comes out one short.
 //!
 //! ## What is wired where
 //!
@@ -94,8 +99,36 @@
 //! for the part, why ~4.8 V on the pad is normal, and the one combination that
 //! is worth avoiding.
 //!
-//! GP6, GP7, GP20–GP22 and GP23 stay free, which is the margin for a part that
-//! turns out to need a pin nobody planned for.
+//! GP6, GP7 and GP23 stay free, which is the margin for a part that turns out
+//! to need a pin nobody planned for. GP20, GP21 and GP22 are unwired too, but
+//! spoken for — see the reservation below before taking one.
+//!
+//! **GP20 and GP21 are reserved for a rotary encoder's `A`/`B`**, should the
+//! knob in `CLAUDE.md`'s *Version 1.5: the knob* be built. They are edge
+//! castellations rather than back pads, which is the same reason GP18/GP19
+//! were picked for the display: this board is hand-soldered.
+//!
+//! **Its push switch may or may not want a third pin**, and that section calls
+//! it a fork rather than a detail. Reusing GPIO3 costs nothing and makes the
+//! knob the feed button, which then cannot be hidden from a cat without hiding
+//! the manual feed too: nine of the thirteen, leaving GP6, GP7, GP22 and GP23.
+//! Giving the encoder its own switch on **GP22** leaves the recessed button on
+//! GPIO3 exactly as it is and lets the knob go somewhere a paw cannot reach:
+//! ten of the thirteen, with GP6, GP7 and GP23 still spare. The second is the
+//! one that section prefers, so treat GP22 as half-reserved as well.
+//!
+//! Both counts start from the seven spent today, for the reason given under
+//! *Which pins are usable* above.
+//!
+//! Reserved here as a comment and nothing more. There is no `encoder_a_pin!`
+//! yet because no code consumes one, and every macro below corresponds to
+//! something actually wired.
+//!
+//! The reservation is cheap insurance rather than a deadline: the electronics
+//! go in their own printed case, so a hole in the wrong place is a reprint. It
+//! exists so that a *pin* is not quietly spent on something else in the
+//! meantime, which is the part a reprint would not fix. An I²C RTC alongside
+//! it costs no pin at all — it shares the display's bus.
 //!
 //! "No alternate function" was the rule that originally picked GPIO10 and
 //! GPIO11 on the dev kit. It does not really apply on the C6, where peripheral
@@ -144,7 +177,10 @@ pub const SWITCH_PIN: &str = "GPIO2";
 /// ⚠️ On the dev kit's J1 header GPIO3 is the pin **directly beside 5V**. That
 /// is the same adjacency `CLAUDE.md` warns about for the ground jumper, and it
 /// is worth re-reading before wiring a button there. If it makes you nervous,
-/// any of GP14 or GP18–GP22 is free on the Zero and this is a one-line change.
+/// GP6, GP7 or GP23 is free on the Zero and this is a one-line change — though
+/// all three are back pads, so only the soldering gets harder, not the wiring.
+/// (This used to offer "GP14 or GP18–GP22", which was wrong even when written:
+/// GP14 is `nSLEEP` and GP18/GP19 are the display. GP20–GP22 are reserved.)
 #[macro_export]
 macro_rules! button_pin {
     ($peripherals:expr) => {
@@ -230,13 +266,19 @@ pub const MOTOR_SLEEP_PIN: &str = "GPIO14";
 /// GP18 and GP19 are chosen over GP6/GP7 — also free — because they are **edge
 /// castellations rather than back pads**, and this board is hand-soldered.
 ///
-/// ## The bench display is not the one going in the case
+/// ## The two candidate panels are not the same part
 ///
-/// The 0.91" 128×32 modules that fit the LCD window are 4-pin I²C parts:
-/// `GND · VCC · SCL · SDA` and nothing else. The 1.3" 128×64 Adafruit breakout
-/// being developed against has **eight** pins — `Data · Clk · SA0 · Rst · CS ·
-/// 3v3 · Vin · Gnd` — because it speaks SPI as well. `Data` and `Clk` are the
-/// same two wires; the rest are mode and address selection.
+/// Either may end up in a feeder. The original plan was that only the 0.91"
+/// could, because it was the one that fitted the feeder's own LCD window; with
+/// the electronics in their own printed case that is no longer true and the
+/// 1.3" is the likelier one — see `CLAUDE.md`'s *A display*. Two pins either
+/// way, so this file does not care, but anyone swapping one for the other does.
+///
+/// The 0.91" 128×32 modules are 4-pin I²C parts: `GND · VCC · SCL · SDA` and
+/// nothing else. The 1.3" 128×64 Adafruit breakout has **eight** pins — `Data ·
+/// Clk · SA0 · Rst · CS · 3v3 · Vin · Gnd` — because it speaks SPI as well.
+/// `Data` and `Clk` are the same two wires; the rest are mode and address
+/// selection.
 ///
 /// Two differences survive the swap and neither is the size:
 ///

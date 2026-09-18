@@ -19,8 +19,9 @@
 //! ## The address is discovered, not assumed
 //!
 //! An SSD1306 answers on `0x3C` or `0x3D`, selected on the module by a jumper
-//! or a resistor. The 0.91" parts that fit the case are `0x3C`; the 1.3"
-//! Adafruit breakout being developed against is usually `0x3D`.
+//! or a resistor. The 0.91" parts are `0x3C`; the 1.3" Adafruit breakout is
+//! usually `0x3D`. Either may end up in a feeder — see `CLAUDE.md`'s *A
+//! display* — which is the point: neither address can be assumed.
 //!
 //! Hardcoding either gives a driver that works on the bench and shows nothing
 //! the day the real panel is fitted — with no clue as to why, because a device

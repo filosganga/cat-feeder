@@ -96,6 +96,55 @@ Both boards are the same chip; only GPIO numbers differ. Keep the pin map in
 one place (`src/board.rs`) selected by a Cargo feature: `board-devkit`
 (default) / `board-zero`.
 
+### The electronics live in their own case
+
+**Decided, not built.** The original plan was to reuse each feeder's own LCD
+window and button hole. That is what *A display* below is still written against,
+and it is why three lines of 21 characters appears there as a hard constraint.
+
+It does not survive the third feeder being a different brand. Two units share a
+window and a button position; the third does not, so reusing them means **two
+mounting designs for three units** — and the one unit whose interior nobody has
+seen yet is the one that would set the second design.
+
+So: a **separate 3D-printed enclosure** holding the Zero, the display, the
+driver and whatever front panel the unit ends up with. Each feeder gets one
+hole in its **bottom shell** for the motor and switch cables, routed out
+through the cavity the original USB lead already uses. One printed design fits
+all three, because it is not fitted to any of them.
+
+What this changes, and each is worth chasing down where it is written:
+
+- **The 40 × 18 mm window stops being a constraint.** Nothing has to fit it,
+  so the 1.3" 128×64 already on the bench can be the production part and the
+  0.91" parts become the fallback. `oled.rs` is already parameterised — the
+  `panel-128x64` feature swaps `DisplaySize128x32` for `DisplaySize128x64` and
+  nothing else moves.
+
+  ⚠️ **That buys rows, not columns.** Both panels are 128 pixels wide, so
+  `FONT_6X10` gives **twenty-one characters on either**, and `display::COLS`
+  stays 21 — the feature does not touch it. What changes is `ROWS`: 64/10 is
+  six lines instead of three. So three lines becomes a floor and **21 columns
+  remains a hard ceiling**, which is the half that bites: `Line` is
+  `String<COLS>` and `push` truncates in silence, with no log line and no
+  failing test. A menu laid out against "the budget is gone" loses the tail of
+  every long line on the glass.
+- **A hole in a printed part costs nothing.** That is what makes the knob a
+  v1.5 question rather than a step-8 deadline: a case can be reprinted, a
+  commercial shell drilled wrong cannot be undrilled. See *Version 1.5: the
+  knob* below.
+- **The front panel need not be within a cat's reach.** A separate box can sit
+  higher, or behind the feeder, which is a placement freedom a panel bolted
+  into the original window never had.
+- **Step 8 changes shape**, from transplanting electronics into three different
+  interiors to drilling one hole and routing a cable in each. The mechanical
+  figures — 1 click = 1 portion, and the detent interval — are unaffected:
+  they are about the hub, not about where the board lives.
+
+What it does **not** change: the third feeder still has to be opened, still has
+to have its detent interval measured, and still has to be confirmed to have a
+microswitch rather than an optical sensor. Those are in the mechanism.
+
 ### Which pins are usable
 
 **The Zero is the binding constraint, and it is tighter than the dev kit.** Its
@@ -113,9 +162,14 @@ Then subtract what is already spoken for:
 | GPIO8 | also the onboard WS2812, so already committed |
 
 That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23 on
-the back pads — thirteen usable against eight needed, so the display and the
-LED both fit with room left. **`board.rs` carries the assignment table**, which
-is the thing to solder against; it is not repeated here.
+the back pads — **thirteen usable, seven of them spent today**, so the display
+fits with room left. **`board.rs` carries the assignment table**, which is the
+thing to solder against; it is not repeated here.
+
+Seven and not eight: this design wires eight pins, but GPIO8 is not one of the
+thirteen — it is struck out twice in the table above, as strapping and as the
+onboard WS2812, so it was never available to spend. Count the free pins against
+seven or the arithmetic comes out one short.
 
 Note the strapping list is five pins, not the three this file used to name:
 GPIO4 and GPIO5 are strapping on the C6 as well.
@@ -1085,9 +1139,20 @@ each one.
    `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
    feed end to end
 8. Retire the old PCBs. Per feeder: remove the original LCD/RTC/button board,
-   fit the Zero + DRV8833 + 220 µF, connect the motor and the microswitch, take
-   5 V from the feeder's original USB port. The last step in the project and
-   the only one with no software in it
+   drill one hole in the bottom shell, and route the motor and microswitch
+   cables out through the cavity the original USB lead already uses. The
+   electronics live in their own printed case — see *The electronics live in
+   their own case* — so nothing is fitted to the feeder's interior and the
+   same design serves all three, including the odd one out. Take 5 V from the
+   feeder's original USB port. The last step in the project and the only one
+   with no software in it.
+
+   **The panel and the knob are not decided here**, which they would have been
+   under the old plan of reusing each shell's own window. They live in a
+   printed part now, so a hole put in the wrong place is a reprint rather than
+   a ruined case, and the interface can keep moving after these three holes are
+   drilled. `board.rs` reserves GP20/GP21 for an encoder and half-reserves GP22
+   for its switch so the pins stay there either way
 
 ### A retained `time` is not a trusted one
 
@@ -1349,7 +1414,14 @@ complete, or should reset the DHCP socket when it is.
       `indicator.rs` are dim on purpose but were picked by eye, and green reads
       much brighter than blue at the same number
     - ⬜ an external WS2812 on the Zero's GPIO8 pad, in parallel with the
-      onboard one. Needs no firmware change — see *The RGB LED*
+      onboard one. Needs no firmware change — see *The RGB LED*.
+
+      **Less obviously needed now.** The argument was that the onboard LED is
+      sealed inside a feeder you cannot modify; with the board in its own
+      printed case, the case can simply have a window or a light pipe over the
+      module's own LED. Keep the option — it is still free, and a second LED
+      placed where the feeder is rather than where the box is may yet earn its
+      keep — but it is no longer the only way to see the thing
     - ✅ `Health::setup`. `main.rs` sets the flag on the way into setup mode
       and `Bus::health()` reads it, so the LED's blue flash comes from the same
       fact the boot path acted on rather than from a constant
@@ -1429,13 +1501,20 @@ complete, or should reset the DHCP socket when it is.
 |---|---|
 | 3, the detent interval | **nothing — the bridge is wired and driving**; it needs the motor on a real mechanism |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
-| 8, retiring the PCBs | 3, and the third feeder being opened |
+| 8, retiring the PCBs | 3, the third feeder being opened, **and an enclosure designed and printed** |
 | 11, the Pi | nothing; both containers run. Home Assistant is not onboarded yet |
-| a display | **nothing for development** — a 1.3" part is on the bench; the 0.91" ones that fit the case are ordered |
+| a display | **nothing for development** — a 1.3" part is on the bench and is now the likely production part; the 0.91" ones are the fallback |
+| the enclosure | v1.5 being settled, since the panel and any knob are most of what it holds |
 
 **Every part is now on the bench**: the Pi, the three Zeros, the DRV8833 and a
 display to develop against. Nothing in this project is waiting on the post any
-more, and the work is soldering rather than ordering.
+more.
+
+The work left is soldering and **CAD**. That second half is new: since the
+electronics moved into their own printed case, step 8 cannot happen until
+something exists to put them in — see *The electronics live in their own case*.
+One design serves all three feeders, which is the whole point of it, but it is
+one design that does not exist yet.
 
 The first Zero is on a breadboard with the driver, the switch, the button and
 the display, and it boots, sweeps its LED, answers both buttons, drives the
@@ -1476,15 +1555,29 @@ manual feed works with the broker down; battery backup.
 which pointed at a 0.91" 128×32 I²C OLED — roughly a 38 × 12 mm module, two
 pins, a 512-byte framebuffer, and **three** lines of 21 characters. Five of
 them are on the way (SSD1306, I²C, `GND · VCC · SCL · SDA`). The common 0.96"
-128×64 is the wrong shape: its module is near enough square at 27 mm tall and
-will not go in.
+128×64 was the wrong shape for that window: its module is near enough square at
+27 mm tall and would not go in.
 
-**A 1.3" 128×64 is already on the bench**, and it is the right thing to develop
-against, because the driver crate and the two wires are identical and only a
-size parameter differs. But **lay the screen out for 128×32 from the start** and
-render it on the big one with the bottom half dark. Three lines of 21 characters
-is the real constraint; a layout built for eight lines cannot be shrunk into it,
-and the part that arrives is the part that goes in the case.
+⚠️ **That window is no longer the constraint** — see *The electronics live in
+their own case*. A printed enclosure has no window to match, so the **1.3"
+128×64 already on the bench can be the production part**, and the sizing
+argument above is kept as the reasoning that was true while the original shell
+was, not as a live requirement. The paragraphs below still hold; read "must
+fit" as "must at least fit".
+
+**Develop against the 1.3" regardless.** The driver crate and the two wires are
+identical and only a size parameter differs — `oled.rs` swaps `PanelSize` on
+the `panel-128x64` feature and nothing else moves.
+
+**Three lines becomes a floor. Twenty-one columns does not.** Both panels are
+128 pixels wide, so `FONT_6X10` gives 21 characters on either and
+`display::COLS` is unchanged at 21; only `ROWS` grows, from three to six. Lay
+every screen out to work in three lines, because the 0.91" parts are the
+fallback and a layout built for six cannot be shrunk into three — extra rows
+are somewhere to put more, never somewhere a required line may hide. But treat
+21 as the hard limit it has always been: `Line` is `String<COLS>` and `push`
+truncates silently, so an over-long line is lost on the glass with nothing said
+on the console.
 
 That figure was *two* here until the setup screen needed its third line, and it
 was simply wrong rather than conservative: `FONT_6X10` is ten pixels tall, so a
@@ -1561,6 +1654,219 @@ device, which is precisely the weight the current design avoids, so it is a
 deliberate trade rather than an obvious improvement. The offset is already
 parsed and kept in `Wall::offset_minutes`, so the input is there when needed.
 
+### Version 1.5: the knob
+
+**Decided in principle, not built.** It sits between the working prototype and
+the printed case: after the mechanism is proven and before the enclosure is
+drawn, because a panel and a knob are most of what an enclosure is *for* and
+designing one around a bare board twice is the wasteful order.
+
+What is done today is reserving two pins in `board.rs` and half-reserving a
+third against the fork below.
+
+**There is no deadline on it**, which there would have been under the original
+plan of reusing each feeder's own window: a hole drilled in a commercial shell
+cannot be undrilled, so the decision would have expired at step 8. *The
+electronics live in their own case* removes that — a printed part is
+reprintable, so the interface can keep moving after all three feeders are
+closed up. The pins are reserved in `board.rs` because a *pin* spent elsewhere
+is the one thing a reprint would not recover.
+
+**The argument.** *A second version* below asks what a person who did not build
+this has to install before the feeder works, and answers it with the unit's own
+entities and its own admin page. Read those back and the answer is still *join
+it to a network first*: the discovery entities need Home Assistant, the admin
+page needs the unit on the house Wi-Fi, and even setup mode needs a radio, a
+phone and someone who can read a password off the panel. **Every editing route
+v2 proposes is a networked one.** A knob and a panel are the only pair that is
+not, which is why they come first.
+
+**And it reaches further than the schedule.** A knob can enter text —
+character by character, the way a Prusa's menu does — which means an SSID and a
+Wi-Fi password can be typed on the device.
+
+Every route into a unit's credentials today needs **a second machine**: a phone
+with a browser for setup mode, or a laptop with `espflash` and a USB cable for
+`dev/provision.sh`. Neither is a hardship here, where both are on the desk — but
+they are the reason a feeder cannot be reconfigured by the person standing in
+front of it, and *that* is what a knob removes. Tedious as a primary route and
+nobody's first choice. It does not retire setup mode, which is faster and
+already works; it ends setup mode's monopoly on the case where the phone is
+what you do not have.
+
+With the display carrying it, the 1.3" 128×64 can be the production part and a
+menu has **six rows** to work with rather than three. It still has only
+twenty-one columns — both panels are 128 pixels wide — so a menu item's text is
+as tight as it ever was, and a knob menu is exactly the feature most likely to
+forget that. See *A display*.
+
+A rotary encoder — an EC11, quadrature `A`/`B` plus a push switch in the shaft —
+and the panel answer it with **nothing**. That is the argument, and it is the
+whole argument. It is *not* nicer page-stepping: the locked-tap cycle in *The
+screen's pages* is designed but not built, and when it is built it will be good
+enough that turning a knob instead would not be worth a hole in a case.
+
+**It removes SNTP rather than adding to it**, which is the opposite of what a
+second input device usually does. A knob-set clock is set in local wall-clock
+time, the schedule slots are already local wall-clock time, so nothing converts
+and no timezone rules go on the device. DST is someone turning a knob twice a
+year, exactly like every oven in the house. `feeder/time` stays as a convenience
+for units that have a network, and the *configured feeder timezone* note stays
+what it is: worth doing only if the broker ever publishes UTC.
+
+**The trust ladder gains a rung and keeps its floor.** Today there are three
+states, not two — see *A retained `time` is not a trusted one*: a **live**
+`feeder/time` arms the schedule, a **retained** one starts the clock but leaves
+it holding, and nothing at all means the unit waits. A clock of its own inserts
+a rung, and *power-cycled and no broker → wait, never guess* survives intact
+because the bottom rung is still waiting.
+
+**Where the RTC sits against a retained time is the open question**, and it is
+the one to settle before writing any of this. They are rivals for the same rung:
+a retained time proves Home Assistant published *at some point*, an RTC-backed
+clock proves a human set it *at some point*, and neither carries its own age.
+The argument for the RTC winning is that a hand-set clock with a live
+oscillator has been running continuously since it was set, whereas a retained
+message is a snapshot of unknown vintage — which is precisely the distinction
+that section already draws, applied one level down.
+
+**The rule this would overturn is narrower than it first looks.** *Once armed,
+retained times are ignored outright* is not at stake: `LocalClock::align` already
+drops a retained time whenever `self.trusted`, with
+`a_retained_time_after_trust_is_ignored_rather_than_applied` pinning it, so a
+reconnect cannot drag a trusted clock anywhere and an RTC costs nothing there.
+The rivalry is entirely in the **untrusted** window, where a retained time
+currently does start the clock — the `clock: started, … (retained; waiting for a
+live time)` line. That is the one rule to argue about, and whoever implements
+this should look there rather than in `LocalClock::align`'s trusted branch.
+(`Scheduler` is the other struct in that file and has no `align` — it owns
+`consumed_through` and `next_due`.)
+
+#### Which means an RTC, and it costs no pins
+
+The C6 has no battery-backed clock. Its low-power timer runs from the chip's own
+supply, and a feeder takes 5 V from the original USB port, so a power cut takes
+the time with it. A knob-set clock that dies at the next outage answers the
+question in the room and not the one on holiday.
+
+So a **DS3231** with a coin cell, on the I²C bus **already wired for the
+panel** — GPIO18 `SDA`, GPIO19 `SCL`, no new pins, about €2. It answers on
+`0x68`, the SSD1306 on `0x3C`/`0x3D`, so `oled.rs`'s probe is unaffected. A
+PCF8563 is the cheaper alternative and is at `0x51`, not `0x68` — worth knowing
+before scanning a bus for a part that is not there.
+
+**Pick the DS3231 for its oscillator-stop flag, not for its accuracy.** The
+middle rung of that ladder is only legitimate if it can say *I was never set*:
+a cleared RTC otherwise reads as a plausible date rather than as an absence, and
+a plausible date is exactly what *never guess* exists to refuse. `OSF` is set
+whenever the oscillator has been without power, so "coin cell flat, or never
+fitted" is a fact the firmware can read rather than infer. The ±2 ppm is a
+bonus; the flag is the reason.
+
+⚠️ **Most DS3231 breakouts carry a charging circuit for a rechargeable
+LIR2032.** Fitting an ordinary CR2032 to an unmodified module tries to charge a
+primary cell. The fix is lifting the series resistor or the diode. It presents
+as a battery flat in months, which reads as a bad module rather than as a wiring
+decision.
+
+⚠️ **Two I²C modules each with their own pull-ups** put those resistors in
+parallel and stiffen the bus. Two at 400 kHz is normally fine; it is the first
+thing to check if the panel starts misbehaving only after the RTC goes on.
+
+#### What it costs
+
+**A knob puts pressure on the one cat defence that cannot be got round, and
+that is the thing to settle first.** *The outside button* says to **recess the
+button**, because needing a fingertip defeats a paw outright and mechanical
+protection survives any sequence of lucky presses; everything else is what
+`button.rs` calls "the second line of defence, not the first". A knob has to
+protrude to be turned, and a recessed knob is not a thing.
+
+**The printed case takes most of the sting out of this**, and it is worth
+saying before the fork rather than after. A control panel in its own box can be
+mounted high, or behind the feeder, or anywhere a cat has no footing — which a
+panel set into the original shell's window never could be, because that window
+is wherever the manufacturer put it. Placement is a defence the old plan did
+not have, and it is available to both rows below.
+
+What remains depends on **whether the knob is also the feed button**, which is
+a fork in the hardware:
+
+| | Pins | What it costs |
+|---|---|---|
+| **The knob replaces the button.** Its shaft switch takes GPIO3 | 9 of 13 | one control, simplest wiring — but it protrudes where the button was recessed, and the recess defence is gone |
+| **The knob is a second control, separately placed.** The button stays on GPIO3 exactly as today; the encoder gets `A`, `B` and its own switch | 10 of 13 | one more pin and one more part — and the two can then go in different places, the button where a human reaches in a hurry and the knob where a cat does not |
+
+Both fractions count from the seven spent today — GP0–GP3, GP14, GP18, GP19,
+with six free. *Which pins are usable* above says why that is seven and not the
+eight pins this design wires.
+
+**The second is the better design, and the reason is placement rather than
+paranoia.** A configuration knob does not have to be reachable in a hurry; the
+feed button does, because arm-then-tap is the one feeding path that works with
+the broker down. One control cannot be both out of a cat's way and to hand, so
+reusing GPIO3 forces a single compromise position — and takes the boot-erase
+gesture there too. Splitting them keeps the recessed button exactly as it is,
+verified and unchanged, and makes the knob **physically incapable of
+dispensing**, which is a stronger guarantee than any amount of gesture logic.
+It also shrinks the menu hazard below to nothing, because a cat reaching the
+menu at all stops being a scenario.
+
+It still fits: `A`/`B`/`SW` on GP20/GP21/GP22 leaves GP6, GP7 and GP23 free.
+`board.rs` reserves GP20/GP21 today and says which count applies to which fork.
+
+**A cat in a menu is a hazard class this design does not have yet**, and it is
+the reason the first fork above needs all of what follows while the second
+mostly does not. Every gesture in a menu is foodless, which is the property the
+arming design rests on — but the *consequences* are not. A cat that leaves all
+eight slots set to sixteen portions, **at eight different times of day**, empties
+the hopper without one foodless rule having been broken.
+
+The "different times" is load-bearing and is the part easy to get wrong:
+`schedule.rs`'s consumed marker is keyed on
+`(day, minute-of-day)`, so eight slots sharing one minute resolve once and
+`MAX_CLICKS` caps that at sixteen clicks, exactly as it should. Spread them
+across the day and there is no guard left, because capping a day was never
+`MAX_CLICKS`'s job. So menu entry is a hold, the menu times out back to the home
+screen, and an edit commits on an explicit confirm rather than as the knob
+turns.
+
+**Under fork (a), a hold then means two things by context** — arm-to-feed on the
+home screen, back-or-save in a menu — which is more vocabulary than `button.rs`
+has today and the part most likely to read as a button that does nothing. Fork
+(b) does not pay this at all: the GPIO3 button keeps exactly today's four
+gestures, and back-or-save lives on the knob's own switch.
+
+**Rotation stays foodless, always**, and what that means also depends on the
+fork. Under (b) it is trivially true, because the knob is behind the lid and can
+reach nothing but menus — page-stepping is left to a locked tap on the front
+button, which is where *The screen's pages* already designs it and where the
+person reading the panel actually is. Under (a) the knob is the only control, so turning steps
+pages while locked and could set the portion count while armed, with only a tap
+ever dispensing.
+
+⚠️ **That last part — "sets the portion count while armed" — overturns a
+decision, and should not be smuggled in as an improvement.** It is a fork-(a)
+temptation specifically, and one more reason (b) is the cleaner design. *Manual feeds accumulate* says there is
+no default portion size — every feed path states its own count, the button as
+`1` — and both buttons implement that deliberately: `mqtt.rs` pins
+`payload_press` at 1 ("three portions is three presses"), and `button.rs` has a
+test named `three_portions_is_three_taps_not_three_arms`. A count held between
+taps *is* a default portion size, with all the state that implies: what it
+resets to, whether it survives the window lapsing, and what the panel shows when
+it disagrees with what the next tap will do. That may well be worth it — three
+taps for three portions is tedious — but it is a reversal to argue for, not a
+wart to fix in passing.
+
+**The panel becomes load-bearing.** Today a blank screen is a degraded unit.
+With knob configuration it is an unconfigurable one — the same fear *A display*
+already raises about setup mode, generalised to everything.
+
+**It does not replace the admin page**, which is still the pleasant way to do
+this from a sofa. What it changes is the dependency graph: with a knob, Wi-Fi is
+optional rather than required, and a feeder that works with no network at all is
+a different thing from one that degrades to not feeding.
+
 ### A second version: the unit owns its clock and its schedule
 
 **Decided in principle, not started, and not to be smuggled in one commit at a
@@ -1607,6 +1913,12 @@ SNTP, and with it real timezone rules on the device: the *configured feeder
 timezone* note above stops being optional, because SNTP gives UTC and nothing
 else. That weight is exactly what today's design avoids by assuming the broker
 shares a timezone, and it is the price of the unit standing alone.
+
+**Amended by *Version 1.5: the knob* above**, which is the cheaper answer: a clock set by
+hand is set in local wall-clock time, so it needs neither SNTP nor timezone
+rules. Read this point as *which forces the unit to own its clock somehow* —
+SNTP is one way and the knob is another, and the knob is the one that also works
+with no network at all.
 
 **4. The editor is the unit's own entities, so nothing is installed.** MQTT
 discovery has the platforms for it — `time`, `number`, `select`, `text` and

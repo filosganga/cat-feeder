@@ -1,9 +1,21 @@
 //! What the OLED shows. Pure logic; the pixels are somebody else's problem.
 //!
-//! The panel that fits the original LCD window is a 0.91" 128×32, which at
-//! `FONT_6X10` is **three lines of twenty-one characters**. That is the entire
-//! budget, and it is why every line here is built against [`COLS`] rather than
-//! formatted hopefully and truncated later.
+//! The smaller of the two panels is a 0.91" 128×32, which at `FONT_6X10` is
+//! **three lines of twenty-one characters**. That is the budget this module
+//! lays out against, and it is why every line here is built against [`COLS`]
+//! rather than formatted hopefully and truncated later.
+//!
+//! The 1.3" 128×64 under `panel-128x64` is **not wider**. Both are 128 pixels
+//! across, so [`COLS`] is 21 either way and the big panel buys rows alone —
+//! six instead of three. Rows are therefore a floor and columns a ceiling.
+//!
+//! Which matters because the ceiling is enforced by truncation and nothing
+//! else: [`Line`] is a `String<COLS>`, so `push` drops the overflow in silence.
+//! Nothing logs, and the obvious test does not catch it: `assert_fits` below
+//! measures rendered lines, which cannot exceed [`COLS`] by construction, so it
+//! confirms the type rather than the layout. What catches a truncated line is
+//! asserting its exact expected text, or reading a value back out of it the way
+//! `printed_seconds` does.
 //!
 //! ## Nothing is said when nothing is wrong
 //!

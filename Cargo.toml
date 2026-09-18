@@ -23,14 +23,19 @@ default      = ["board-devkit"]
 board-devkit = ["esp-println/uart"]
 board-zero   = ["esp-println/jtag-serial"]
 
-# Which OLED is attached. The default is the production part: the 0.91" 128x32
-# that fits the original LCD window, and the geometry `display.rs` lays out for.
+# Which OLED is attached. The default is the 0.91" 128x32 — the smaller of the
+# two, and the geometry `display.rs` lays out for.
+#
+# It is no longer the presumed production part. That was true while the panel
+# had to fit the original 40x18mm LCD window; the electronics now go in their
+# own printed case, so the 1.3" 128x64 is the likelier one to ship and the
+# 0.91" is the fallback. The default stays on the small panel deliberately: it
+# is the tighter layout, so a screen that fits it fits either.
 #
 # A compile-time choice because ssd1306 takes the size as a *type* parameter,
 # and it is not cosmetic — it sets the multiplex ratio, so a 128x64 panel
 # initialised as 128x32 shows a garbled half-height image rather than a small
-# one. The 1.3" 128x64 on the bench needs this; the layout is unchanged and
-# simply leaves the bottom half dark.
+# one. Both panels are 128 pixels wide, so this buys rows and never columns.
 panel-128x64 = []
 
 # Portable dependencies. These build for the host too, so the pure-logic
