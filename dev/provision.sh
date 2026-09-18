@@ -5,14 +5,24 @@
 #   ./dev/provision.sh                          # the cfg.toml values
 #   ./dev/provision.sh --detent-ms 900          # ...with a measured interval
 #   ./dev/provision.sh --portion-scale 133      # ...and a measured portion size
-#   ./dev/provision.sh --host auto              # ...this Mac, whatever its address
-#   ./dev/provision.sh --host 192.168.68.126    # ...the Pi
+#   ./dev/provision.sh --host auto              # ...this machine, whatever its address
+#   ./dev/provision.sh --host <broker>          # ...some other broker
 #   ./dev/provision.sh --port /dev/cu.usbmodemXXXX
 #   ./dev/provision.sh --nvs-offset 0x9000      # if the firmware reports another
 #
-# --port, --host and --nvs-offset win over ESPFLASH_PORT, MQTT_HOST and
-# NVS_OFFSET; see dev/_common.sh. Every other option is handed to `mkrecord`,
-# which is what validates it — run `cargo run --example mkrecord -- --help`.
+# Pointing a unit at a broker that is not the dev stack usually means different
+# credentials too, and they need no second config file:
+#
+#   ./dev/provision.sh --host <broker> --user <name> --password-file <path>
+#   pass show mqtt/feeder | ./dev/provision.sh --host <broker> --password-file -
+#
+# --port, --host, --user, --password and --nvs-offset win over ESPFLASH_PORT,
+# MQTT_HOST, MQTT_USER, MQTT_PASS and NVS_OFFSET; see dev/_common.sh. Every
+# other option is handed to `mkrecord`, which is what validates it — run
+# `cargo run --example mkrecord -- --help`.
+#
+# ⚠️ --password is visible in `ps` and in shell history. For a broker that
+# matters use --password-file, or `--password-file -` and pipe it in.
 #
 # `--host auto`, or `mqtt_host = "auto"` in cfg.toml, resolves to this machine's
 # LAN address at provisioning time. The firmware has no resolver — mqtt.rs parses
@@ -43,7 +53,30 @@ cd "$DEV_DIR/.."
 PORT_ARG=""
 OFFSET_ARG=""
 HOST_ARG=""
+USER_ARG=""
+PASS_ARG=""
+PASS_FILE_ARG=""
+PASS_SEEN=""
 MKRECORD_ARGS=()
+
+# The password may be given exactly once, by exactly one spelling.
+#
+# Enforced here rather than left to `mkrecord`, whose own check this script
+# makes unreachable: it resolves the two flags into one before forwarding, so a
+# duplicate never reaches it. Silently taking the last would be the usual shell
+# convention and the wrong one here — the outcome is a unit that joins the
+# Wi-Fi and is refused by the broker, which is red ×2 on the LED and looks
+# exactly like a broker that is down.
+pass_once() {
+  [ -z "$PASS_SEEN" ] || {
+    if [ "$PASS_SEEN" = "$1" ]; then
+      die "provision: $1 given twice."
+    else
+      die "provision: --password and --password-file are alternatives; pass one."
+    fi
+  }
+  PASS_SEEN="$1"
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +84,16 @@ while [ $# -gt 0 ]; do
     --port=*) PORT_ARG="${1#*=}"; shift ;;
     --host) need_value "$1" "${2:-}"; HOST_ARG="$2"; shift 2 ;;
     --host=*) HOST_ARG="${1#*=}"; shift ;;
+    # Named here rather than forwarded blindly, so they pick up MQTT_USER and
+    # MQTT_PASS the way every other setting picks up its variable. The spelling
+    # matches dev/watch.sh exactly, including MQTT_PASS rather than
+    # MQTT_PASSWORD, so one broker's credentials work with both scripts.
+    --user) need_value "$1" "${2:-}"; USER_ARG="$2"; shift 2 ;;
+    --user=*) USER_ARG="${1#*=}"; shift ;;
+    --password|--pass) pass_once --password; need_value "$1" "${2:-}"; PASS_ARG="$2"; shift 2 ;;
+    --password=*|--pass=*) pass_once --password; PASS_ARG="${1#*=}"; shift ;;
+    --password-file) pass_once --password-file; need_value "$1" "${2:-}"; PASS_FILE_ARG="$2"; shift 2 ;;
+    --password-file=*) pass_once --password-file; PASS_FILE_ARG="${1#*=}"; shift ;;
     --nvs-offset) need_value "$1" "${2:-}"; OFFSET_ARG="$2"; shift 2 ;;
     --nvs-offset=*) OFFSET_ARG="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -96,6 +139,27 @@ HOST="${HOST_ARG:-${MQTT_HOST:-$(awk -F'"' '/^[[:space:]]*mqtt_host/{print $2}' 
 HOST="$(resolve_broker_host "$HOST")"
 if [ -n "$HOST" ]; then
   MKRECORD_ARGS+=(--host "$HOST")
+fi
+
+# The broker's credentials, same three sources. Unset is not the same as empty:
+# when neither the flag nor the variable is set, nothing is forwarded and
+# `mkrecord` falls back to cfg.toml — which keeps the config file as the single
+# place credentials are parsed, rather than teaching this script to read TOML.
+MQTT_USER="${USER_ARG:-${MQTT_USER:-}}"
+if [ -n "$MQTT_USER" ]; then
+  MKRECORD_ARGS+=(--user "$MQTT_USER")
+fi
+
+if [ -n "$PASS_FILE_ARG" ]; then
+  # Forwarded as a path, so the secret never becomes an argument. `-` means
+  # stdin and is passed straight through — `cargo run` leaves stdin connected,
+  # so a pipe into this script reaches mkrecord unbroken.
+  MKRECORD_ARGS+=(--password-file "$PASS_FILE_ARG")
+else
+  MQTT_PASS="${PASS_ARG:-${MQTT_PASS:-}}"
+  if [ -n "$MQTT_PASS" ]; then
+    MKRECORD_ARGS+=(--password "$MQTT_PASS")
+  fi
 fi
 
 HOST_TARGET="$(rustc -vV | awk '/^host:/{print $2}')"
