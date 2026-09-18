@@ -515,8 +515,12 @@ async fn button_task(button: Switch<'static>) {
 fn on_button(event: ButtonEvent) {
     match event {
         ButtonEvent::Armed => info!("button: armed, tap to feed"),
-        ButtonEvent::Expired => info!("button: locked again"),
-        ButtonEvent::Locked => info!("button: tap ignored, hold 2s to arm first"),
+        // The two ways back to locked, named apart on purpose: one is a
+        // decision and the other is ten seconds passing, and a console that
+        // called both "locked again" could not tell you which happened.
+        ButtonEvent::Expired => info!("button: locked, window lapsed"),
+        ButtonEvent::Ignored => info!("button: tap ignored, hold 2s to arm first"),
+        ButtonEvent::Locked => info!("button: locked by hold"),
         ButtonEvent::Feed => match BUS.feed.try_send(1) {
             Ok(()) => info!("button: feed 1"),
             Err(_) => warn!("button: feed queue full, portion dropped"),

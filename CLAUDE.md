@@ -799,10 +799,20 @@ honest:
 Locking needs no separate confirmation: a hold is a press, any press wakes the
 panel, and the banner stops saying `TAP TO FEED`.
 
-⬜ **Two rows of that table are not built yet** — the lock hold, and a locked tap
-stepping the screen. Today a locked tap only logs. Arming, feeding, the ten
-second window and the boot gesture all work and are verified on a Zero. See
-*The screen's pages*.
+⬜ **One row of that table is not built yet** — a locked tap stepping the
+screen. Today a locked tap only logs. See *The screen's pages*.
+
+✅ **The lock hold is built.** A hold while armed locks again, so the armed
+state has a way out other than standing next to a live feeder waiting ten
+seconds out. `button.rs` emits `Locked` for it, distinct from `Expired` because
+one is a decision and the other is time passing, and a console calling both
+"locked again" could not say which happened.
+
+The per-press latch is what makes it usable rather than baffling, and it is now
+carrying both halves of the toggle: arming fires *while* the button is still
+held, so without it a single four-second hold would arm at two seconds and lock
+at four — a gesture that visibly does nothing.
+`one_long_hold_arms_once_and_does_not_also_lock` pins exactly that.
 
 **The adversary is cats, not clumsiness.** A button on the outside of a cat
 feeder that dispenses food when pressed is a button cats will learn to press —

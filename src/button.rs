@@ -69,6 +69,14 @@ pub enum Event {
     /// A short press while locked. Deliberately does nothing, but is worth a
     /// log line — it is the difference between "the button is broken" and "the
     /// button is working and you did not arm it".
+    Ignored,
+    /// Held long enough **while armed**: locked again, deliberately, without
+    /// waiting the window out.
+    ///
+    /// Distinct from [`Event::Expired`] because the cause differs and so does
+    /// what it tells you: one is somebody deciding they are done, the other is
+    /// ten seconds passing. Same resulting state, different line on the
+    /// console.
     Locked,
 }
 
@@ -82,9 +90,13 @@ pub enum Event {
 pub struct Button {
     /// When the current press started, if one is in progress.
     pressed_since: Option<u64>,
-    /// Whether the current press has already armed. Stops one long hold from
-    /// arming repeatedly, and stops its release counting as a short press.
-    armed_this_press: bool,
+    /// Whether the current press has already toggled the mode, either way.
+    ///
+    /// Stops one long hold from firing repeatedly, stops its release counting
+    /// as a short press, and — since a hold now locks as well as arms — stops a
+    /// four-second hold arming at two seconds and locking at four, which would
+    /// read as a button that does nothing.
+    toggled_this_press: bool,
     /// When the arm lapses.
     armed_until: Option<u64>,
 }
@@ -93,7 +105,7 @@ impl Button {
     pub const fn new() -> Self {
         Self {
             pressed_since: None,
-            armed_this_press: false,
+            toggled_this_press: false,
             armed_until: None,
         }
     }
@@ -102,7 +114,7 @@ impl Button {
     pub fn on_change(&mut self, now_ms: u64, pressed: bool) -> Option<Event> {
         if pressed {
             self.pressed_since = Some(now_ms);
-            self.armed_this_press = false;
+            self.toggled_this_press = false;
             return None;
         }
 
@@ -110,7 +122,7 @@ impl Button {
 
         // The hold that armed this button is not also a feed. Without this, one
         // long press would arm and then immediately spend the arm.
-        if self.armed_this_press {
+        if self.toggled_this_press {
             return None;
         }
 
@@ -124,7 +136,7 @@ impl Button {
             self.armed_until = Some(now_ms + ARMED_WINDOW_MS);
             Some(Event::Feed)
         } else {
-            Some(Event::Locked)
+            Some(Event::Ignored)
         }
     }
 
@@ -133,12 +145,22 @@ impl Button {
         // Arming wins over expiry: a hold that starts just as the window lapses
         // should arm, not report the lapse and drop the press on the floor.
         if let Some(since) = self.pressed_since
-            && !self.armed_this_press
+            && !self.toggled_this_press
             && now_ms.saturating_sub(since) >= ARM_HOLD_MS
         {
-            self.armed_this_press = true;
-            self.armed_until = Some(now_ms + ARMED_WINDOW_MS);
-            return Some(Event::Armed);
+            self.toggled_this_press = true;
+
+            // **A hold toggles the mode; a tap does whatever the mode means.**
+            // That symmetry is the whole vocabulary, and it is what gives the
+            // armed state a way out other than waiting: previously the only
+            // exit was the ten-second window lapsing, so a change of mind meant
+            // standing next to a live feeder doing nothing.
+            return if self.armed_until.take().is_some() {
+                Some(Event::Locked)
+            } else {
+                self.armed_until = Some(now_ms + ARMED_WINDOW_MS);
+                Some(Event::Armed)
+            };
         }
 
         if let Some(until) = self.armed_until
@@ -226,7 +248,7 @@ mod tests {
 
         press(&mut button, 1_000, 80, &mut events);
 
-        assert_eq!(kinds(&events), [Event::Locked]);
+        assert_eq!(kinds(&events), [Event::Ignored]);
         assert!(!button.is_armed());
     }
 
@@ -241,7 +263,7 @@ mod tests {
             press(&mut button, 1_000 + i * 1_500, 90, &mut events);
         }
 
-        assert!(events.iter().all(|(_, e)| *e == Event::Locked));
+        assert!(events.iter().all(|(_, e)| *e == Event::Ignored));
         assert!(!button.is_armed());
     }
 
@@ -337,7 +359,7 @@ mod tests {
 
         // And a tap afterwards is locked again, not a feed.
         press(&mut button, 20_000, 80, &mut events);
-        assert_eq!(events.last().unwrap().1, Event::Locked);
+        assert_eq!(events.last().unwrap().1, Event::Ignored);
     }
 
     #[test]
@@ -353,6 +375,88 @@ mod tests {
         assert_eq!(
             events.iter().filter(|(_, e)| *e == Event::Expired).count(),
             1
+        );
+    }
+
+    // --- a hold locks again --------------------------------------------------
+
+    #[test]
+    fn a_hold_while_armed_locks_again() {
+        let mut b = Button::new();
+        let mut events = vec![];
+
+        press(&mut b, 0, ARM_HOLD_MS + 100, &mut events);
+        assert!(b.is_armed(), "the first hold arms");
+
+        // A second, separate hold — the release in between is what makes it a
+        // different press.
+        press(&mut b, 5_000, ARM_HOLD_MS + 100, &mut events);
+
+        assert_eq!(kinds(&events), [Event::Armed, Event::Locked]);
+        assert!(!b.is_armed(), "the second hold locks");
+    }
+
+    /// The rule that makes the toggle usable rather than baffling.
+    ///
+    /// Arming fires *while* the button is still held, so without a per-press
+    /// latch a single four-second hold would arm at two seconds and lock at
+    /// four — a gesture that visibly does nothing.
+    #[test]
+    fn one_long_hold_arms_once_and_does_not_also_lock() {
+        let mut b = Button::new();
+        let mut events = vec![];
+
+        press(&mut b, 0, ARM_HOLD_MS * 3, &mut events);
+
+        assert_eq!(kinds(&events), [Event::Armed]);
+        assert!(b.is_armed(), "still armed after letting go");
+    }
+
+    /// Locking by hold must not also be read as a tap on the way out.
+    #[test]
+    fn the_hold_that_locks_is_not_also_a_feed() {
+        let mut b = Button::new();
+        let mut events = vec![];
+
+        press(&mut b, 0, ARM_HOLD_MS + 50, &mut events);
+        press(&mut b, 4_000, ARM_HOLD_MS + 50, &mut events);
+
+        assert!(
+            !events.iter().any(|(_, e)| *e == Event::Feed),
+            "a lock hold fed something: {events:?}"
+        );
+    }
+
+    /// After locking by hold, the button behaves exactly as if it had lapsed.
+    #[test]
+    fn a_tap_after_locking_by_hold_is_ignored_again() {
+        let mut b = Button::new();
+        let mut events = vec![];
+
+        press(&mut b, 0, ARM_HOLD_MS + 50, &mut events);
+        press(&mut b, 4_000, ARM_HOLD_MS + 50, &mut events);
+        events.clear();
+        press(&mut b, 9_000, 40, &mut events);
+
+        assert_eq!(kinds(&events), [Event::Ignored]);
+    }
+
+    /// Locking by hold retires the window, so no `Expired` arrives later to
+    /// contradict it.
+    #[test]
+    fn locking_by_hold_cancels_the_pending_expiry() {
+        let mut b = Button::new();
+        let mut events = vec![];
+
+        press(&mut b, 0, ARM_HOLD_MS + 50, &mut events);
+        press(&mut b, 4_000, ARM_HOLD_MS + 50, &mut events);
+        events.clear();
+
+        idle(&mut b, 6_000, 40_000, &mut events);
+
+        assert!(
+            events.is_empty(),
+            "something fired after a deliberate lock: {events:?}"
         );
     }
 
