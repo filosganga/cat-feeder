@@ -72,6 +72,7 @@ makes the set unlearnable.
 | `--host` | `MQTT_HOST` | empty, meaning the local Docker stack |
 | `--user` | `MQTT_USER` | `feeder` |
 | `--password` (alias `--pass`) | `MQTT_PASS` | `feeder-dev` |
+| `--password-file` | — | none; reads the file, or stdin given `-` |
 | `--nvs-offset` | `NVS_OFFSET` | `0x9000` |
 | `--seconds` | — | 45 |
 | `--filter` | — | every application line |
@@ -115,9 +116,12 @@ unresolved one.
 
 ## Forwarding options to another program
 
-`provision.sh` owns `--port` and `--nvs-offset` and hands everything else to
-`mkrecord`. Forward rather than enumerate, so a new `mkrecord` option needs no
-change here and a typo comes back as `mkrecord`'s own usage:
+**The rule: name a flag here only if it has an environment variable; forward
+everything else.**
+
+Forwarding is the default, and it is why `provision.sh` needs no change when
+`mkrecord` grows an option — a typo comes back as `mkrecord`'s own usage rather
+than as a guess from the shell:
 
 ```bash
     -*)
@@ -133,6 +137,18 @@ change here and a typo comes back as `mkrecord`'s own usage:
 Expand a possibly-empty array as `${ARR[@]+"${ARR[@]}"}`; a bare
 `"${ARR[@]}"` is an unbound-variable error under `set -u` on bash 3.2, which is
 still what `/bin/bash` is on macOS.
+
+The exceptions earn their place one at a time. `provision.sh` names `--port`,
+`--host`, `--user`, `--password`, `--password-file` and `--nvs-offset` because
+each has an `ESPFLASH_PORT` / `MQTT_*` / `NVS_OFFSET` variable behind it, and a
+forwarded flag would reach `mkrecord` intact while skipping that layer
+entirely — so `MQTT_USER=x ./dev/provision.sh` would silently do nothing.
+Everything else, `--detent-ms` and `--portion-scale` included, is forwarded.
+
+Naming a flag costs something, so do not do it for free: `provision.sh` parses
+`--password` and `--password-file` and therefore has to enforce that they are
+alternatives itself, because `mkrecord`'s own check never sees a duplicate that
+the shell already collapsed.
 
 Reject a forwarded option that would break the script's own contract —
 `provision.sh` refuses `--out`, because the record is a temporary file it
