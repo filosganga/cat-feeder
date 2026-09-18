@@ -654,7 +654,27 @@ by `provision.sh`, and already read before anything else at boot.
 
 **Measure one number, derive the rest.** The only thing worth observing on a
 bench is the **detent interval** — how long the motor takes to get from one
-click to the next. Both other constants follow from it, and today's
+click to the next.
+
+⚠️ **Measure it with a full hopper.** A loaded mechanism turns slower, so an
+empty one gives the *fastest* the feeder ever runs, and the two constants do
+not degrade symmetrically from there:
+
+- **The jam timeout breaks.** It is `interval × 2.5`, so sizing it on the
+  empty figure sizes it on the fastest case. Load the hopper, the detent takes
+  longer, and a budget that looked like 2.5× becomes 2× or less. The failure is
+  a **false jam** — motor stopped, portions discarded, meal dropped, solid red
+  — arriving on refill day, which is precisely when it must not.
+- **The minimum spacing is safe either way**, and provably so. It is
+  `interval × 0.4`, so calibrating on the slow figure gives `I_full × 0.4`
+  against a fastest real click of `I_empty`. That only misfires if
+  `I_full / I_empty > 2.5`, which is a motor nearly stalled and a different
+  problem entirely.
+
+So calibrate on the slowest case and the fastest looks after itself; the
+reverse is not true. Worth recording both figures while the hopper is open —
+the ratio says whether 2.5× is the right multiplier for *this* mechanism, and
+nobody goes back for that number later. Both other constants follow from it, and today's
 hand-picked values are very close to what these ratios produce:
 
 | Constant | Rule | At 1900 ms | The old hand-picked value |
@@ -1142,9 +1162,18 @@ each one.
    Zero with the yellow bench button standing in for the hub switch: a feed
    request ran the bridge, the first click aligned, the second counted, and the
    motor braked.
-   Still to do: the one measurement that matters — the **detent interval**, the
-   time from one click to the next under power, which needs the motor turning
-   the actual mechanism rather than a bare shaft on the bench.
+   ✅ **Verified on the assembled mechanism**, and it behaved: the hub parks
+   with the switch closed (`switch: watching GPIO2, currently pressed`), so no
+   run needed aligning; three taps gave three clicks with `pending=` rising
+   mid-turn and the motor never stopping. That is the align/accumulate design
+   confirmed outside the bench button for the first time.
+
+   ⬜ **Still to do: re-measure the detent interval with a FULL hopper.** An
+   empty one gave 2038–2061 ms across five intervals, mean ≈ 2048 ms — but a
+   loaded mechanism turns slower, and that is the figure the constants must be
+   derived from. See *Per-unit mechanical timing* for why the direction of the
+   error matters. Until then this unit runs on the 1900 ms default, which is
+   ~8% fast but breaks nothing.
    That belongs here rather than in step 2: the hub can be back-driven by hand,
    but the gear reduction makes turning it steadily impossible, so a hand-turned
    interval is meaningless. The motor gives it at the speed the mechanism
