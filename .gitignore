@@ -32,6 +32,12 @@ dev/mosquitto/passwd
 dev/homeassistant/*
 !dev/homeassistant/.gitkeep
 
+# Personal project notes: deployment addresses, credentials to hand, anything
+# true of this machine rather than of the project. Claude Code loads it
+# automatically beside CLAUDE.md; it is ignored so that it cannot be shared by
+# accident, which is the whole point of having it.
+CLAUDE.local.md
+
 # Build-time secrets
 cfg.toml
 soak/
