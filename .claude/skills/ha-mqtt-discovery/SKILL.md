@@ -5,8 +5,9 @@ description: Supplies this project's MQTT topic contract and the exact Home Assi
 
 # Home Assistant MQTT discovery for cat-feeder
 
-Broker: Mosquitto on port 1883 with username and password. Dev broker runs in
-Docker on the Mac, production on the Raspberry Pi 5.
+Broker: Mosquitto on port 1883 with username and password. The dev broker runs
+in Docker from this repo's `compose.yaml`; a deployed one is wherever that
+install's Home Assistant lives, and nothing here needs to know.
 
 `<id>` is the device id derived from the MAC. Keep the derivation in one
 function and reuse it for every topic; the discovery `node_id` and `object_id`

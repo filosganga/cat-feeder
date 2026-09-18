@@ -28,13 +28,15 @@ wifi_password = "your-wifi-password"
 # red twice. That is correct behaviour for "no broker" and indistinguishable
 # from a broker that is actually down.
 #
-# Override per unit without editing this file:
+# Override per unit without editing this file — and the credentials too, so a
+# second broker needs no second config file:
 #
-#   ./dev/provision.sh --host 192.168.68.126    # the Pi, for a real install
+#   ./dev/provision.sh --host <broker>
+#   ./dev/provision.sh --host <broker> --user <name> --password-file <path>
 #
-# For production, give the broker's machine a DHCP reservation and write that
-# address here. `auto` is a development convenience, not a fix for an address
-# that ought to be stable.
+# For anything deployed, give the broker's machine a DHCP reservation and write
+# that address here. `auto` is a development convenience, not a fix for an
+# address that ought to be stable.
 mqtt_host     = "auto"
 mqtt_port     = 1883
 mqtt_user     = "feeder"

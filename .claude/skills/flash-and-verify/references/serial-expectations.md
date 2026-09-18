@@ -580,7 +580,7 @@ is correct: a retained `feeder/time` is whatever the broker last stored, which
 is arbitrarily old if Home Assistant stopped, and the baseline must not run
 against a stale clock. It is what a unit does when its request goes unanswered
 — a broker with no Home Assistant behind it, or one whose package is not
-installed, which is the state of the Pi until step 11.
+installed.
 
 **A unit that never prints `schedule armed` will never feed on schedule.** If
 it is still holding after a couple of minutes, Home Assistant is not publishing

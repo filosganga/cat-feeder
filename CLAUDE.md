@@ -715,7 +715,7 @@ portions x133%`.
 ```sh
 ./dev/provision.sh                      # the cfg.toml default
 ./dev/provision.sh --detent-ms 900      # the odd one out
-./dev/provision.sh --host 192.168.68.126  # ...and pointed at the Pi
+./dev/provision.sh --host <broker>      # ...and pointed somewhere else
 ```
 
 ### Per-unit portion size
@@ -851,8 +851,9 @@ probes, keep-alive, and browsers that open several connections at once.
 
 ## MQTT contract
 
-Broker: Mosquitto (HA add-on / Docker), port 1883, user/pass. Dev broker runs
-in Docker on the Mac; production on the Raspberry Pi 5.
+Broker: Mosquitto (HA add-on / Docker), port 1883, user/pass. The dev broker
+runs in Docker from this repo's `compose.yaml`; a deployed one is wherever that
+install lives, and nothing here needs to know.
 
 ```
 feeder/<id>/availability   online | offline        (retained, LWT = offline)
@@ -1067,18 +1068,17 @@ releases. Do not guess from memory — read the pinned version's docs.
 
 ## Local dev stack
 
-Mosquitto + Home Assistant in Docker on the Mac, so firmware work needs no
-Raspberry Pi. Details and troubleshooting in `dev/README.md`.
+Mosquitto + Home Assistant in Docker on this machine, so firmware work needs
+nothing else. Details and troubleshooting in `dev/README.md`.
 
 ```sh
-./dev/bootstrap.sh          # once: broker password file (feeder / feeder-dev)
 docker compose up -d        # broker on 1883, HA on http://localhost:8123
 ./dev/watch.sh              # tail feeder/# and homeassistant/#
 docker compose down -v      # stop and wipe every retained message
 ```
 
-Same broker, three addresses: `localhost` from the Mac, `mosquitto` from the
-Home Assistant container, the Mac's LAN address from the ESP32 — which is why
+Same broker, three addresses: `localhost` from this machine, `mosquitto` from
+the Home Assistant container, this machine's LAN address from the ESP32 — which is why
 `cfg.toml` says `mqtt_host = "auto"` and `dev/provision.sh` resolves it when it
 builds the record. That address is a DHCP lease and moves; a unit provisioned
 before a move sits flashing red twice, which is correct for "no broker" and
@@ -1126,7 +1126,7 @@ examples/mkrecord.rs
 homeassistant/packages/cat_feeder.yaml
                   the other half of the system: publishes time and schedule,
                   the pause helper, the feed-all script. Tracked here and used
-                  unchanged on the Pi; install per dev/README.md
+                  unchanged on any instance; install per dev/README.md
 ```
 
 Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
@@ -1333,11 +1333,11 @@ is the whole content of the live/retained distinction. It arrives with the
 retain flag cleared, exactly like the periodic one, because the subscription
 leaves `retain_as_published` off.
 
-**It degrades correctly**, which still matters because the Pi's Home Assistant
-does not have the package installed at all yet: a unit whose request nobody
-answers simply waits for the next `/1` publish, which is the old behaviour. The
-two halves were therefore independent, and a feeder repointed at the Pi before
-step 11 installs the package loses the speed-up and nothing else.
+**It degrades correctly**, which matters for any Home Assistant that does not
+have the package installed yet: a unit whose request nobody answers simply
+waits for the next `/1` publish, which is the old behaviour. The two halves are
+therefore independent, and a feeder repointed at an instance before the package
+reaches it loses the speed-up and nothing else.
 
 **`mode: single` on that automation is fine.** Three feeders rebooting together
 send three requests within milliseconds and Home Assistant will drop two of
@@ -1503,74 +1503,76 @@ complete, or should reset the DHCP socket when it is.
       and `Bus::health()` reads it, so the LED's blue flash comes from the same
       fact the boot path acted on rather than from a constant
 
-11. Move the broker and Home Assistant to the Raspberry Pi 5. **The Pi is up at
-    192.168.68.126**, both containers running from `~/ha`, which is a working
-    tree of `github.com/filosganga/home-assistant`. The feeders still talk to
-    the Mac's Docker stack — a laptop that is not always on.
+11. Deploy against an always-on Home Assistant. The feeders talk to the
+    development stack in `compose.yaml`, which runs on a laptop that is not
+    always on; cats need one that is.
 
-    Note the Pi is reached by **address, not by name**. `ha.local` exists only
-    over mDNS, and that is unreliable here: the Deco mesh reflects multicast
-    between its nodes and lets it go stale, so a lookup that worked ten minutes
-    ago fails now while the host is perfectly reachable by IP. Chrome never
-    resolves it at all — Secure DNS hands `.local` to the upstream resolver
-    rather than the LAN, so the browser gets NXDOMAIN every time regardless of
-    the mesh. An `/etc/hosts` entry on the Mac fixes both at once.
+    **This repo does not know which instance that is**, deliberately. There
+    will be more than one over this project's life — a spare box, a rebuild, a
+    different house — and an address written down here is an address that goes
+    stale in seven files at once. What the repo knows is the dev stack it
+    ships, and that a unit is pointed elsewhere with flags. Addresses,
+    hostnames, filesystem layouts and credentials live with the deployment.
 
-    `ha/config` is also root-owned: the config edits below need `sudo` on the
-    Pi and belong in that repo rather than being dropped on the box.
-    - ✅ Mosquitto, and it is configured correctly: `listener 1883`,
-      `allow_anonymous false`, a password file, and — checked, because it is
-      easy to omit — `persistence true`. Anonymous connections are refused, as
-      they should be
-    - ⬜ **a `feeder` user in that password file.** The one there is Home
-      Assistant's own. A unit provisioned with the dev credentials is refused,
-      so this blocks repointing even once everything else works
-    - ⬜ **onboard Home Assistant.** The container has run since first boot but
-      nothing has been set up in it: `/api/onboarding` reports `user`,
-      `core_config`, `analytics` and `integration` all `false`, and
-      `core.config_entries` holds only what was auto-discovered — no MQTT.
+    What that instance has to provide, in the order it has to be true:
 
-      `core_config` is the step that sets the timezone, so **until it is done
-      Home Assistant is on UTC**, which is exactly the silent hour-shift
-      described above. Set `Europe/Rome` while onboarding rather than fixing it
-      afterwards.
-    - ⬜ add the MQTT integration, pointing at **`localhost:1883`** — Home
-      Assistant runs with `network_mode: host` there, so the `mosquitto`
-      container name that works on the Mac does not exist on the Pi. The
-      package publishes through this integration, so without it every
-      automation in it fails at runtime while the package itself loads cleanly
-    - ⬜ **install `homeassistant/packages/cat_feeder.yaml` on the Pi**,
-      unchanged — it is tracked here precisely so it can be.
+    - **Mosquitto** with `listener 1883`, `allow_anonymous false`, a user for
+      the feeders, and — the one easiest to omit — `persistence true`. Without
+      persistence every retained message is lost on a broker restart. Most come
+      straight back, because the package republishes the time each minute and
+      the schedule on start, but `feeder/<id>/paused` does not, and a paused
+      feeder silently resuming is the one state change nothing alarms about.
+    - **Home Assistant onboarded, with the right timezone.** Onboarding is what
+      sets it, and an instance left on UTC publishes a payload that is entirely
+      valid with every meal moved by the offset — the silent hour-shift under
+      *MQTT contract*. The offset on the wire is what proves it, not a setting
+      you can read back.
+    - **The MQTT integration configured.** An instance run with
+      `network_mode: host` reaches its broker at `localhost`, not at a
+      container name — a common deployment style, because Bluetooth and mDNS
+      want it. The package publishes through this integration, so without it
+      every automation in it fails at runtime while the package itself loads
+      cleanly.
+    - **`homeassistant/packages/cat_feeder.yaml` installed**, unchanged — it is
+      tracked here precisely so it can be — **and a `homeassistant: packages:`
+      include added**, which an instance set up through the UI does not have and
+      without which the directory is never read.
 
-      This one is load-bearing rather than housekeeping, and the failure it
-      causes is the nastiest kind. That package is the half of the system that
-      publishes `feeder/time` every minute. A feeder pointed at a broker where
-      nobody publishes it takes the *retained* time, starts its clock on it, and
-      then never arms the schedule — see *A retained `time` is not a trusted
-      one*. The unit sits `online`, flashing red ×3, and does not feed. That is
-      exactly correct behaviour and it is indistinguishable from a bug.
+    ⚠️ **The package goes in before any feeder is repointed.** It is the half of
+    the system that publishes `feeder/time` every minute. A feeder pointed at a
+    broker where nobody publishes it takes the *retained* time, starts its clock
+    on it, and never arms the schedule — see *A retained `time` is not a trusted
+    one*. The unit sits `online`, flashing red ×3, and does not feed. That is
+    exactly correct behaviour and indistinguishable from a bug.
 
-      So it comes **before** repointing any feeder, and it is checkable with no
-      feeder involved at all:
+    It is checkable with no feeder involved at all, which is why the ordering
+    costs nothing:
 
-      ```sh
-      ./dev/watch.sh --host <pi> 'feeder/time'
-      ```
+    ```sh
+    ./dev/watch.sh --host <broker> --user <name> --password-file <path> \
+      'feeder/time'
+    ```
 
-      A line a minute means the Pi's half is done. Silence means Home Assistant
-      is up but the package is not loaded.
-    - ⬜ repoint the feeders. **This is a re-provision, not a rebuild**:
-      `mqtt_host` lives in each unit's flash record, so it is
-      `./dev/provision.sh` once per unit with the Pi's address, and no compile
-    - ✅ the Pi's address is fixed first: **192.168.68.126**, reserved in the
-      Deco against `98:fe:54:29:a4:a2`. It had to come before provisioning any
-      unit, because there is no resolver in the firmware — `mqtt.rs` parses
-      `mqtt_host` with `Ipv4Addr::from_str` — so an address that moves takes
-      all three feeders off the air with no way back but re-provisioning each
-      one
-    - ⬜ decide what happens to the Mac stack. Keeping it is fine; two brokers
-      with the same retained topics are not, so a feeder should point at one or
-      the other, never be moved back and forth casually
+    A line a minute means that half is done; silence means Home Assistant is up
+    but the package is not loaded. Read the offset before believing it. It
+    doubles as a credential test, so a wrong password fails here rather than
+    silently inside a unit.
+
+    Then **repoint the feeders, which is a re-provision and not a rebuild**:
+    `mqtt_host`, `mqtt_user` and `mqtt_password` all live in each unit's flash
+    record, so it is one `./dev/provision.sh --host <broker> --user <name>
+    --password-file <path>` per unit and no compile.
+
+    Give that broker's machine a **DHCP reservation** first. There is no
+    resolver in the firmware — `mqtt.rs` parses `mqtt_host` with
+    `Ipv4Addr::from_str` — so an address that moves takes every feeder off the
+    air with no way back but re-provisioning each one.
+
+    ⚠️ **A unit points at one broker.** Keeping the dev stack is fine; moving a
+    feeder back and forth is not. Every piece of persistent state in this design
+    is a retained message, so a unit returned to the dev broker picks up
+    whatever *that* one last held — quite possibly a schedule from last week,
+    which is indistinguishable from a current one.
 
 ### What is waiting on what
 
@@ -1579,13 +1581,12 @@ complete, or should reset the DHCP socket when it is.
 | 3, the detent interval | **nothing — the bridge is wired and driving**; it needs the motor on a real mechanism |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, the third feeder being opened, **and an enclosure designed and printed** |
-| 11, the Pi | nothing; both containers run. Home Assistant is not onboarded yet |
+| 11, deploying | an always-on Home Assistant with the package installed; the checklist in step 11 is the whole of it |
 | a display | **nothing for development** — a 1.3" part is on the bench and is now the likely production part; the 0.91" ones are the fallback |
 | the enclosure | v1.5 being settled, since the panel and any knob are most of what it holds |
 
-**Every part is now on the bench**: the Pi, the three Zeros, the DRV8833 and a
-display to develop against. Nothing in this project is waiting on the post any
-more.
+**Every part is now on the bench**: the three Zeros, the DRV8833 and a display
+to develop against. Nothing in this project is waiting on the post any more.
 
 The work left is soldering and **CAD**. That second half is new: since the
 electronics moved into their own printed case, step 8 cannot happen until
@@ -2039,8 +2040,9 @@ Four rules it comes with:
 - **`configuration_url` in the discovery `device` block** (abbreviated `cu`, and
   accepted by the schema — checked) gives Home Assistant a *Visit device* link
   at whatever address the unit had when it connected, republished on every
-  reconnect. mDNS is not an option here, for the reasons the Pi's entry gives
-  about `.local` on the Deco mesh. The display is the other backstop, but **it
+  reconnect. mDNS is not an option: `.local` resolves only over multicast, which
+  mesh routers reflect unreliably, and a browser with Secure DNS hands `.local`
+  to the upstream resolver and gets NXDOMAIN regardless. The display is the other backstop, but **it
   does not show the address yet**: `display::render` puts one on screen only in
   setup mode, and the station screen spends its three lines on the status
   banner, the last feed and the next one. The gesture is not the missing part —

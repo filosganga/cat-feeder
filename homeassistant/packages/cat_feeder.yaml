@@ -6,8 +6,9 @@
 # schedule they heard; if a feeder reboots while Home Assistant is down, it
 # waits rather than guessing.
 #
-# Install: see "Home Assistant automations" in dev/README.md. The same file is
-# used for the local Docker stack and for the Raspberry Pi.
+# Install: see "Home Assistant automations" in dev/README.md. The same file goes
+# to the local Docker stack and to any deployed instance, unchanged — nothing in
+# it names a host, which is why it is tracked in the firmware repo at all.
 #
 # ---------------------------------------------------------------------------
 # NO DEVICE ID APPEARS IN THIS FILE, and adding a feeder needs no edit here.

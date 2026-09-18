@@ -54,8 +54,8 @@ shaft, so the detent interval each unit needs is still unmeasured and which way
 the hub turns under `IN1=1, IN2=0` is still unobserved.
 
 Every part has now arrived — the three Zeros, the DRV8833, a display — and the
-Raspberry Pi 5 runs both containers, though Home Assistant there is not set up
-yet and the feeders still point at the Mac's Docker stack. What is left before a
+feeders still point at the development stack that runs in Docker on a laptop,
+rather than at an always-on Home Assistant. What is left before a
 feeder runs on its own hardware is soldering and CAD, not ordering: the
 electronics go in a separate 3D-printed case rather than into each feeder's own
 LCD window, so one enclosure design serves all three — including the odd one

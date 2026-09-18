@@ -77,8 +77,19 @@ with `Ipv4Addr::from_str` and there is no resolver on the device.
 Point one unit somewhere else without editing the file:
 
 ```sh
-./dev/provision.sh --host 192.168.68.126     # the Pi
+./dev/provision.sh --host <broker>
 ```
+
+A broker that is not this stack usually wants different credentials too, and
+they need no second config file:
+
+```sh
+./dev/provision.sh --host <broker> --user <name> --password-file <path>
+pass show mqtt/feeder | ./dev/provision.sh --host <broker> --password-file -
+```
+
+`--password` exists as well, but it lands in `ps` and in shell history, so the
+file and the pipe are what to reach for.
 
 `auto` is a development convenience. For anything permanent, give the broker's
 machine a DHCP reservation and write that address down instead.
@@ -90,7 +101,8 @@ local account. Then:
 
 1. Settings, then Devices & Services, then Add Integration.
 2. Choose MQTT.
-3. Broker `mosquitto`, port `1883`, username and password from bootstrap.
+3. Broker `mosquitto`, port `1883`, and the broker credentials above
+   (`feeder` / `feeder-dev` unless you changed `MQTT_USER` / `MQTT_PASS`).
 
 Use `mosquitto`, not `localhost`. Inside that container `localhost` is Home
 Assistant itself.
@@ -105,7 +117,7 @@ Discovery gives you the three entities. It does **not** give you the schedule:
 the feeders have no clock of their own, so until something publishes
 `feeder/time` they wait forever and never feed. That half lives in
 [`homeassistant/packages/cat_feeder.yaml`](../homeassistant/packages/cat_feeder.yaml),
-which is tracked in this repo and used unchanged on the Raspberry Pi.
+which is tracked in this repo and goes to any instance unchanged.
 
 It is a Home Assistant *package*, so one file carries the automations, the
 schedule helper and the feed-all script together. Install it by copying it in
@@ -134,16 +146,16 @@ feeder/time 2026-09-15T19:51:00.489888+02:00
 feeder/schedule [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
 ```
 
-### The same thing on the Raspberry Pi
+### The same thing on a deployed Home Assistant
 
-The Pi runs Raspberry Pi OS with Docker, so the procedure is the one above:
-copy the file into the directory mounted as Home Assistant's `/config`, include
-the packages directory, restart. `cat_feeder.yaml` goes over **unchanged** —
-nothing in it names a host, which is why it is tracked in this repo rather than
-configured per machine.
+The procedure is the one above wherever it runs: copy the file into the
+directory mounted as Home Assistant's `/config`, include the packages
+directory, restart. `cat_feeder.yaml` goes over **unchanged** — nothing in it
+names a host, which is why it is tracked in this repo rather than configured
+per machine.
 
 ```sh
-scp homeassistant/packages/cat_feeder.yaml <pi>:~/ha/config/packages/
+scp homeassistant/packages/cat_feeder.yaml <host>:<config>/packages/
 ```
 
 A Home Assistant that was set up through the UI has no `homeassistant:` block in
@@ -151,19 +163,22 @@ its `configuration.yaml` at all, and without one the packages directory is never
 read. Add it:
 
 ```yaml
-# ha/config/configuration.yaml
+# <config>/configuration.yaml
 homeassistant:
   packages: !include_dir_named packages
 ```
 
-Then restart Home Assistant and watch the Pi's broker. This needs no feeder, and
-`--password` too if the feeder user there differs from the dev stack's:
+Then restart Home Assistant and watch that broker. This needs no feeder, and
+takes credentials if its feeder user differs from the dev stack's:
 
 ```sh
-./dev/watch.sh --host <pi> 'feeder/time' 'feeder/schedule'
+./dev/watch.sh --host <broker> --user <name> --password-file <path> \
+  'feeder/time' 'feeder/schedule'
 ```
 
-A line a minute on `feeder/time` says the Pi's half is done.
+A line a minute on `feeder/time` says that half is done. Silence means Home
+Assistant is up but the package is not loaded. It doubles as a credential test,
+so a wrong password fails here rather than silently inside a feeder.
 
 **Read the offset on that line before believing it.** The feeders apply the
 wall-clock fields straight from `feeder/time` without converting — see *MQTT
@@ -175,12 +190,14 @@ what renders `{{ now() }}` is Home Assistant's own `time_zone`, taken from the
 system zone at onboarding and kept in `.storage/` rather than in a file. The two
 normally agree. The offset on the wire is what proves it.
 
-Two more differences from the stack above, both properties of the Pi's compose
-file rather than of the broker:
+Two more differences to expect, both properties of how that instance is run
+rather than of the broker:
 
 - **Home Assistant with `network_mode: host`** reaches Mosquitto at `localhost`,
   not at `mosquitto`. The container-name address in *The broker has three
-  different addresses* is a property of this stack's bridge network only.
+  different addresses* is a property of this stack's bridge network only, and a
+  deployment that uses host networking — a common choice, because Bluetooth and
+  mDNS need it — has to be told `localhost` instead.
 - **A bind-mounted Mosquitto data directory** still needs `persistence true` in
   its config, or retained messages are lost on every broker restart. Most come
   straight back, because the package republishes the time each minute and the
@@ -188,9 +205,9 @@ file rather than of the broker:
   silently resuming is the one state change in this system that nothing alarms
   about.
 
-⚠️ **Do not point one feeder at both stacks.** Every piece of persistent state
-in this design is a retained message, so a unit moved back to the Mac picks up
-whatever *that* broker last held — quite possibly a schedule from last week,
+⚠️ **Do not point one feeder at two brokers.** Every piece of persistent state
+in this design is a retained message, so a unit moved back to the dev stack
+picks up whatever *that* broker last held — quite possibly a schedule from last week,
 which is indistinguishable from a current one. Each unit points at one broker,
 and changing it is a `./dev/provision.sh` run rather than something that can
 happen by accident.
@@ -240,7 +257,7 @@ time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
 ```sh
 ./dev/watch.sh                          # tail feeder/# and homeassistant/#
 ./dev/watch.sh 'feeder/+/state'         # one filter instead
-./dev/watch.sh --host <pi>              # ...against the Pi's broker instead
+./dev/watch.sh --host <broker>          # ...against another broker instead
 
 docker compose logs -f mosquitto        # connects, disconnects, auth failures
 docker compose logs -f homeassistant
