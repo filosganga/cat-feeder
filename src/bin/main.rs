@@ -337,9 +337,14 @@ enum Boot {
 ///
 /// **The panel is turned off on the way**, and it is the reason this takes an
 /// argument at all. `Oled::new` ends its initialisation sequence with the
-/// display on, so a unit that stopped here would sit lit and blank forever —
-/// a signal that means nothing, in the one state nothing can recover from. Dark
-/// at least means what it looks like. There is no screen worth drawing instead:
+/// display on and deliberately blanked, so a unit that stopped here would sit
+/// lit and empty forever — a signal that means nothing, in the one state
+/// nothing can recover from. Dark at least means what it looks like.
+///
+/// The blanking is `Oled::new`'s and is recent: before it, "lit and blank" was
+/// simply untrue. An SSD1306's display RAM powers up undefined, so the panel
+/// showed scattered pixels rather than nothing at all, and this comment
+/// described a screen the hardware never produced. There is no screen worth drawing instead:
 /// nobody standing at the feeder can fix a missing partition, and the console
 /// already says which one it is.
 async fn halt_unconfigurable(oled: Option<&'static mut Oled<'static>>) -> ! {

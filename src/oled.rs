@@ -117,6 +117,31 @@ impl Oled<'static> {
 
         panel.init().await.map_err(|_| Error::Init)?;
 
+        // **Blank it before anyone can look at it.**
+        //
+        // The SSD1306 powers up with its display RAM *undefined*, and `init`
+        // ends with the display switched on. Nothing in the sequence clears
+        // GDDRAM, so a freshly initialised panel shows whatever the RAM
+        // happened to contain — scattered lit pixels, which reads as a broken
+        // screen rather than as an uninitialised one. It stayed that way until
+        // `display_task` first drew, which on the configured boot path is
+        // after the flash record is read and every other task is spawned.
+        //
+        // Off, clear, flush, on — rather than just clear and flush — because
+        // pushing 512 bytes at 400 kHz takes on the order of ten milliseconds
+        // and the datasheet is explicit that the buffer can be written while
+        // the display is off. This way the noise is never scanned out at all,
+        // instead of being shown briefly on every boot.
+        //
+        // Errors here are deliberately not fatal, for the same reason `show`
+        // swallows its own: a feeder with an unreadable panel still feeds cats.
+        // A panel that will not blank is one that will not draw either, and
+        // that shows up in `show`'s warning a moment later.
+        let _ = panel.set_display_on(false).await;
+        panel.clear_buffer();
+        let _ = panel.flush().await;
+        let _ = panel.set_display_on(true).await;
+
         Ok(Self {
             panel,
             style: MonoTextStyle::new(&FONT_6X10, BinaryColor::On),
