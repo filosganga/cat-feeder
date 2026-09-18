@@ -324,8 +324,9 @@ keeps.
 
 Crockford's base32 drops `I`, `L`, `O` and `U`, so nothing on a sticker can be
 misread and no word appears by accident. `./dev/ap-password.sh <id>` prints it
-so stickers can be made before a unit is first powered on; the firmware prints
-it on the console in setup mode as well. **Both must agree byte-for-byte**,
+so stickers can be made before a unit is first powered on; in setup mode the
+firmware prints it on the console and shows it on the panel as well. **All of
+them must agree byte-for-byte**,
 which is why the derivation is plain SHA-256 over `<secret>:<id>` and nothing
 more inventive, and why `provisioning::tests::the_password_is_stable` pins
 values produced by a separate implementation rather than by the firmware.
@@ -355,12 +356,16 @@ have to be rediscovered.
 
 **A gated module, `setup.rs`, entered from the boot path when there is no
 usable record.** It never returns — it reboots once a record is saved, so the
-normal path always starts from a clean boot. `setup.rs`'s own module doc counts
-in three slices rather than four, because raising the stack and serving DHCP
-are one thing to verify: a phone either gets an address or it does not.
+normal path always starts from a clean boot. Its module doc counts the *network*
+in three slices rather than four, because raising the stack and serving DHCP are
+one thing to verify: a phone either gets an address or it does not. A fourth
+slice was added later for the panel, which is not a network slice at all and is
+owned by `main.rs` — see *A display* below.
 
-1. ✅ **Raise the access point.** Build `AccessPointConfig` with
-   `ap_ssid(id)`, `ap_password(AP_SECRET, id)` and `Wpa2Personal`, then
+1. ✅ **Raise the access point.** Build `AccessPointConfig` with `Wpa2Personal`
+   and the SSID and password `main.rs` derived from `ap_ssid(id)` and
+   `ap_password(AP_SECRET, id)` — they arrive as two `&str` rather than being
+   worked out here, because the screen has to show the same two strings. Then
    `esp_radio::wifi::new(wifi, ControllerConfig::default()
    .with_initial_config(WifiConfig::AccessPoint(..)))`. There is **no separate
    start call**: `set_config` calls `esp_wifi_start()` whenever the mode
@@ -932,12 +937,16 @@ src/
   indicator.rs    pure logic: what the LED shows, the priority ladder, the
                   blink timing
   led.rs          the WS2812 itself, over RMT. Colours in, bits out
+  display.rs      pure logic: the three lines the screen shows, and when the
+                  panel is lit
+  oled.rs         the SSD1306 itself, over async I2C. Text in, pixels out
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
   wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed,
                   Connectivity
-  provisioning.rs pure logic: the flash record, setup-network credentials,
-                  the setup form — the page it renders as well as the body it
-                  parses back — and just enough HTTP
+  provisioning.rs pure logic: the flash record, the setup network's identity —
+                  SSID, password and the address both setup.rs and display.rs
+                  are built from — the setup form, the page it renders as well
+                  as the body it parses back, and just enough HTTP
   sha256.rs       pure logic: SHA-256, shared with dev/ap-password.sh
   store.rs        reads and writes the record in the nvs partition
   dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
@@ -1254,6 +1263,20 @@ complete, or should reset the DHCP socket when it is.
 
      `cfg.toml` keeps its credential lines, but only as input to
      `dev/provision.sh` — they never reach a compiler.
+   - ⬜ **the panel in setup mode**: the SSID, the password and the address, on
+     the glass instead of only on a console. Written and host-tested — the pure
+     layer already laid it out, and what was missing was the wiring, because
+     `setup::run` never returns and so could not spawn `display_task` itself.
+     **Not yet seen on a panel.** It needs a unit with no record, which is a
+     button held through power-on and therefore a capture nobody can automate:
+
+     ```sh
+     # hold the outside button, then start this; it resets on attach
+     ./dev/capture.sh --seconds 40
+     ```
+
+     Look for `store: erased by the boot button`, then `setup: raising
+     cat-feeder-<id>` and a `display: |...|` block spelling the same SSID.
 
 10. Status LED. Independent of every other step. See *The RGB LED* above.
     - ✅ the pure layer: priority ladder, patterns and blink timing, 19 host
@@ -1407,7 +1430,7 @@ manual feed works with the broker down; battery backup.
 
 **A display. The part is ordered.** The original LCD window is 40 × 18 mm,
 which pointed at a 0.91" 128×32 I²C OLED — roughly a 38 × 12 mm module, two
-pins, a 512-byte framebuffer, and two lines of about 21 characters. Five of
+pins, a 512-byte framebuffer, and **three** lines of 21 characters. Five of
 them are on the way (SSD1306, I²C, `GND · VCC · SCL · SDA`). The common 0.96"
 128×64 is the wrong shape: its module is near enough square at 27 mm tall and
 will not go in.
@@ -1415,9 +1438,16 @@ will not go in.
 **A 1.3" 128×64 is already on the bench**, and it is the right thing to develop
 against, because the driver crate and the two wires are identical and only a
 size parameter differs. But **lay the screen out for 128×32 from the start** and
-render it on the big one with the bottom half dark. Two lines of 21 characters
+render it on the big one with the bottom half dark. Three lines of 21 characters
 is the real constraint; a layout built for eight lines cannot be shrunk into it,
 and the part that arrives is the part that goes in the case.
+
+That figure was *two* here until the setup screen needed its third line, and it
+was simply wrong rather than conservative: `FONT_6X10` is ten pixels tall, so a
+32-pixel panel takes three rows with two pixels spare. `display.rs` has said
+`ROWS = 3` since it was written, and the third line is the one the setup screen
+puts the address on — the whole reason it beats a serial console. Anyone laying
+out against "two" would drop exactly that.
 
 ⚠️ **Check which controller that 1.3" module actually has before blaming any
 code.** Many 1.3" 128×64 boards are **SH1106**, not SSD1306: it has 132 columns
@@ -1430,18 +1460,37 @@ pair works. **Assigned: `SDA` on GPIO18, `SCL` on GPIO19**, both in `board.rs`
 with every other pin. They are edge castellations rather than the equally free
 GP6/GP7 back pads, which matters only because the board is hand-soldered.
 
-What sells it is setup mode. A unit currently cannot tell you the password of
-the network it just raised, which is the whole reason for the salted derivation,
-`dev/ap-password.sh` and printing stickers before first power-on. A screen says
-it directly:
+What sells it is setup mode, and **that is now wired**: a unit raising its own
+network shows what to join and what to type into it, which is the one screen
+whose contents exist nowhere else. Without it the password of the network the
+unit just raised is only reachable over a serial cable, which is the whole
+reason for the salted derivation, `dev/ap-password.sh` and printing stickers
+before first power-on.
 
 ```text
-cat-feeder-db0260        no broker           waiting for time
-DAKS-2W9X-NVQG           192.168.68.108      HA not publishing
+cat-feeder-99177c
+H75T-C7VT-6FAV
+http://192.168.4.1
 ```
 
+`main.rs` spawns `display_task` **before** calling `setup::run`, because that
+function never returns and could not spawn anything afterwards. The panel is
+brought up before the boot decision for the same reason: both outcomes want a
+screen and only one of them can come back for it.
+
+Three lines, three facts, and the third is the address — which is now one
+constant. It used to be written twice, as an `Ipv4Addr` in `setup.rs` and as a
+string in `display.rs` with a comment asking them to agree. `provisioning.rs`
+holds `AP_ADDR_OCTETS` beside the SSID and password derivations, the socket is
+built from it, and a host test pins the printed URL against it. A panel
+confidently showing an address nothing answers on would be worse than no panel.
+
 The salt is still needed — it is what stops a stranger deriving the password
-from the MAC in the beacon — but the sticker drops from required to backup.
+from the MAC in the beacon — and the sticker drops from required to backup **the
+day a capture shows those three lines on a panel**, not before. Until then it is
+the only thing that works, which is why `README.md` still tells a reader to
+print one. A unit whose screen turns out blank on the production part, with no
+sticker and no serial cable, cannot be joined at all.
 
 It does not make the LED redundant: at 0.91" you read a screen standing at the
 feeder, while the LED answers *is anything wrong* from the doorway. Burn-in over years of showing `next 08:00` is

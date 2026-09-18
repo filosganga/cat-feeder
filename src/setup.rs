@@ -30,6 +30,20 @@
 //! 1. ✅ raise the access point — the SSID appears in a phone's Wi-Fi list
 //! 2. ✅ a second network stack on it, DHCP, so a phone gets an address
 //! 3. ✅ the form on TCP 80, and a saved record reboots into normal mode
+//! 4. ⬜ the panel says what to join and what to type into it — written and
+//!    host-tested, **not yet seen on glass**
+//!
+//! The first three ✅ mean verified on hardware, with a phone. The fourth ⬜
+//! does not mean unbuilt: it is wired and its layout is host-tested, and what
+//! is missing is a capture, because seeing it needs a unit with no record and
+//! therefore a button held through power-on.
+//!
+//! It is also not a network slice at all, which is why it is listed last and
+//! owned by `main.rs`: the boot path spawns `display_task` before calling
+//! [`run`], because this function never returns and could not spawn it
+//! afterwards. It is the one screen whose contents exist nowhere else — a unit
+//! that has raised a network with a derived password can otherwise only say so
+//! over a serial cable.
 
 use core::fmt::Write as _;
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -57,16 +71,24 @@ use static_cell::StaticCell;
 
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
 use crate::provisioning::{
-    Head, Method, PAGE_LEN, Record, ap_password, ap_ssid, parse_head, record_from_form,
-    render_form, render_saved,
+    AP_ADDR_OCTETS, Head, Method, PAGE_LEN, Record, parse_head, record_from_form, render_form,
+    render_saved,
 };
 use crate::store::Store;
 
 /// The address the unit answers on, and the one printed on the console.
 ///
-/// Fixed rather than negotiated: it is typed in by hand, so it has to be the
-/// same on every unit and knowable before the unit is first powered on.
-const AP_ADDR: Ipv4Addr = Ipv4Addr::new(192, 168, 4, 1);
+/// Built from `provisioning::AP_ADDR_OCTETS` rather than written out again,
+/// because the panel shows this address too — see `display::render` — and an
+/// address that is right on the screen and wrong in the socket is a unit that
+/// looks configurable and is not. `Ipv4Addr::new` is `const`, which is the
+/// whole reason that constant is octets.
+const AP_ADDR: Ipv4Addr = Ipv4Addr::new(
+    AP_ADDR_OCTETS[0],
+    AP_ADDR_OCTETS[1],
+    AP_ADDR_OCTETS[2],
+    AP_ADDR_OCTETS[3],
+);
 
 /// The pool handed out, inclusive.
 ///
@@ -105,35 +127,40 @@ const DHCP_BUF: usize = 1536;
 /// Never returns. It reboots once a record is saved, so the normal boot path
 /// always starts clean rather than from a half-configured process.
 ///
+/// **The credentials arrive rather than being derived here.** They come from
+/// [`crate::provisioning::ap_ssid`] and [`crate::provisioning::ap_password`]
+/// exactly as before, but the boot path calls them, because the screen has to
+/// show the same two strings this function puts on the air. Deriving them twice
+/// could not actually disagree — the functions are pure — but a single
+/// derivation is what makes that obvious to a reader.
+///
 /// The controller is kept alive for the life of setup mode: dropping it takes
 /// the network down, and a phone mid-form would simply lose its connection.
 pub async fn run(
     spawner: Spawner,
     wifi: WIFI<'static>,
-    id: &str,
-    secret: &str,
+    ssid: &str,
+    password: &str,
     mut store: Store,
 ) -> ! {
-    let ssid = ap_ssid(id);
-    let password = ap_password(secret, id);
-
-    // Printed in full, on purpose. This is a unit that by definition has no
-    // other way to tell anyone its password, and a console is the one channel
-    // that exists before the network does. `dev/ap-password.sh <id>` prints the
-    // same string off the device, for stickers.
+    // Printed in full, on purpose. A unit in setup mode has few ways to tell
+    // anyone its password, and the console is the one that exists before the
+    // network does — the panel says the same thing, for a unit in a kitchen
+    // rather than on a bench, and `dev/ap-password.sh <id>` says it off the
+    // device entirely, for stickers.
     info!("setup: raising {ssid}");
     info!("setup: password {password}");
     info!("setup: then browse to http://{AP_ADDR}");
 
     let config = AccessPointConfig::default()
-        .with_ssid(ssid.as_str())
+        .with_ssid(ssid)
         // **Not optional.** `AccessPointConfig::default()` is an *open*
         // network, so leaving this out would broadcast a setup portal anyone
         // can join — and the session it protects is the one where the home
         // Wi-Fi password gets typed in. The salted password is worthless
         // without it.
         .with_auth_method(AuthenticationMethod::Wpa2Personal)
-        .with_password(password.as_str().into());
+        .with_password(password.into());
 
     // No separate start call: `set_config` calls `esp_wifi_start()` whenever
     // the mode changes, so applying this as the initial config is what brings

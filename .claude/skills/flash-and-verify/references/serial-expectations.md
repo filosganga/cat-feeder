@@ -749,6 +749,27 @@ INFO (308) - setup: then browse to http://192.168.4.1
 INFO (1228) - setup: access point up
 ```
 
+⚠️ **These two captures predate the panel**, which is now brought up on this
+path as well — so a capture taken today also carries `oled: found a panel at
+0x3c` between the `store:` line and the `setup:` lines, and a `display:` block
+repeating the same SSID and password. That block is what proves the screen, and
+it is the one thing these transcripts cannot show yet, because it has never been
+captured. Expect roughly:
+
+```
+INFO (301) - oled: found a panel at 0x3c
+INFO (315) - setup: raising cat-feeder-db0260
+INFO (1240) - display: +---------------------+
+INFO (1245) - display: |cat-feeder-db0260    |
+INFO (1250) - display: |DAKS-2W9X-NVQG       |
+INFO (1255) - display: |http://192.168.4.1   |
+INFO (1260) - display: +---------------------+
+INFO (1265) - display: awake
+```
+
+Correct this block with what a real capture shows, rather than leaving it as a
+prediction — that is the rule this whole file is written under.
+
 **There is no third outcome**, because there is no build-time fallback left.
 `configured for ...` or `going to setup`, and nothing in between.
 

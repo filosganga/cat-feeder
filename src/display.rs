@@ -38,8 +38,13 @@ pub const COLS: usize = 21;
 /// Lines at `FONT_6X10` on a 32-pixel-high panel: 3 × 10 px, 2 px spare.
 pub const ROWS: usize = 3;
 
-/// The address the setup form is served on. Matches `setup.rs`.
-const SETUP_URL: &str = "http://192.168.4.1";
+/// The address the setup form is served on.
+///
+/// From `provisioning.rs`, which owns the setup network's identity, rather than
+/// retyped here: `setup.rs` binds its socket to the same four octets, and a
+/// screen confidently showing an address nothing answers on would be worse than
+/// no screen at all.
+const SETUP_URL: &str = crate::provisioning::AP_URL;
 
 /// One rendered line, already clipped to what the panel can show.
 pub type Line = String<COLS>;
@@ -441,8 +446,44 @@ mod tests {
 
         assert_eq!(screen.lines[0], "cat-feeder-99177c");
         assert_eq!(screen.lines[1], "H75T-C7VT-6FAV");
-        assert_eq!(screen.lines[2], "http://192.168.4.1");
+        // `AP_URL`, not the string it happens to hold: `setup.rs` binds a
+        // socket built from the same octets, and a second literal here would be
+        // a second place for that address to be wrong.
+        assert_eq!(screen.lines[2], crate::provisioning::AP_URL);
         assert_fits(&screen);
+    }
+
+    /// The setup screen is the one whose content the *unit* decides rather than
+    /// this module, so the two have to be checked against each other. An SSID a
+    /// character too long is clipped, and a clipped SSID does not match the one
+    /// in a phone's Wi-Fi list — which would leave the panel confidently showing
+    /// a network nobody can find.
+    #[test]
+    fn the_derived_setup_credentials_fit_the_panel() {
+        use crate::provisioning::{AP_PASSWORD_LEN, AP_SSID_LEN, AP_URL, ap_password, ap_ssid};
+
+        assert!(AP_SSID_LEN <= COLS, "the SSID cannot fit the panel");
+        assert!(AP_PASSWORD_LEN <= COLS, "the password cannot fit the panel");
+        assert!(AP_URL.len() <= COLS, "the address cannot fit the panel");
+
+        let ssid = ap_ssid("99177c");
+        let password = ap_password("s3cr3t", "99177c");
+        let screen = render(&View {
+            status: Status::Setup,
+            setup: Some(SetupInfo {
+                ssid: &ssid,
+                password: &password,
+            }),
+            ..view()
+        });
+
+        assert_eq!(screen.lines[0], ssid.as_str(), "the SSID was clipped");
+        assert_eq!(
+            screen.lines[1],
+            password.as_str(),
+            "the password was clipped"
+        );
+        assert_eq!(screen.lines[2], AP_URL);
     }
 
     #[test]

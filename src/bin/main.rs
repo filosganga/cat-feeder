@@ -11,14 +11,16 @@ use cat_feeder::button::{
     BOOT_RESET_HOLD_MS, Button as ButtonGesture, Event as ButtonEvent, held_at_boot,
 };
 use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
-use cat_feeder::display::{self, Fed, Screen, View};
+use cat_feeder::display::{self, Fed, Screen, SetupInfo, View};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
 use cat_feeder::motor::{Drv8833, MotorDriver};
 use cat_feeder::oled::Oled;
 use cat_feeder::portions::{Added, MAX_CLICKS};
-use cat_feeder::provisioning::{DecodeError, Record};
+use cat_feeder::provisioning::{
+    AP_PASSWORD_LEN, AP_SSID_LEN, DecodeError, Record, ap_password, ap_ssid,
+};
 use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
 use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
@@ -138,36 +140,23 @@ async fn main(spawner: Spawner) -> ! {
     // wired, which is exactly when knowing what this pin reads is worth most.
     let switch = Switch::new(switch_pin!(peripherals));
 
-    // No usable record means setup mode, and setup mode never returns. It is
-    // entered before any task that assumes a network, because there is not
-    // going to be one.
-    let cfg = match resolve_config(peripherals.FLASH, wipe) {
-        Boot::Configured(cfg) => cfg,
-        Boot::Setup(store) => {
-            BUS.setup.store(true, Ordering::Relaxed);
-            spawner.spawn(button_task(button).expect("failed to create button task"));
-            log_setup_switch_level(&switch);
-            cat_feeder::setup::run(spawner, peripherals.WIFI, id, AP_SECRET, store).await
-        }
-        Boot::Unconfigurable => halt_unconfigurable().await,
-    };
+    // Read flash **first**, so the recovery path cannot be held up by an
+    // optional output. The panel is brought up between the decision and acting
+    // on it, rather than before both: `Oled::new` probes two I²C addresses, and
+    // a bus shorted by a hand-soldered jumper — the recurring mistake on these
+    // boards — leaves that probe waiting on the peripheral's own timeout. In
+    // front of this call it would delay the button gesture erasing a record and
+    // the access point coming up, which is the one way back into a unit nobody
+    // can reach. Behind it, the worst case is a slow boot with a warning.
+    let boot = resolve_config(peripherals.FLASH, wipe);
 
-    spawner.spawn(button_task(button).expect("failed to create button task"));
-
-    spawner.spawn(switch_task(switch).expect("failed to create switch task"));
-
-    // The real bridge. Its inputs and nSLEEP all have internal pull-downs, so
-    // the motor stayed coasting from power-on until this line ran.
-    let motor = Drv8833::new(
-        motor_in1_pin!(peripherals),
-        motor_in2_pin!(peripherals),
-        motor_sleep_pin!(peripherals),
-    );
-    spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
-    spawner.spawn(schedule_task().expect("failed to create schedule task"));
-    // The panel is optional: a feeder with no screen still feeds cats, so a
-    // missing or miswired one is a warning and the task runs regardless,
-    // reporting to the console alone.
+    // After the decision, before acting on it, because **both** outcomes want a
+    // screen and one of them can never come back to build it: `setup::run` does
+    // not return, so it could not spawn `display_task` afterwards.
+    //
+    // The panel is optional either way: a feeder with no screen still feeds
+    // cats, so a missing or miswired one is a warning and `display_task` runs
+    // regardless, reporting to the console alone.
     //
     // `mk_static!` rather than moving it into the task: an `Oled` is 584 bytes,
     // almost all of it the frame buffer, and an async task's frame is live for
@@ -187,7 +176,67 @@ async fn main(spawner: Spawner) -> ! {
             None
         }
     };
-    spawner.spawn(display_task(oled).expect("failed to create display task"));
+
+    // No usable record means setup mode, and setup mode never returns. It is
+    // entered before any task that assumes a network, because there is not
+    // going to be one.
+    let cfg = match boot {
+        Boot::Configured(cfg) => cfg,
+        Boot::Setup(store) => {
+            BUS.setup.store(true, Ordering::Relaxed);
+            spawner.spawn(button_task(button).expect("failed to create button task"));
+            log_setup_switch_level(&switch);
+
+            // Derived once, here, and handed to both the screen and the radio.
+            // `ap_ssid` and `ap_password` are pure and deterministic, so calling
+            // them twice would not drift — but one derivation makes it obvious
+            // that the panel shows the password the network actually has, which
+            // is the entire claim this screen makes.
+            let ssid = mk_static!(heapless::String<AP_SSID_LEN>, ap_ssid(id));
+            let password = mk_static!(
+                heapless::String<AP_PASSWORD_LEN>,
+                ap_password(AP_SECRET, id)
+            );
+
+            spawner.spawn(
+                display_task(
+                    oled,
+                    Some(SetupInfo {
+                        ssid: ssid.as_str(),
+                        password: password.as_str(),
+                    }),
+                )
+                .expect("failed to create display task"),
+            );
+
+            cat_feeder::setup::run(
+                spawner,
+                peripherals.WIFI,
+                ssid.as_str(),
+                password.as_str(),
+                store,
+            )
+            .await
+        }
+        Boot::Unconfigurable => halt_unconfigurable(oled).await,
+    };
+
+    spawner.spawn(button_task(button).expect("failed to create button task"));
+
+    spawner.spawn(switch_task(switch).expect("failed to create switch task"));
+
+    // The real bridge. Its inputs and nSLEEP all have internal pull-downs, so
+    // the motor stayed coasting from power-on until this line ran.
+    let motor = Drv8833::new(
+        motor_in1_pin!(peripherals),
+        motor_in2_pin!(peripherals),
+        motor_sleep_pin!(peripherals),
+    );
+    spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
+    spawner.spawn(schedule_task().expect("failed to create schedule task"));
+    // `None`: a configured unit has no setup network to describe, so the screen
+    // spends all three lines on what the feeder is for. See `display::render`.
+    spawner.spawn(display_task(oled, None).expect("failed to create display task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
@@ -285,8 +334,21 @@ enum Boot {
 /// and the reset button could not help either, because there is nothing to
 /// erase. Saying so once and stopping is the honest answer; the fix is a build
 /// or flashing one, not something the firmware can do at runtime.
-async fn halt_unconfigurable() -> ! {
+///
+/// **The panel is turned off on the way**, and it is the reason this takes an
+/// argument at all. `Oled::new` ends its initialisation sequence with the
+/// display on, so a unit that stopped here would sit lit and blank forever —
+/// a signal that means nothing, in the one state nothing can recover from. Dark
+/// at least means what it looks like. There is no screen worth drawing instead:
+/// nobody standing at the feeder can fix a missing partition, and the console
+/// already says which one it is.
+async fn halt_unconfigurable(oled: Option<&'static mut Oled<'static>>) -> ! {
     error!("store: refusing setup mode, because a record could not be saved");
+
+    if let Some(oled) = oled {
+        oled.set_power(false).await;
+    }
+
     loop {
         Timer::after(Duration::from_secs(60)).await;
     }
@@ -801,19 +863,24 @@ fn resolve(scheduler: &mut Scheduler, now: Wall) {
     }
 }
 
-/// Renders the screen and, for now, says it on the console.
+/// Renders the screen, pushes it to the panel, and says it on the console too.
 ///
-/// **There is no panel attached yet, and that is the point.** `display::render`
-/// is pure and host-tested, so what is unproven is not the layout but the
-/// *state* reaching it: whether `last_fed` is ever populated, whether the
-/// upcoming slot survives the trip through the bus, whether the banner tracks
-/// the same ladder the LED is showing. All of that is visible as text, and
-/// finding it here costs a capture rather than an I²C bring-up session.
+/// The console copy is not a leftover from before the driver existed. It is
+/// what makes the *state* checkable rather than only the layout: `display::render`
+/// is pure and host-tested, so what a capture proves is whether `last_fed` is
+/// ever populated, whether the upcoming slot survives the trip through the bus,
+/// and whether the banner tracks the same ladder the LED is showing. It is also
+/// the whole screen on a unit whose panel did not answer.
 ///
-/// When the driver lands this task keeps its shape: build the view, render,
-/// push. Only the push changes.
+/// **Spawned on both boot paths.** `setup` is `Some` in setup mode, where it
+/// replaces the screen entirely — and that is the one state whose contents
+/// exist nowhere else, because a unit cannot otherwise tell anyone the password
+/// of the network it has just raised.
 #[embassy_executor::task]
-async fn display_task(mut oled: Option<&'static mut Oled<'static>>) {
+async fn display_task(
+    mut oled: Option<&'static mut Oled<'static>>,
+    setup: Option<SetupInfo<'static>>,
+) {
     let mut shown: Option<Screen> = None;
     let mut lit: Option<bool> = None;
 
@@ -821,10 +888,9 @@ async fn display_task(mut oled: Option<&'static mut Oled<'static>>) {
         let status = Status::of(BUS.health());
         let screen = display::render(&View {
             status,
-            // Setup mode never reaches this task: `setup::run` does not return,
-            // so the screen it wants is the driver's problem rather than one
-            // this loop can ever paint.
-            setup: None,
+            // Constant for the life of setup mode, so this loop renders the same
+            // three lines every tick and pushes none of them after the first.
+            setup,
             last_fed: BUS
                 .last_fed
                 .get()

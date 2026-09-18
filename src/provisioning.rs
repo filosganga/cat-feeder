@@ -280,6 +280,27 @@ fn crc32(bytes: &[u8]) -> u32 {
 // The setup network
 // ---------------------------------------------------------------------------
 
+/// The address the setup form is answered on, as four octets.
+///
+/// Fixed rather than negotiated: it is typed in by hand, so it has to be the
+/// same on every unit and knowable before one is first powered on.
+///
+/// It lives here, with the rest of the setup network's identity, because **two
+/// modules have to agree on it and only one of them may hold an `Ipv4Addr`**.
+/// `setup.rs` binds the stack to it and is gated behind the board; `display.rs`
+/// puts it on the panel and is pure. Octets rather than a string because
+/// `Ipv4Addr::new` is a `const fn` and `Ipv4Addr::from_str` is not, so this
+/// spelling is the one both sides can be built from.
+pub const AP_ADDR_OCTETS: [u8; 4] = [192, 168, 4, 1];
+
+/// What to type into a phone, spelled out, because neither the screen nor a
+/// log line wants to format an address at the point of use.
+///
+/// A literal, and safe as one only because
+/// `tests::the_setup_url_spells_the_address` pins it against
+/// [`AP_ADDR_OCTETS`]. Eighteen characters, which fits `display::COLS`.
+pub const AP_URL: &str = "http://192.168.4.1";
+
 /// `cat-feeder-` plus the six-character device id.
 pub const AP_SSID_LEN: usize = 17;
 
@@ -1088,6 +1109,16 @@ mod tests {
     }
 
     // ---- the setup network ----
+
+    /// The one thing a literal address cannot be trusted with: agreeing with
+    /// the address the stack actually binds. `setup.rs` builds its `Ipv4Addr`
+    /// from the octets, so pinning the string against them makes the panel, the
+    /// console and the socket one fact rather than three.
+    #[test]
+    fn the_setup_url_spells_the_address() {
+        let [a, b, c, d] = AP_ADDR_OCTETS;
+        assert_eq!(AP_URL, std::format!("http://{a}.{b}.{c}.{d}"));
+    }
 
     #[test]
     fn the_ssid_names_the_unit() {

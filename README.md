@@ -191,7 +191,10 @@ reproducible off the device.
    setup. It is a power-on gesture rather than a runtime one so that it cannot
    happen by accident: the same button feeds, and separating the two by hold
    duration alone would mean a beat too long wipes a working feeder.
-2. Join `cat-feeder-<id>` from a phone, using the password on the sticker.
+2. Join `cat-feeder-<id>` from a phone, using the password on the sticker. A
+   unit with a screen fitted is also *meant* to show the network name, its
+   password and the address for as long as it waits — that is written but has
+   not yet been seen on a panel, so take the sticker as the one that works.
 3. Browse to `http://192.168.4.1`.
 4. Fill in Wi-Fi and broker details, save.
 5. The unit reboots onto your network and appears in Home Assistant by itself.
@@ -279,15 +282,17 @@ src/
   feeder.rs       pure: align, count, brake, jam timeout, per-unit timings
   portions.rs     pure: the pending-click counter, its cap, portions -> clicks
   schedule.rs     pure: clock, schedule, the double-feed guard
-  provisioning.rs pure: the flash record, setup credentials and form
+  provisioning.rs pure: the flash record, the setup network's identity, the form
   sha256.rs       pure: shared with dev/ap-password.sh
 
   button.rs       pure: what a press of the outside button means
   indicator.rs    pure: what the status LED shows, and when
+  display.rs      pure: the three lines the screen shows, and when it sleeps
 
   board.rs        pin map and board identity, per Cargo feature
   switch.rs       debounced click stream
   led.rs          the onboard WS2812, over RMT
+  oled.rs         the SSD1306 panel, over async I2C
   motor.rs        MotorDriver, the DRV8833, and a logging stand-in
   mqtt.rs         connection, last will, discovery, commands, state
   store.rs        reads and writes the record in the nvs partition
