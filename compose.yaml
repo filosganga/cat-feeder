@@ -1,14 +1,59 @@
 name: cat-feeder-dev
 
 # Local development stack: the broker and Home Assistant the firmware talks to,
-# so nothing depends on the Raspberry Pi. See dev/README.md.
+# so firmware work needs nothing but this machine. See dev/README.md.
 #
-#   ./dev/bootstrap.sh     once, creates the broker password file
 #   docker compose up -d
 #
 # Broker only:  docker compose up -d mosquitto
+#
+# The broker's credentials default to feeder / feeder-dev and can be changed
+# with MQTT_USER and MQTT_PASS, in the environment or in a .env file beside
+# this one. Whatever they are, they also go in the firmware's cfg.toml.
 
 services:
+  # Creates the password file before the broker can try to read it. There used
+  # to be a `dev/bootstrap.sh` for this, run once by hand; folding it in means
+  # `docker compose up -d` works from a fresh clone with no separate step.
+  #
+  # Two things here are load-bearing rather than tidy:
+  #
+  # `mosquitto_passwd -b` **without** -c. The -c flag creates, which means it
+  # truncates: it would delete every other user in the file. Without it this
+  # adds or updates one user and leaves the rest alone. The cost is that
+  # changing MQTT_USER leaves the old user behind, so clearing the file is a
+  # deliberate `docker compose down && rm dev/mosquitto/passwd` — which is the
+  # right way round.
+  #
+  # `touch` first, because mosquitto_passwd will not create the file itself
+  # without -c, and because the broker below bind-mounts `passwd` as a *file*:
+  # if it is missing when that container starts, Docker silently creates a
+  # **directory** there and the broker fails in a way that reads as a config
+  # error. `depends_on` prevents that for `up` — but only for `up`. A plain
+  # `docker compose restart mosquitto`, or the daemon restarting it under
+  # `restart: unless-stopped`, does not re-run this service, so deleting the
+  # password file is something to do with the stack down.
+  mosquitto-init:
+    image: eclipse-mosquitto:2
+    container_name: cat-feeder-mosquitto-init
+    volumes:
+      - ./dev/mosquitto:/config
+    environment:
+      MQTT_USER: ${MQTT_USER:-feeder}
+      MQTT_PASS: ${MQTT_PASS:-feeder-dev}
+    # $$ escapes compose's own interpolation, so the shell in the container
+    # sees $MQTT_USER rather than an empty string.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        touch /config/passwd
+        chmod 0600 /config/passwd
+        mosquitto_passwd -b /config/passwd "$$MQTT_USER" "$$MQTT_PASS"
+        chmod 0600 /config/passwd
+        echo "broker credentials: $$MQTT_USER"
+
+
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: cat-feeder-mosquitto
@@ -21,6 +66,9 @@ services:
       - ./dev/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./dev/mosquitto/passwd:/mosquitto/config/passwd:ro
       - mosquitto-data:/mosquitto/data
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
 
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable

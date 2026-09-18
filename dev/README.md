@@ -1,20 +1,38 @@
 # Local development stack
 
-A Mosquitto broker and a Home Assistant instance running on this Mac, so
-firmware work needs no Raspberry Pi. The broker is configured to behave like
-the production one: same port, same authentication, same retained-message
+A Mosquitto broker and a Home Assistant instance running on this machine, so
+firmware work needs nothing else. The broker is configured to behave like a
+deployed one: same port, same authentication, same retained-message
 persistence.
 
 ## Start it
 
 ```sh
-./dev/bootstrap.sh          # once, creates the broker password file
 docker compose up -d
 ```
 
-`bootstrap.sh` defaults to user `feeder` and password `feeder-dev`. Pass
-`--user` and `--password` if you prefer your own. The password file is
-git-ignored.
+That is the whole setup. The broker's password file is created by a
+`mosquitto-init` service that runs before the broker and exits, so there is no
+separate first step: `docker compose up -d`, with or without a service name,
+waits for it.
+
+⚠️ `docker compose restart mosquitto` does **not** re-run it, and neither does
+the daemon restarting the container under `restart: unless-stopped`. So delete
+the password file only with the stack **down**: Docker recreates a missing bind
+source as a *directory*, and a broker whose `passwd` is a directory fails in a
+way that reads as a config error.
+
+Credentials default to user `feeder` and password `feeder-dev`. Override them
+with `MQTT_USER` and `MQTT_PASS`, in the environment or in a `.env` file beside
+`compose.yaml`. Whatever they are, they also go in the firmware's `cfg.toml`.
+The password file is git-ignored.
+
+> The init service uses `mosquitto_passwd -b`, never `-c`. The `-c` flag
+> *creates*, which means it truncates the file and deletes every other user in
+> it. The cost of not using it is that changing `MQTT_USER` leaves the old user
+> behind, so starting clean is a deliberate
+> `docker compose down && rm dev/mosquitto/passwd`. That is the right way
+> round: a credential should not vanish as a side effect.
 
 Broker only, skipping Home Assistant:
 

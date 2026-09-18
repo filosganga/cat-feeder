@@ -27,6 +27,8 @@ target/
 
 # Local dev stack (docker compose)
 dev/mosquitto/passwd
+# MQTT_USER / MQTT_PASS for the broker, if they are overridden there
+.env
 dev/homeassistant/*
 !dev/homeassistant/.gitkeep
 

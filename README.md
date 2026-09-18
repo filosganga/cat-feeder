@@ -82,7 +82,6 @@ C6 is RISC-V.
 ```sh
 cargo install espflash
 cp cfg.toml.example cfg.toml     # then fill in Wi-Fi and broker details
-./dev/bootstrap.sh               # once, creates the dev broker password
 docker compose up -d             # Mosquitto on 1883, Home Assistant on 8123
 ./dev/provision.sh               # once per board, writes cfg.toml into flash
 cargo run                        # build, flash, and open the serial monitor
