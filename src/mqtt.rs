@@ -23,7 +23,7 @@ use core::str::FromStr as _;
 use embassy_futures::select::{Either3, select3};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::String;
 use log::{error, info, warn};
 use rust_mqtt::Bytes;
@@ -53,6 +53,15 @@ const CLIENT_ID_LEN: usize = 16;
 
 const STATE_INTERVAL: Duration = Duration::from_secs(5);
 const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+
+/// How long the TCP connect, and then the MQTT CONNECT/CONNACK, may each take.
+///
+/// Neither has a timeout of its own. A SYN into a dead link is retransmitted
+/// indefinitely, so without this a unit on a bad Wi-Fi association sat on
+/// `mqtt: connecting` for over 100 s — silent, and never reaching the retry
+/// below. A healthy connect to a LAN broker takes well under a second, so ten
+/// is generous, and the failure then lands in the ordinary 5 s retry loop.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long to let retained messages land after subscribing, before publishing
 /// a state payload that claims to know whether this unit is paused.
@@ -226,9 +235,19 @@ async fn session(
     let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 
     info!("mqtt: connecting to {}:{}", cfg.mqtt_host, cfg.mqtt_port);
-    if let Err(e) = socket.connect(endpoint).await {
-        warn!("mqtt: tcp connect failed: {e:?}");
-        return Err(());
+    match with_timeout(CONNECT_TIMEOUT, socket.connect(endpoint)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!("mqtt: tcp connect failed: {e:?}");
+            return Err(());
+        }
+        Err(_) => {
+            warn!(
+                "mqtt: tcp connect timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            return Err(());
+        }
     }
 
     let availability = topic(&topics.availability)?;
@@ -245,12 +264,23 @@ async fn session(
     let mut buffer = AllocBuffer;
     let mut client = FeederClient::new(&mut buffer);
 
-    if let Err(e) = client
-        .connect(socket, &options, Some(string(client_id)?))
-        .await
+    // The broker accepted TCP but may never answer CONNECT — a half-dead link,
+    // or a broker wedged under load. Same bound, same retry.
+    match with_timeout(
+        CONNECT_TIMEOUT,
+        client.connect(socket, &options, Some(string(client_id)?)),
+    )
+    .await
     {
-        warn!("mqtt: connect failed: {e:?}");
-        return Err(());
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            warn!("mqtt: connect failed: {e:?}");
+            return Err(());
+        }
+        Err(_) => {
+            warn!("mqtt: no CONNACK within {}s", CONNECT_TIMEOUT.as_secs());
+            return Err(());
+        }
     }
     info!("mqtt: connected, id={client_id}");
 

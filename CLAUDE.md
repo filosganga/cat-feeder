@@ -1387,14 +1387,23 @@ cost is a full scan at each connect, a second or so. It chooses at connect time
 only — the station does not roam — which for a feeder that never moves is the
 right trade.
 
-⬜ **The MQTT TCP connect has no timeout**, which is what turned a bad link into
-a unit sitting silent for over 100 s instead of retrying after 5. Separate from
-the scan fix, and worth doing.
+✅ **The MQTT connect is bounded.** The TCP connect and the CONNECT/CONNACK
+exchange each get `CONNECT_TIMEOUT` (10 s) in `mqtt.rs`, and a timeout lands in
+the ordinary 5 s retry instead of hanging — which is what had turned a bad link
+into a unit silent for over 100 s. Verified by pausing the dev broker's
+container, which accepts TCP and never answers CONNECT: `mqtt: no CONNACK
+within 10s` twice, then a normal connect 0.8 s after unpausing.
 
 ### The other ten seconds: a lost DHCP DISCOVER
 
-⬜ **Not built**, and worth more than it sounds, because nothing is waiting on
-anything real for the whole of it.
+✅ **Fixed: DISCOVER is resent after 2 s instead of 10.** `dhcp_config()` in
+`main.rs` sets smoltcp's `RetryConfig::discover_timeout`, which embassy-net's
+`DhcpConfig` exposes. `associated` → `connected` went from ~10 000 ms to
+**2029 ms** on the first capture — one retry, so the first DISCOVER is still
+lost, which confirms the cause below rather than disproving it. The ordering
+fix it suggests would recover the last two seconds; not worth it yet.
+
+The analysis that led there:
 
 From `wifi: associated` to `wifi: connected`, four captures in a row measured
 10015, 10031, 10033 and 10059 ms. Real DHCP latency is milliseconds and varies;
@@ -1668,10 +1677,10 @@ bridge itself is proven now, but proven on a bare motor: which way `IN1=1,
 IN2=0` turns a hub that has a mechanism bolted to it is still unobserved, and
 finding out afterwards means taking it apart again.
 
-**Next, and written up above with enough detail to start cold:** the lost DHCP
-DISCOVER, ten seconds of pure waiting on a ten-second timer. It is now the
-single largest thing in a start-up, `feeder/time/request` having taken the
-other forty-nine seconds out.
+The lost DHCP DISCOVER is fixed down to a 2 s retry, and `feeder/time/request`
+took the other forty-nine seconds out. Added up from the parts measured —
+~2.9 s scan and association, ~2 s DHCP, ~1 s to the broker and a live time — a
+boot should reach an armed schedule in about 6 s; not yet captured end to end.
 
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
 manual feed works with the broker down; battery backup.
