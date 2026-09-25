@@ -58,17 +58,24 @@
 //!
 //! | Pin | Why not |
 //! |---|---|
-//! | GPIO4, GPIO5, GPIO8, GPIO9, GPIO15 | strapping, sampled at reset |
+//! | GPIO8, GPIO9, GPIO15 | strapping that matters: boot mode, boot log, JTAG source |
 //! | GPIO12, GPIO13 | native USB D−/D+; on the Zero, the only console there is |
 //! | GPIO8 | also the onboard WS2812, so already committed |
 //!
-//! That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23
-//! on the back pads: **thirteen usable, seven of them spent today.**
+//! That leaves GP0–GP5, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23
+//! on the back pads: **fifteen usable, nine of them spent today.**
 //!
-//! Seven and not eight, though the table below has eight rows: GPIO8 is not one
-//! of the thirteen, having been struck out twice just above as strapping and as
-//! the onboard WS2812. It is wired, but it was never available to spend. Count
-//! the free pins against seven or the arithmetic comes out one short.
+//! Nine and not ten, though the table below has ten rows: GPIO8 is not one of
+//! the fifteen, having been struck out twice just above as strapping and as the
+//! onboard WS2812. It is wired, but it was never available to spend. Count the
+//! free pins against nine or the arithmetic comes out one short.
+//!
+//! **GPIO4 and GPIO5 are strapping pins too, and are spent anyway.** They are
+//! `MTMS`/`MTDI`, and on the C6 they only choose the SDIO slave's sampling and
+//! driving edges. The boot mode is GPIO8 and GPIO9, so whatever an encoder
+//! holds these two at during reset cannot stop the unit booting from flash.
+//! This table used to strike them out alongside the three that matter. That was
+//! more cautious than the chip requires, and the encoder is now wired to them.
 //!
 //! ## What is wired where
 //!
@@ -81,7 +88,9 @@
 //! | GPIO1 | DRV8833 `AIN2` | edge |
 //! | GPIO14 | DRV8833 `nSLEEP` (`ULT`/`SLP`) | edge; high enables the bridge |
 //! | GPIO2 | hub microswitch | other side to GND, internal pull-up |
-//! | GPIO3 | outside button | other side to GND, internal pull-up |
+//! | GPIO3 | encoder push switch | the outside button; other side to GND, internal pull-up |
+//! | GPIO4 | encoder `A` (`CLK`) | strapping, harmless — see above; internal pull-up |
+//! | GPIO5 | encoder `B` (`DT`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO8 | WS2812 `DIN` | onboard; also a back pad on the Zero |
 //! | GPIO18 | SSD1306 `SDA` | edge |
 //! | GPIO19 | SSD1306 `SCL` | edge |
@@ -99,36 +108,30 @@
 //! for the part, why ~4.8 V on the pad is normal, and the one combination that
 //! is worth avoiding.
 //!
-//! GP6, GP7 and GP23 stay free, which is the margin for a part that turns out
-//! to need a pin nobody planned for. GP20, GP21 and GP22 are unwired too, but
-//! spoken for — see the reservation below before taking one.
+//! GP6, GP7, GP20–GP23 stay free, which is the margin for a part that turns
+//! out to need a pin nobody planned for.
 //!
-//! **GP20 and GP21 are reserved for a rotary encoder's `A`/`B`**, should the
-//! knob in `CLAUDE.md`'s *Version 1.5: the knob* be built. They are edge
-//! castellations rather than back pads, which is the same reason GP18/GP19
-//! were picked for the display: this board is hand-soldered.
+//! ## The encoder is the outside button
 //!
-//! **Its push switch may or may not want a third pin**, and that section calls
-//! it a fork rather than a detail. Reusing GPIO3 costs nothing and makes the
-//! knob the feed button, which then cannot be hidden from a cat without hiding
-//! the manual feed too: nine of the thirteen, leaving GP6, GP7, GP22 and GP23.
-//! Giving the encoder its own switch on **GP22** leaves the recessed button on
-//! GPIO3 exactly as it is and lets the knob go somewhere a paw cannot reach:
-//! ten of the thirteen, with GP6, GP7 and GP23 still spare. The second is the
-//! one that section prefers, so treat GP22 as half-reserved as well.
+//! An EC11-style rotary encoder with a push switch in the shaft. Of the two
+//! options in `CLAUDE.md`'s *Version 1.5: the knob*, this is **fork (a)**: the
+//! shaft switch *is* the outside button, on GPIO3. A hold opens or closes the
+//! menu and a tap runs the item under the cursor — see `menu.rs` — and the
+//! boot-time erase is unchanged. GP20 and GP21 used to be reserved for `A`/`B`;
+//! they went to GPIO4 and GPIO5 instead, and the reservation is released.
 //!
-//! Both counts start from the seven spent today, for the reason given under
-//! *Which pins are usable* above.
+//! It is a bare encoder, not a breakout: its common pin and the switch's other
+//! leg go to GND, and nothing goes to a supply. So `A` and `B` are wired
+//! exactly like the two switches — each contact pulls its pin to ground — and
+//! each gets the internal pull-up, as GPIO2 and GPIO3 do. No capacitors: the
+//! decoder in `encoder.rs` cancels bounce by construction.
 //!
-//! Reserved here as a comment and nothing more. There is no `encoder_a_pin!`
-//! yet because no code consumes one, and every macro below corresponds to
-//! something actually wired.
+//! ⚠️ **If it is ever swapped for a KY-040-style module**, power that module's
+//! `+` from `3V3`, never `5V`. Those carry 10 kΩ pull-ups from `A` and `B` to
+//! `+`, so a module on 5 V holds two GPIOs at 5 V, and the C6 is not 5 V
+//! tolerant.
 //!
-//! The reservation is cheap insurance rather than a deadline: the electronics
-//! go in their own printed case, so a hole in the wrong place is a reprint. It
-//! exists so that a *pin* is not quietly spent on something else in the
-//! meantime, which is the part a reprint would not fix. An I²C RTC alongside
-//! it costs no pin at all — it shares the display's bus.
+//! An I²C RTC costs no pin at all — it shares the display's bus.
 //!
 //! "No alternate function" was the rule that originally picked GPIO10 and
 //! GPIO11 on the dev kit. It does not really apply on the C6, where peripheral
@@ -168,7 +171,9 @@ macro_rules! switch_pin {
 /// Kept beside the macro so the console can never disagree with the wiring.
 pub const SWITCH_PIN: &str = "GPIO2";
 
-/// The config-reset button. **GPIO3** on both boards. Roadmap step 9.
+/// The outside button: the rotary encoder's push switch. **GPIO3** on both
+/// boards. It arms, feeds and locks at runtime, and erases the record when held
+/// through power-on — see `button.rs`.
 ///
 /// Separate from the hub microswitch on purpose: that one is inside the
 /// mechanism and unreachable once a feeder is assembled, and this one has to be
@@ -177,10 +182,7 @@ pub const SWITCH_PIN: &str = "GPIO2";
 /// ⚠️ On the dev kit's J1 header GPIO3 is the pin **directly beside 5V**. That
 /// is the same adjacency `CLAUDE.md` warns about for the ground jumper, and it
 /// is worth re-reading before wiring a button there. If it makes you nervous,
-/// GP6, GP7 or GP23 is free on the Zero and this is a one-line change — though
-/// all three are back pads, so only the soldering gets harder, not the wiring.
-/// (This used to offer "GP14 or GP18–GP22", which was wrong even when written:
-/// GP14 is `nSLEEP` and GP18/GP19 are the display. GP20–GP22 are reserved.)
+/// GP20–GP22 are free edge pads on the Zero and this is a one-line change.
 #[macro_export]
 macro_rules! button_pin {
     ($peripherals:expr) => {
@@ -266,13 +268,11 @@ pub const MOTOR_SLEEP_PIN: &str = "GPIO14";
 /// GP18 and GP19 are chosen over GP6/GP7 — also free — because they are **edge
 /// castellations rather than back pads**, and this board is hand-soldered.
 ///
-/// ## The two candidate panels are not the same part
+/// ## Panels are not interchangeable parts
 ///
-/// Either may end up in a feeder. The original plan was that only the 0.91"
-/// could, because it was the one that fitted the feeder's own LCD window; with
-/// the electronics in their own printed case that is no longer true and the
-/// 1.3" is the likelier one — see `CLAUDE.md`'s *A display*. Two pins either
-/// way, so this file does not care, but anyone swapping one for the other does.
+/// The production part is a 0.96" 128×64 **SSD1315**, a 4-pin I²C module on
+/// `0x3C`. Two others were tried first and are worth knowing about only when
+/// swapping one in. Two pins either way, so this file does not care.
 ///
 /// The 0.91" 128×32 modules are 4-pin I²C parts: `GND · VCC · SCL · SDA` and
 /// nothing else. The 1.3" 128×64 Adafruit breakout has **eight** pins — `Data ·
@@ -324,3 +324,38 @@ macro_rules! display_scl_pin {
 pub const DISPLAY_SDA_PIN: &str = "GPIO18";
 /// See [`MOTOR_IN1_PIN`].
 pub const DISPLAY_SCL_PIN: &str = "GPIO19";
+
+/// The encoder's `A` line. **GPIO4** on both boards.
+///
+/// A strapping pin, and harmless as one — see *Which pins are usable* above.
+#[macro_export]
+macro_rules! encoder_a_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO4
+    };
+}
+
+/// The encoder's `B` line. **GPIO5** on both boards. See [`encoder_a_pin!`].
+#[macro_export]
+macro_rules! encoder_b_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO5
+    };
+}
+
+/// See [`SWITCH_PIN`].
+pub const ENCODER_A_PIN: &str = "GPIO4";
+/// See [`SWITCH_PIN`].
+pub const ENCODER_B_PIN: &str = "GPIO5";
+
+/// Which way round `A` and `B` are, relative to the menu.
+///
+/// Turning clockwise should move *down* the menu and *forward* through the
+/// pages. If it goes the other way, flip this — or swap the two wires, which
+/// is the same fix.
+pub const ENCODER_REVERSED: bool = false;
+
+/// Whether the encoder also rests at `00`, giving two detents per electrical
+/// cycle. If one detent moves the cursor two places, or every other detent
+/// does nothing, this is the wrong way round. See `encoder.rs`.
+pub const ENCODER_HALF_STEP: bool = false;

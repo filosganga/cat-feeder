@@ -36,11 +36,11 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Schedule, clock, double-feed guard | working |
 | Home Assistant automations publishing time and schedule | working |
 | Status LED on the onboard WS2812 | working, verified by eye |
-| Outside button: hold to arm, tap to feed | working |
+| The knob: turn for info pages, hold for a menu, tap `Feed` to feed | working on a Zero; the info pages are host-tested but not yet seen on the panel |
 | Per-board provisioning from the host (`dev/provision.sh`) | working |
 | Per-unit mechanical calibration | working, defaults until measured |
 | Driving the actual motor | working — align, count and brake watched on a bench motor |
-| OLED: driver, probed address, a screen that sleeps | working, on the 1.3" bench panel |
+| OLED: driver, probed address, a screen that sleeps | working, on a 0.96" 128×64 SSD1315 |
 | Setup over the unit's own Wi-Fi | working, driven from a phone |
 
 Most of that was verified on the Waveshare ESP32-C6-DEV-KIT-N8, with a bench
@@ -191,8 +191,9 @@ reproducible off the device.
 1. Hold the reset button on the outside of the case **while plugging the unit
    in**. It erases its stored configuration, which is the one and only way into
    setup. It is a power-on gesture rather than a runtime one so that it cannot
-   happen by accident: the same button feeds, and separating the two by hold
-   duration alone would mean a beat too long wipes a working feeder.
+   happen by accident: the same button — the knob's click — opens the feeding
+   menu, and separating the two by hold duration alone would mean a beat too
+   long wipes a working feeder.
 2. Join `cat-feeder-<id>` from a phone, using the password on the sticker. A
    unit with a screen fitted is also *meant* to show the network name, its
    password and the address for as long as it waits — that is written but has
@@ -224,7 +225,7 @@ matter most are the ones where the unit cannot reach Home Assistant at all.
 | red, green, blue at power-on | self-test. Proves the LED works, and that its colours are the right way round |
 | **solid** red | jammed. Something is stuck; go and look |
 | **solid** white | feeding |
-| cyan, twice a second | the button is armed — a tap will dispense |
+| cyan, twice a second | the knob's menu is open — a tap on `Feed` will dispense |
 | red ×1 every 3 s | no Wi-Fi. Check the router or the credentials |
 | red ×2 every 3 s | no broker. Check the broker address, or Mosquitto |
 | red ×3 every 3 s | no trusted time, so **this unit will not feed on schedule**. Check Home Assistant is publishing |
@@ -242,18 +243,26 @@ asks for the time on connecting and Home Assistant answers within a second. Red
 or its publish-the-time automation is missing — and that unit will not feed on
 schedule until it is fixed.
 
-The button:
+The knob — a rotary encoder whose click is the outside button:
 
-| Gesture | Effect |
-|---|---|
-| hold 2 s | arm it. The LED blinks cyan |
-| tap while armed | feed one portion. Taps refresh the window |
-| nothing for 10 s | locks again |
-| held while plugging in | erase the configuration |
+| | Turn | Tap | Hold 2 s |
+|---|---|---|---|
+| **locked** | step the pages: home, Wi-Fi, broker, device | back to home | open the menu, on `Feed`. The LED blinks cyan |
+| **menu open** | move the cursor | run the item: `Feed one portion`, `Pause`/`Resume schedule`, `Settings`, `Lock` | lock |
+| **editing a setting** | change the value | save it; in force from the next feed | cancel |
+| nothing for 10 s | | | locks again |
+| held while plugging in | | | erase the configuration |
 
-Arming exists because **a button on a cat feeder that dispenses food when
-pressed is a button cats will learn to press.** Recess it as well; needing a
-fingertip defeats a paw outright.
+The menu has to be opened by a hold because **a control on a cat feeder that
+dispenses food is a control cats will learn to use.** Turning never dispenses.
+A knob cannot be recessed the way a button can, so mount the case where a paw
+has no footing.
+
+`Settings` holds this unit's portion scale and detent interval — the two
+figures `dev/provision.sh --portion-scale` and `--detent-ms` set — and a
+factory reset that asks `Keep` or `Erase` first. A pause set from the menu
+lasts until Home Assistant next restarts or its schedule helper changes; Home
+Assistant is the authority.
 
 ## MQTT
 
@@ -289,7 +298,9 @@ src/
 
   button.rs       pure: what a press of the outside button means
   indicator.rs    pure: what the status LED shows, and when
-  display.rs      pure: the three lines the screen shows, and when it sleeps
+  display.rs      pure: the six lines the screen shows, and when it sleeps
+  menu.rs         pure: what the knob's turns and click mean
+  encoder.rs      pure: the knob's A/B levels into detents
 
   board.rs        pin map and board identity, per Cargo feature
   switch.rs       debounced click stream

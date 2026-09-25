@@ -100,7 +100,7 @@ one place (`src/board.rs`) selected by a Cargo feature: `board-devkit`
 
 **Decided, not built.** The original plan was to reuse each feeder's own LCD
 window and button hole. That is what *A display* below is still written against,
-and it is why three lines of 21 characters appears there as a hard constraint.
+and it is why three lines of 21 characters appeared there as a hard constraint.
 
 It does not survive the third feeder being a different brand. Two units share a
 window and a button position; the third does not, so reusing them means **two
@@ -116,16 +116,13 @@ all three, because it is not fitted to any of them.
 What this changes, and each is worth chasing down where it is written:
 
 - **The 40 × 18 mm window stops being a constraint.** Nothing has to fit it,
-  so the 1.3" 128×64 already on the bench can be the production part and the
-  0.91" parts become the fallback. `oled.rs` is already parameterised — the
-  `panel-128x64` feature swaps `DisplaySize128x32` for `DisplaySize128x64` and
-  nothing else moves.
+  so a 128×64 panel is the production part: a 0.96" **SSD1315**, on the bench
+  and working. The 0.91" 128×32 fallback and the `panel-128x64` feature that
+  selected between them are gone; `display::ROWS` is 6.
 
-  ⚠️ **That buys rows, not columns.** Both panels are 128 pixels wide, so
-  `FONT_6X10` gives **twenty-one characters on either**, and `display::COLS`
-  stays 21 — the feature does not touch it. What changes is `ROWS`: 64/10 is
-  six lines instead of three. So three lines becomes a floor and **21 columns
-  remains a hard ceiling**, which is the half that bites: `Line` is
+  ⚠️ **That bought rows, not columns.** Both panels are 128 pixels wide, so
+  `FONT_6X10` gives **twenty-one characters**, and `display::COLS` stays 21.
+  **21 columns is a hard ceiling**, and it is the half that bites: `Line` is
   `String<COLS>` and `push` truncates in silence, with no log line and no
   failing test. A menu laid out against "the budget is gone" loses the tail of
   every long line on the glass.
@@ -157,22 +154,25 @@ Then subtract what is already spoken for:
 
 | Pin | Why not |
 |---|---|
-| GPIO4, GPIO5, GPIO8, GPIO9, GPIO15 | strapping, sampled at reset |
+| GPIO8, GPIO9, GPIO15 | strapping that matters: boot mode, boot log, JTAG source |
 | GPIO12, GPIO13 | native USB D−/D+; on the Zero, the only console there is |
 | GPIO8 | also the onboard WS2812, so already committed |
 
-That leaves GP0–GP3, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23 on
-the back pads — **thirteen usable, seven of them spent today**, so the display
-fits with room left. **`board.rs` carries the assignment table**, which is the
-thing to solder against; it is not repeated here.
+That leaves GP0–GP5, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23 on
+the back pads — **fifteen usable, nine of them spent today**. **`board.rs`
+carries the assignment table**, which is the thing to solder against; it is not
+repeated here.
 
-Seven and not eight: this design wires eight pins, but GPIO8 is not one of the
-thirteen — it is struck out twice in the table above, as strapping and as the
+Nine and not ten: this design wires ten pins, but GPIO8 is not one of the
+fifteen — it is struck out twice in the table above, as strapping and as the
 onboard WS2812, so it was never available to spend. Count the free pins against
-seven or the arithmetic comes out one short.
+nine or the arithmetic comes out one short.
 
-Note the strapping list is five pins, not the three this file used to name:
-GPIO4 and GPIO5 are strapping on the C6 as well.
+**GPIO4 and GPIO5 are strapping pins too, and the encoder's `A`/`B` are on them
+anyway.** They are `MTMS`/`MTDI`, and on the C6 they only set the SDIO slave's
+sampling edges; boot mode is GPIO8 and GPIO9. So an encoder holding them at any
+level through reset cannot stop a unit booting. This list used to strike them
+out with the other three, which was more cautious than the chip needs.
 
 "No alternate function" was the rule that first picked GPIO10 and GPIO11. It
 does not really apply here: on the C6 peripheral signals route through a GPIO
@@ -346,20 +346,21 @@ loop {
 - **Nothing gates on the jam flag, and that is what makes a jam recoverable.**
   `request`, `start` and `on_click` all behave normally while jammed, so the
   next feed request simply tries again, and the first click it produces clears
-  the flag. The outside button is one such producer — **hold two seconds to
-  arm, then tap** — so a jam never needs a power cycle, and never has.
+  the flag. The knob is one such producer — **hold two seconds to open the
+  menu, then tap `Retry feed`** — so a jam never needs a power cycle, and never
+  has.
 
   What that gesture lacked was any sign it had landed: `Status::of` reports
   `Jammed` over `Armed`, so the LED stays solid red through the whole hold.
   That ordering is deliberate and stays — red has to keep warning while
   somebody has their hands in the mechanism — so **the panel carries the
-  confirmation instead**, showing the arm hint and then `TAP TO RETRY` under
-  the `** JAMMED **` banner. A jam is one of the two states `display::awake`
+  confirmation instead**: `** JAMMED **` stays at the top while the menu is
+  open, and the first item reads `Retry feed` rather than `Feed one portion`. A jam is one of the two states `display::awake`
   never sleeps in — setup is the other — so the line is there whenever somebody
   walks over to look.
 
   The hint's duration comes from `button::ARM_HOLD_MS` through
-  `display::arm_hint_for`, and is **rounded up** rather than to nearest: an
+  `display::hold_hint_for`, and is **rounded up** rather than to nearest: an
   instruction may overstate a hold but must never understate one, because
   holding longer than the printed time always arms and holding for exactly a
   floored figure need not. It is deliberately not spelled out here either, so
@@ -764,62 +765,88 @@ units, or its history stops matching its own automations.
 
 ### The outside button
 
-GPIO3, outside the case, distinct from the hub microswitch on GPIO2 which is
-sealed inside the mechanism. Four runtime gestures and one boot gesture, all in
-`button.rs` as pure logic.
+**It is the rotary encoder**: its shaft switch on GPIO3, `A`/`B` on GPIO4/GPIO5,
+outside the case and distinct from the hub microswitch on GPIO2, which is
+sealed inside the mechanism. This is fork (a) of *Version 1.5: the knob*,
+taken. Two pure modules own it: `button.rs` turns the click into holds and
+taps, and `menu.rs` decides what those and the knob's turns mean. `encoder.rs`
+turns the two lines into detents.
 
-| Gesture | Effect |
-|---|---|
-| hold 2 s while locked | **arm**. LED blinks cyan twice a second |
-| tap while armed | feed one portion, and refresh the window |
-| hold 2 s while armed | **lock** again, without waiting out the window |
-| tap while locked | wake the screen, and step through its pages |
-| nothing for 10 s | locks again |
-| **held through power-on, 3 s** | erase the record |
+| | Turn | Tap | Hold 2 s |
+|---|---|---|---|
+| **locked** | step the info pages | back to the home page | **unlock** → the menu, cursor on `Feed`. LED blinks cyan |
+| **unlocked** | move the cursor | run the item | **lock** |
+| **editing a number** | change it | save it; in force at once | lock, discarding the edit |
+| **confirming a reset** | `Keep` / `Erase` | run the choice | lock, keeping everything |
+| nothing for 10 s | | | locks again, discarding any edit |
+| **held through power-on, 3 s** | | | erase the record |
+
+The menu is `Feed one portion`, `Pause schedule` (or `Resume schedule`),
+`Settings` and `Lock`. **Settings** holds this unit's calibration — `Portion`
+(the portion scale, 25–300% in 5% steps) and `Detent` (200–5000 ms in 10 ms
+steps) — then `Factory reset` and `Back`.
+
+- **Saving does not restart.** `Store::update` rewrites the record with
+  everything else untouched, then `Bus::calibration` carries the new figure to
+  the feeder task, which applies it with `Feeder::recalibrate` at its next idle
+  moment — **never mid-turn**, because one turn's jam budget and pending clicks
+  were promised under the old figures. The console repeats the
+  `feeder: clicks >…` line when it lands. A restart would have cost the live
+  time, the `fed` line and ~12 s off the broker, and cut short a feed in
+  progress. Wi-Fi and broker edits, when they exist, will still need one: the
+  network stack is built once at boot.
+- **A tap on an unchanged value just goes back**, with no flash write.
+- **Factory reset is the boot gesture's erase, from the menu**, behind a
+  `Keep`/`Erase` choice that starts on `Keep`. It lands in setup mode by the
+  same path.
+- **Wi-Fi, broker and schedule are not editable here yet.** Wi-Fi and broker
+  wait on a decision about text entry; the schedule waits on *A second
+  version* — who owns it. Clockwise moves down the menu and forward through the pages, and both
+lists stop at their ends rather than wrapping, so turning left until it stops
+always lands on `Feed`.
 
 **Hold toggles the mode; a tap does whatever the mode means.** That is the whole
-vocabulary, and it is worth the symmetry: the previous version had no way out of
-armed but waiting, and wasted the locked tap on a log line. Three rules keep it
-honest:
+vocabulary. The rules that keep it honest, each a host test in `menu.rs` or
+`button.rs`:
 
-- **A lock has to come from a different press than the arm.** Arming fires
-  *while* the button is still held, so without this a four-second hold would arm
-  at two seconds and lock at four, and read as a button that does nothing.
-  `Button::armed_this_press` already exists for the neighbouring reason — one
-  hold must not arm twice, and its release must not count as a tap — and this is
-  the same flag.
-- **Waking always shows the first page.** A tap on a sleeping panel lights it
-  and shows page one; taps after that advance. Otherwise the first press shows
-  whatever page you left it on days ago, which reads as a screen stuck on the
-  wrong thing.
-- **Cats are unaffected.** Every locked tap is still foodless, which is the
-  property the whole design rests on — a cat that learns to press gets a lit
-  screen and nothing else, and the screen sleeps by itself.
+- **Turning never dispenses.** The only way to food is a hold, then a tap on
+  `Feed`. A cat batting the knob steps pages and lights the screen.
+- **`Feed` stays under the cursor after feeding**, so three portions is three
+  taps. No count is held between taps — see *Manual feeds accumulate*.
+- **Unlocking always starts on `Feed`**, never on the item left last time, so a
+  hold then a tap does the same thing every time.
+- **A lock has to come from a different press than the unlock.** Unlocking fires
+  *while* the button is still held, so without a per-press latch a four-second
+  hold would unlock at two seconds and lock at four, and read as a button that
+  does nothing. `one_long_hold_arms_once_and_does_not_also_lock` pins it.
+- **Turning keeps the menu open**, because somebody reading it is not done.
+  Turning against an end stop still counts as attention but redraws nothing.
+- **Waking always shows the home page.** A turn on a dark panel only lights it;
+  otherwise the first thing seen is whatever page was left days ago.
 
-Locking needs no separate confirmation: a hold is a press, any press wakes the
-panel, and the banner stops saying `TAP TO FEED`.
+**Pause from the menu is published, not just applied.** The flag lives in the
+retained `feeder/<id>/paused` topic, so setting it locally alone would be undone
+by the replay on the next reconnect, and Home Assistant's switch would disagree
+until then. `Bus::pause_request` carries the wish to `mqtt.rs`, which publishes
+it retained — or, if the broker is unreachable, publishes it on reconnect
+*before* subscribing, so the replay carries the new value back.
 
-⬜ **One row of that table is not built yet** — a locked tap stepping the
-screen. Today a locked tap only logs. See *The screen's pages*.
-
-✅ **The lock hold is built.** A hold while armed locks again, so the armed
-state has a way out other than standing next to a live feeder waiting ten
-seconds out. `button.rs` emits `Locked` for it, distinct from `Expired` because
-one is a decision and the other is time passing, and a console calling both
-"locked again" could not say which happened.
-
-The per-press latch is what makes it usable rather than baffling, and it is now
-carrying both halves of the toggle: arming fires *while* the button is still
-held, so without it a single four-second hold would arm at two seconds and lock
-at four — a gesture that visibly does nothing.
-`one_long_hold_arms_once_and_does_not_also_lock` pins exactly that.
+**Home Assistant stays the authority — decided 2026-09-25.**
+`cat_feeder_pause_when_away` in the package republishes every unit's `paused`
+from `schedule.cat_feeder_active` on every Home Assistant start and every change
+of that helper, and knows nothing of the knob. So the knob's pause is a
+**temporary override**: it lasts until the next Home Assistant restart or
+helper change, then reverts to what the helper says. Worth knowing when a
+feeder resumed by hand turns up paused again — that is Home Assistant, not a
+fault.
 
 **The adversary is cats, not clumsiness.** A button on the outside of a cat
 feeder that dispenses food when pressed is a button cats will learn to press —
 food is the strongest reinforcer there is and a cat has all day to experiment.
 That is the whole reason for arming, and it is why a tap alone does nothing.
-**Recess the button** as well: needing a fingertip defeats a paw outright, and
-mechanical protection cannot be got round by a lucky sequence.
+A knob cannot be recessed the way a button can, so **placement** is the
+mechanical defence now: the case can sit high or behind the feeder, where a paw
+has no footing.
 
 **Reset is a boot gesture on purpose.** Sharing one button between feeding and
 erasing means separating them by hold duration, and the failure mode writes
@@ -830,13 +857,14 @@ only a boot that begins with the button held waits the three seconds.
 
 Arming outranks the **network** faults on the LED. The case that settles it: the
 broker is down, which is precisely when manual feeding matters, and being
-re-told the network is out is less useful than seeing that the tap will land.
+re-told the network is out is less useful than seeing that the menu is open.
 Whatever it hides is still there ten seconds later.
 
 **A jam is the exception, and it beats arming.** Red keeps warning because
 somebody may have their hands in a hub that a tap can start turning, which no
 ten-second window makes safe. The cost is that arming a jammed feeder shows
-nothing at all on the LED — so the panel says `TAP TO RETRY` instead, and
+nothing at all on the LED — so the panel keeps `** JAMMED **` over the menu and
+offers `Retry feed` instead, and
 *The feeder task owns the motor* has the rest.
 
 (This used to read "every fault", which was wrong for the one fault where
@@ -859,7 +887,7 @@ install lives, and nothing here needs to know.
 feeder/<id>/availability   online | offline        (retained, LWT = offline)
 feeder/<id>/feed           <portions:u8>           cmd, manual feed
 feeder/all/feed            <portions:u8>           cmd, all units at once
-feeder/<id>/paused         ON | OFF                cmd, retained, pause the schedule
+feeder/<id>/paused         ON | OFF                retained, pause the schedule; from HA or from the unit's menu
 feeder/schedule            [{"time":"08:00","portions":2}, ...]   retained, from HA
 feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
 feeder/time/request        <id>                    cmd to HA, NOT retained
@@ -1099,12 +1127,14 @@ src/
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   portions.rs     pure logic: the pending-click counter, its cap, and the
                   per-unit portions -> clicks conversion
-  button.rs       pure logic: what a press of the outside button means
+  button.rs       pure logic: holds and taps of the knob's click, arming
+  menu.rs         pure logic: pages while locked, the menu while unlocked
+  encoder.rs      pure logic: the knob's A/B levels into detents
   indicator.rs    pure logic: what the LED shows, the priority ladder, the
                   blink timing
   led.rs          the WS2812 itself, over RMT. Colours in, bits out
-  display.rs      pure logic: the three lines the screen shows, and when the
-                  panel is lit
+  display.rs      pure logic: the six lines the screen shows — home, info
+                  pages, menu, setup — and when the panel is lit
   oled.rs         the SSD1306 itself, over async I2C. Text in, pixels out
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
   wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed,
@@ -1228,8 +1258,7 @@ each one.
    under the old plan of reusing each shell's own window. They live in a
    printed part now, so a hole put in the wrong place is a reprint rather than
    a ruined case, and the interface can keep moving after these three holes are
-   drilled. `board.rs` reserves GP20/GP21 for an encoder and half-reserves GP22
-   for its switch so the pins stay there either way
+   drilled. The encoder is already wired — see *Version 1.5: the knob*
 
 ### A retained `time` is not a trusted one
 
@@ -1343,6 +1372,24 @@ reaches it loses the speed-up and nothing else.
 send three requests within milliseconds and Home Assistant will drop two of
 them — but the one publish that does happen is forwarded live to all three
 subscribers, so every unit is served.
+
+### Mesh networks: join the strongest node
+
+The house network is a mesh — one SSID, several nodes, `192.168.68.x` — and
+esp-radio's `StationConfig` defaults to `ScanMethod::Fast`, which in ESP-IDF
+joins the **first** node answering to the SSID rather than the best. A Zero a
+metre from one node was seen associated at −82 dBm, disassociated for
+inactivity, and hanging in its MQTT TCP connect; the laptop could not ping it.
+
+`main.rs` sets `ScanMethod::AllChannels`, under which the
+`WIFI_CONNECT_AP_BY_SIGNAL` sort esp-radio already sets actually applies. The
+cost is a full scan at each connect, a second or so. It chooses at connect time
+only — the station does not roam — which for a feeder that never moves is the
+right trade.
+
+⬜ **The MQTT TCP connect has no timeout**, which is what turned a bad link into
+a unit sitting silent for over 100 s instead of retrying after 5. Separate from
+the scan fix, and worth doing.
 
 ### The other ten seconds: a lost DHCP DISCOVER
 
@@ -1582,7 +1629,7 @@ complete, or should reset the DHCP socket when it is.
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, the third feeder being opened, **and an enclosure designed and printed** |
 | 11, deploying | an always-on Home Assistant with the package installed; the checklist in step 11 is the whole of it |
-| a display | **nothing for development** — a 1.3" part is on the bench and is now the likely production part; the 0.91" ones are the fallback |
+| a display | **nothing** — a 0.96" 128×64 SSD1315 is on the bench, working, and is the production part |
 | the enclosure | v1.5 being settled, since the panel and any knob are most of what it holds |
 
 **Every part is now on the bench**: the three Zeros, the DRV8833 and a display
@@ -1637,32 +1684,20 @@ them are on the way (SSD1306, I²C, `GND · VCC · SCL · SDA`). The common 0.96
 27 mm tall and would not go in.
 
 ⚠️ **That window is no longer the constraint** — see *The electronics live in
-their own case*. A printed enclosure has no window to match, so the **1.3"
-128×64 already on the bench can be the production part**, and the sizing
+their own case*. A printed enclosure has no window to match, and the sizing
 argument above is kept as the reasoning that was true while the original shell
-was, not as a live requirement. The paragraphs below still hold; read "must
-fit" as "must at least fit".
+was, not as a live requirement.
 
-**Develop against the 1.3" regardless.** The driver crate and the two wires are
-identical and only a size parameter differs — `oled.rs` swaps `PanelSize` on
-the `panel-128x64` feature and nothing else moves.
+✅ **Settled: a 0.96" 128×64 SSD1315**, register-compatible with the SSD1306
+driver and working on the bench. The 1.3" part never drew (see below), and the
+0.91" 128×32 fallback was dropped with it: `display::ROWS` is **6**, the
+`panel-128x64` feature is gone, and `oled.rs` initialises 128×64
+unconditionally.
 
-**Three lines becomes a floor. Twenty-one columns does not.** Both panels are
-128 pixels wide, so `FONT_6X10` gives 21 characters on either and
-`display::COLS` is unchanged at 21; only `ROWS` grows, from three to six. Lay
-every screen out to work in three lines, because the 0.91" parts are the
-fallback and a layout built for six cannot be shrunk into three — extra rows
-are somewhere to put more, never somewhere a required line may hide. But treat
-21 as the hard limit it has always been: `Line` is `String<COLS>` and `push`
-truncates silently, so an over-long line is lost on the glass with nothing said
-on the console.
-
-That figure was *two* here until the setup screen needed its third line, and it
-was simply wrong rather than conservative: `FONT_6X10` is ten pixels tall, so a
-32-pixel panel takes three rows with two pixels spare. `display.rs` has said
-`ROWS = 3` since it was written, and the third line is the one the setup screen
-puts the address on — the whole reason it beats a serial console. Anyone laying
-out against "two" would drop exactly that.
+**Twenty-one columns is still the hard limit.** Both panels are 128 pixels
+wide, so `FONT_6X10` gives 21 characters and `display::COLS` is 21; the new
+panel bought rows only. `Line` is `String<COLS>` and `push` truncates silently,
+so an over-long line is lost on the glass with nothing said on the console.
 
 ⚠️ **Check which controller that 1.3" module actually has before blaming any
 code.** Many 1.3" 128×64 boards are **SH1106**, not SSD1306: it has 132 columns
@@ -1683,8 +1718,11 @@ reason for the salted derivation, `dev/ap-password.sh` and printing stickers
 before first power-on.
 
 ```text
+JOIN THIS WI-FI
 cat-feeder-99177c
 H75T-C7VT-6FAV
+
+THEN BROWSE TO
 http://192.168.4.1
 ```
 
@@ -1693,8 +1731,7 @@ function never returns and could not spawn anything afterwards. The panel is
 brought up before the boot decision for the same reason: both outcomes want a
 screen and only one of them can come back for it.
 
-Three lines, three facts, and the third is the address — which is now one
-constant. It used to be written twice, as an `Ipv4Addr` in `setup.rs` and as a
+Three facts, and the last is the address — which is now one constant. It used to be written twice, as an `Ipv4Addr` in `setup.rs` and as a
 string in `display.rs` with a comment asking them to agree. `provisioning.rs`
 holds `AP_ADDR_OCTETS` beside the SSID and password derivations, the socket is
 built from it, and a host test pins the printed URL against it. A panel
@@ -1702,16 +1739,16 @@ confidently showing an address nothing answers on would be worse than no panel.
 
 The salt is still needed — it is what stops a stranger deriving the password
 from the MAC in the beacon — and the sticker drops from required to backup **the
-day a capture shows those three lines on a panel**, not before. Until then it is
+day a capture shows the setup screen on a panel**, not before. Until then it is
 the only thing that works, which is why `README.md` still tells a reader to
 print one. A unit whose screen turns out blank on the production part, with no
 sticker and no serial cable, cannot be joined at all.
 
-It does not make the LED redundant: at 0.91" you read a screen standing at the
+It does not make the LED redundant: you read a screen standing at the
 feeder, while the LED answers *is anything wrong* from the doorway. Burn-in over years of showing `next 08:00` is
 handled by sleeping and waking on a press, and the collision that used to imply
 — a press that both wakes the screen and feeds — is resolved by the gesture
-table above: a tap only feeds while armed. Night glare is the same blanking. The
+table above: only a tap on `Feed`, in a menu opened by a hold, feeds. Night glare is the same blanking. The
 split stays what it is everywhere else in this codebase: a pure layer deciding
 *what to show*, host-tested, and a gated task that pushes pixels.
 
@@ -1734,13 +1771,14 @@ parsed and kept in `Wall::offset_minutes`, so the input is there when needed.
 
 ### Version 1.5: the knob
 
-**Decided in principle, not built.** It sits between the working prototype and
+✅ **Built as fork (a)** — see below and *The outside button*. The RTC half is
+not. It sits between the working prototype and
 the printed case: after the mechanism is proven and before the enclosure is
 drawn, because a panel and a knob are most of what an enclosure is *for* and
 designing one around a bare board twice is the wasteful order.
 
-What is done today is reserving two pins in `board.rs` and half-reserving a
-third against the fork below.
+The encoder is on GPIO3 (click) and GPIO4/GPIO5 (`A`/`B`); the GP20–GP22
+reservation it used to hold is released.
 
 **There is no deadline on it**, which there would have been under the original
 plan of reusing each feeder's own window: a hole drilled in a commercial shell
@@ -1780,9 +1818,8 @@ forget that. See *A display*.
 
 A rotary encoder — an EC11, quadrature `A`/`B` plus a push switch in the shaft —
 and the panel answer it with **nothing**. That is the argument, and it is the
-whole argument. It is *not* nicer page-stepping: the locked-tap cycle in *The
-screen's pages* is designed but not built, and when it is built it will be good
-enough that turning a knob instead would not be worth a hole in a case.
+whole argument. It is *not* nicer page-stepping, although turning is now how the pages in *The
+screen's pages* are stepped.
 
 **It removes SNTP rather than adding to it**, which is the opposite of what a
 second input device usually does. A knob-set clock is set in local wall-clock
@@ -1875,9 +1912,8 @@ a fork in the hardware:
 | **The knob replaces the button.** Its shaft switch takes GPIO3 | 9 of 13 | one control, simplest wiring — but it protrudes where the button was recessed, and the recess defence is gone |
 | **The knob is a second control, separately placed.** The button stays on GPIO3 exactly as today; the encoder gets `A`, `B` and its own switch | 10 of 13 | one more pin and one more part — and the two can then go in different places, the button where a human reaches in a hurry and the knob where a cat does not |
 
-Both fractions count from the seven spent today — GP0–GP3, GP14, GP18, GP19,
-with six free. *Which pins are usable* above says why that is seven and not the
-eight pins this design wires.
+Both fractions were counted from the seven spent before the encoder — GP0–GP3,
+GP14, GP18, GP19 — and against thirteen usable pins rather than today's fifteen.
 
 **The second is the better design, and the reason is placement rather than
 paranoia.** A configuration knob does not have to be reachable in a hurry; the
@@ -1890,8 +1926,14 @@ dispensing**, which is a stronger guarantee than any amount of gesture logic.
 It also shrinks the menu hazard below to nothing, because a cat reaching the
 menu at all stops being a scenario.
 
-It still fits: `A`/`B`/`SW` on GP20/GP21/GP22 leaves GP6, GP7 and GP23 free.
-`board.rs` reserves GP20/GP21 today and says which count applies to which fork.
+✅ **Taken: fork (a), 2026-09-25, and built.** The shaft switch is on GPIO3 and
+`A`/`B` on GPIO4/GPIO5; the menu is in `menu.rs`, host-tested. **Seen on the
+Zero:** holds unlocking and locking, the cursor following the knob with one
+step per detent and clockwise moving down, `Feed` dispensing a portion per tap,
+`Pause` toggling its label, and `Lock` locking. The info pages were not yet
+turned through on hardware. The costs above now apply rather than being
+hypothetical — the knob cannot be recessed, and a cat reaching the knob can
+reach the menu. Placement is what answers them. GP20–GP22 are free again.
 
 **A cat in a menu is a hazard class this design does not have yet**, and it is
 the reason the first fork above needs all of what follows while the second
@@ -1909,11 +1951,11 @@ across the day and there is no guard left, because capping a day was never
 screen, and an edit commits on an explicit confirm rather than as the knob
 turns.
 
-**Under fork (a), a hold then means two things by context** — arm-to-feed on the
-home screen, back-or-save in a menu — which is more vocabulary than `button.rs`
-has today and the part most likely to read as a button that does nothing. Fork
-(b) does not pay this at all: the GPIO3 button keeps exactly today's four
-gestures, and back-or-save lives on the knob's own switch.
+**Under fork (a), a hold could have come to mean two things by context** —
+open-or-close on the home screen, back-or-save in a settings editor. As built it
+does not: a hold only ever unlocks or locks. The settings editors still to come
+must keep it that way, and confirm with a tap on an explicit item rather than
+with a hold.
 
 **Rotation stays foodless, always**, and what that means also depends on the
 fork. Under (b) it is trivially true, because the knob is behind the lid and can
@@ -2042,12 +2084,9 @@ Four rules it comes with:
   at whatever address the unit had when it connected, republished on every
   reconnect. mDNS is not an option: `.local` resolves only over multicast, which
   mesh routers reflect unreliably, and a browser with Secure DNS hands `.local`
-  to the upstream resolver and gets NXDOMAIN regardless. The display is the other backstop, but **it
-  does not show the address yet**: `display::render` puts one on screen only in
-  setup mode, and the station screen spends its three lines on the status
-  banner, the last feed and the next one. The gesture is not the missing part —
-  any press already wakes the panel — the content is, and it is **this version's
-  work rather than v2's**: see *The screen's pages* below.
+  to the upstream resolver and gets NXDOMAIN regardless. The display is the other backstop, and **it
+  already shows the address**: turn the knob to the `WI-FI` page — see *The
+  screen's pages* below.
 - **Saving Wi-Fi or the broker reboots; saving a schedule must not.** A feeder
   that restarts when a mealtime is adjusted drops its clock trust and goes back
   to waiting for a live time.
@@ -2125,52 +2164,35 @@ it is what any of these futures wants anyway.
 
 ### The screen's pages
 
-**This version, not v2.** The panel and the button both exist; what is missing
-is that the unit cannot tell you its own address, or anything else about how it
-is configured, without a serial cable.
-
-The wake half is already built. `main.rs` records `BUS.last_press` on the
-**press** edge rather than the release, deliberately, so the panel is lit before
-a finger lifts, and `display::awake` reads that timestamp. What is missing is
-content: `display::render` puts an address on screen only in setup mode, and the
-station screen spends its three lines on the status banner, the last feed and
-the next one.
-
-A locked tap steps through pages, per the gesture table above:
+✅ **Built**, turned by the knob rather than stepped by a locked tap. Six rows
+each, the bottom one always saying what a hold does from there.
 
 | Page | Lines |
 |---|---|
-| 1 | status banner, last feed, next feed — today's screen, unchanged |
-| 2 | the unit's address, and the SSID it is on |
-| 3 | the broker: host, port, username |
-| 4 | device id, firmware version, and what this unit was calibrated for |
+| home | status banner, last feed, next feed |
+| `WI-FI 2/4` | the SSID, this unit's address, whether it is associated |
+| `BROKER 3/4` | host:port, username, whether it is connected |
+| `DEVICE 4/4` | device id and board, firmware version, detent interval, portion scale |
 
-Page one is the existing screen rather than *last feed* and *next feed* being
-two pages of their own: three lines already show both at once, so splitting them
-would cost a tap to see something that was never hidden.
+Home is the old screen rather than *last feed* and *next feed* being pages of
+their own: one screen already shows both.
 
-Page four is worth its place because of something already true of the console:
-*a feeder behaving oddly is either mis-measured or mis-provisioned and nothing
-else tells them apart*, and today the calibration is printed once at boot and
-then only over USB. On the panel it is readable at the feeder, which is where
-somebody stands when the portions look wrong.
+The device page is worth its place because of something already true of the
+console: *a feeder behaving oddly is either mis-measured or mis-provisioned and
+nothing else tells them apart*, and the calibration used to be printed once at
+boot and then only over USB.
 
-Four rules:
+Rules, each tested in `display.rs` or `menu.rs`:
 
-- **No page shows a password**, ever. Setup mode is not an exception to this so
-  much as a different thing: the password it shows is one the unit generated for
-  a network it raised itself, and showing it is the entire point. A stored Wi-Fi
-  or broker password is never rendered, on the panel or in a form — the same
-  rule the admin page will need.
-- **Twenty-one columns is the budget**, so lines are built against `COLS` like
-  every other line in `display.rs`. `192.168.68.114` is fourteen characters and
-  fits; `http://192.168.68.114` is exactly twenty-one and would fit only for
-  addresses that short, so print the address bare and let whoever reads it type
-  the scheme.
-- **Sleep resets to page one**, as the button section says, so the first press
-  never lands on a page left over from days ago.
-- **Pages are a locked gesture only.** While armed a tap feeds, and a screen
-  control that dispenses food is exactly what arming exists to prevent.
+- **No page shows a password**, ever. `display::UnitInfo` carries none, so no
+  page *can*. Setup mode is a different thing: the password it shows is one the
+  unit derived for a network it raised itself.
+- **Twenty-one columns is the budget.** `255.255.255.255:65535` is exactly 21,
+  so any broker the firmware accepts fits on one line; the unit's own address
+  is printed bare, without a scheme.
+- **Waking resets to home**, so the first look never lands on a page left over
+  from days ago.
+- **Pages are locked-only.** While unlocked, turning moves the menu's cursor.
 
 Keep the list short. A screen with a menu is a screen nobody reads to the end,
 and everything here is either the feeder's purpose or an answer to *how do I

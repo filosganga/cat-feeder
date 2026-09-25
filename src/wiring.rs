@@ -13,7 +13,11 @@
 //!   mqtt      --schedule schedule
 //!   schedule  --last_fed mqtt, display
 //!   schedule  --next---> display      (the upcoming slot)
-//!   button    --pressed> display      (wakes the panel)
+//!   ui        --pressed> display      (wakes the panel)
+//!   ui        --mode---> display      (which page, or the menu)
+//!   ui        --redraw-> display      (now, not at the next tick)
+//!   ui        --pause--> mqtt         (publish the retained flag)
+//!   main      --ip-----> display
 //! ```
 
 use core::cell::Cell;
@@ -25,6 +29,7 @@ use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
 use crate::indicator::Health;
+use crate::menu::{Calibration, Mode};
 use crate::schedule::{Schedule, Slot, TimeSource, Wall};
 
 /// How many unread feed **requests** can be waiting before producers drop them.
@@ -293,6 +298,24 @@ impl LastPress {
     }
 }
 
+/// A small `Copy` value behind a lock, for state one task writes and another
+/// samples. Same shape as [`LastPress`], without its commentary.
+pub struct Shared<T: Copy>(Mutex<CriticalSectionRawMutex, Cell<T>>);
+
+impl<T: Copy> Shared<T> {
+    pub const fn new(value: T) -> Self {
+        Self(Mutex::new(Cell::new(value)))
+    }
+
+    pub fn set(&self, value: T) {
+        self.0.lock(|cell| cell.set(value));
+    }
+
+    pub fn get(&self) -> T {
+        self.0.lock(Cell::get)
+    }
+}
+
 /// Everything the tasks share.
 pub struct Bus {
     /// Portion requests. Written by `mqtt` and `schedule`, drained by `feeder`.
@@ -317,8 +340,33 @@ pub struct Bus {
     pub last_fed: LastFed,
     /// Written by `schedule`, read by `display`.
     pub next: NextSlot,
-    /// Written by `button`, read by `display`.
+    /// Written by `ui`, read by `display`. Every press and every turn.
     pub last_press: LastPress,
+    /// Which page is up, or the menu and its cursor. Written by `ui`, read by
+    /// `display`.
+    pub mode: Shared<Mode>,
+    /// Redraw now. Signalled by `ui` after every input, so the screen follows
+    /// the knob rather than lagging it by up to a second.
+    pub redraw: Signal<CriticalSectionRawMutex, ()>,
+    /// The menu asked for the schedule to be paused (`true`) or resumed.
+    /// Signalled by `ui`, taken by `mqtt`.
+    ///
+    /// The flag's home is the retained `feeder/<id>/paused` topic, so a change
+    /// made at the feeder has to be *published* there. Setting [`Bus::paused`]
+    /// alone would be undone by the retained value replayed on the next
+    /// reconnect, and Home Assistant's switch would disagree in the meantime.
+    ///
+    /// A [`Signal`] because only the latest wish matters, and because it keeps
+    /// that wish while the broker is unreachable: `mqtt` publishes a pending
+    /// one before subscribing, so the replay then carries it back unchanged.
+    pub pause_request: Signal<CriticalSectionRawMutex, bool>,
+    /// This unit's address, once DHCP has handed one out. Written by `main`,
+    /// read by `display`.
+    pub ip: Shared<Option<[u8; 4]>>,
+    /// The calibration in force. Seeded by `main` from the record, rewritten
+    /// by `ui` when the knob saves a new figure; read by `feeder`, which
+    /// applies it at its next idle moment, and by `display`.
+    pub calibration: Shared<Calibration>,
     /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
     pub net: Connectivity,
     /// This unit is in setup mode, serving its own network.
@@ -326,9 +374,9 @@ pub struct Bus {
     /// Set once, by the boot path, and never cleared: setup mode is left by
     /// rebooting, not by changing its mind.
     pub setup: AtomicBool,
-    /// The outside button is armed. Written by `button`, read by `indicator`.
+    /// The menu is open. Written by `ui`, read by `indicator`.
     ///
-    /// The gesture state itself stays inside the button task — this is only the
+    /// The gesture state itself stays inside the ui task — this is only the
     /// one bit the LED needs, so nothing else can reach in and change what a
     /// press means.
     pub button_armed: AtomicBool,
@@ -351,6 +399,16 @@ impl Bus {
             last_fed: LastFed::new(),
             next: NextSlot::new(),
             last_press: LastPress::new(),
+            mode: Shared::new(Mode::Locked {
+                page: crate::menu::Page::Home,
+            }),
+            redraw: Signal::new(),
+            pause_request: Signal::new(),
+            ip: Shared::new(None),
+            calibration: Shared::new(Calibration {
+                portion_scale_pct: crate::portions::SCALE_UNCHANGED,
+                detent_ms: crate::provisioning::DEFAULT_DETENT_MS,
+            }),
             net: Connectivity::new(),
             setup: AtomicBool::new(false),
             button_armed: AtomicBool::new(false),

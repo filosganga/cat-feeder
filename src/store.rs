@@ -86,6 +86,9 @@ impl Store {
     }
 
     /// The stored record, or why there isn't one.
+    // Out of line: each holds a record-sized buffer, which inlined would
+    // land in the async task that called it and stay there. See `main.rs`.
+    #[inline(never)]
     pub fn load(&mut self) -> Result<Record, StoreError> {
         let mut buffer = [0u8; MAX_RECORD_LEN];
         self.flash
@@ -100,6 +103,9 @@ impl Store {
     /// `Storage::write` reads the sector, patches it, erases and writes it
     /// back, so this is safe over an existing record — NOR flash can only clear
     /// bits, and writing without erasing would AND the two together.
+    // Out of line: each holds a record-sized buffer, which inlined would
+    // land in the async task that called it and stay there. See `main.rs`.
+    #[inline(never)]
     pub fn save(&mut self, record: &Record) -> Result<(), StoreError> {
         let mut buffer = [0u8; MAX_RECORD_LEN];
         let len = record.encode(&mut buffer).map_err(|_| StoreError::Flash)?;
@@ -109,10 +115,27 @@ impl Store {
             .map_err(|_| StoreError::Flash)
     }
 
+    /// Reads the record, lets `change` edit it, and writes it back.
+    ///
+    /// Everything `change` does not touch is written back exactly as it was
+    /// stored, credentials included. The two record-sized copies live in this
+    /// frame and are gone when it returns — which is why this is a method
+    /// here rather than a load and a save in an async task's body, where
+    /// they would be counted against that task's frame.
+    #[inline(never)]
+    pub fn update(&mut self, change: impl FnOnce(&mut Record)) -> Result<(), StoreError> {
+        let mut record = self.load()?;
+        change(&mut record);
+        self.save(&record)
+    }
+
     /// Throws the record away, so the next boot goes to setup.
     ///
     /// Writes the erased pattern rather than only clobbering the magic, so
     /// nothing recognisable is left behind — the old Wi-Fi password included.
+    // Out of line: each holds a record-sized buffer, which inlined would
+    // land in the async task that called it and stay there. See `main.rs`.
+    #[inline(never)]
     pub fn erase(&mut self) -> Result<(), StoreError> {
         let blank = [0xFFu8; MAX_RECORD_LEN];
         self.flash

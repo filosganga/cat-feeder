@@ -20,7 +20,7 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 | `feeder/<id>/availability` | `online` / `offline` | device → | yes, and the will |
 | `feeder/<id>/feed` | `<portions:u8>` | → device | **no** |
 | `feeder/all/feed` | `<portions:u8>` | → all devices | **no** |
-| `feeder/<id>/paused` | `ON` / `OFF` | → device | yes |
+| `feeder/<id>/paused` | `ON` / `OFF` | → device, and device → from the knob's menu | yes |
 | `feeder/schedule` | `[{"time":"08:00","portions":2}]` | HA → all | yes |
 | `feeder/time` | `"2026-09-14T08:00:00+02:00"` | HA → all, each minute | yes |
 | `feeder/time/request` | `<id>` | device → HA | **no** |
@@ -88,6 +88,10 @@ Get this wrong and entities appear unavailable or never appear at all.
 2. After CONNACK, publish the three discovery configs, each **retained**, to
    `homeassistant/<component>/feeder_<id>/<object>/config`.
 3. Only then publish `online` to `feeder/<id>/availability`, retained.
+3a. If the knob's menu changed the pause while the broker was unreachable,
+   publish it now to `feeder/<id>/paused`, retained — **before** step 4, so the
+   retained replay the subscription triggers carries the new value back rather
+   than undoing it.
 4. Subscribe to `feeder/<id>/feed`, `feeder/all/feed`, `feeder/<id>/paused`,
    `feeder/schedule`, `feeder/time`.
 5. Publish this unit's id to `feeder/time/request`, so Home Assistant sends a

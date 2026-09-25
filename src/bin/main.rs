@@ -7,14 +7,16 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
-use cat_feeder::button::{
-    BOOT_RESET_HOLD_MS, Button as ButtonGesture, Event as ButtonEvent, held_at_boot,
-};
+use cat_feeder::button::{BOOT_RESET_HOLD_MS, held_at_boot};
 use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
-use cat_feeder::display::{self, Fed, Screen, SetupInfo, View};
-use cat_feeder::feeder::{Action, ClickOutcome, Feeder};
+use cat_feeder::display::{self, Fed, Net, Screen, SetupInfo, UnitInfo, View};
+use cat_feeder::encoder::Decoder;
+use cat_feeder::feeder::{Action, ClickOutcome, Feeder, Timings};
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
+use cat_feeder::menu::{
+    Calibration, Field, Item, Menu, Mode as MenuMode, Outcome as MenuOutcome, Page, Setting,
+};
 use cat_feeder::motor::{Drv8833, MotorDriver};
 use cat_feeder::oled::Oled;
 use cat_feeder::portions::{Added, MAX_CLICKS};
@@ -26,8 +28,8 @@ use cat_feeder::store::{Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::wiring::{Bus, now_ms};
 use cat_feeder::{
-    button_pin, display_scl_pin, display_sda_pin, led_pin, motor_in1_pin, motor_in2_pin,
-    motor_sleep_pin, mqtt, switch_pin,
+    button_pin, display_scl_pin, display_sda_pin, encoder_a_pin, encoder_b_pin, led_pin,
+    motor_in1_pin, motor_in2_pin, motor_sleep_pin, mqtt, switch_pin,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_executor::Spawner;
@@ -35,14 +37,16 @@ use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_net::{Runner, StackResources};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::rng::Rng;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::{
-    Config as WifiConfig, ControllerConfig, Interface, WifiController, sta::StationConfig,
+    Config as WifiConfig, ControllerConfig, Interface, WifiController,
+    sta::{ScanMethod, StationConfig},
 };
 use log::{error, info, warn};
 
@@ -135,6 +139,13 @@ async fn main(spawner: Spawner) -> ! {
     let button = Switch::new(button_pin!(peripherals));
     let wipe = reset_held_at_boot(&button).await;
 
+    // The knob's two lines, pulled up like every other contact to ground on
+    // this board. Spawned on both boot paths with the click, so a unit in
+    // setup mode still answers the knob on the console.
+    let pull_up = InputConfig::default().with_pull(Pull::Up);
+    let encoder_a = Input::new(encoder_a_pin!(peripherals), pull_up);
+    let encoder_b = Input::new(encoder_b_pin!(peripherals), pull_up);
+
     // Built here rather than after the branch below, so that setup mode can
     // report its level too. A unit in setup mode is a unit on a bench being
     // wired, which is exactly when knowing what this pin reads is worth most.
@@ -158,7 +169,7 @@ async fn main(spawner: Spawner) -> ! {
     // cats, so a missing or miswired one is a warning and `display_task` runs
     // regardless, reporting to the console alone.
     //
-    // `mk_static!` rather than moving it into the task: an `Oled` is 584 bytes,
+    // `mk_static!` rather than moving it into the task: an `Oled` is over a kilobyte,
     // almost all of it the frame buffer, and an async task's frame is live for
     // the whole life of the future. Passing it by value put `display_task` at
     // 1268 bytes against the crate's 1024 budget. A buffer that lives forever
@@ -180,11 +191,15 @@ async fn main(spawner: Spawner) -> ! {
     // No usable record means setup mode, and setup mode never returns. It is
     // entered before any task that assumes a network, because there is not
     // going to be one.
-    let cfg = match boot {
-        Boot::Configured(cfg) => cfg,
+    let (cfg, store) = match boot {
+        Boot::Configured(cfg, store) => (cfg, store),
         Boot::Setup(store) => {
             BUS.setup.store(true, Ordering::Relaxed);
-            spawner.spawn(button_task(button).expect("failed to create button task"));
+            // No knob in setup mode. The setup screen replaces every page and
+            // the menu, so a hold would turn the LED cyan behind a menu nobody
+            // can see, and its items would act on a unit with no broker and
+            // no feeder task. The boot-time erase above has already run.
+            let _ = (button, encoder_a, encoder_b);
             log_setup_switch_level(&switch);
 
             // Derived once, here, and handed to both the screen and the radio.
@@ -205,6 +220,7 @@ async fn main(spawner: Spawner) -> ! {
                         ssid: ssid.as_str(),
                         password: password.as_str(),
                     }),
+                    None,
                 )
                 .expect("failed to create display task"),
             );
@@ -221,7 +237,17 @@ async fn main(spawner: Spawner) -> ! {
         Boot::Unconfigurable => halt_unconfigurable(oled).await,
     };
 
-    spawner.spawn(button_task(button).expect("failed to create button task"));
+    // The store goes to the ui task, which is the only writer a configured unit
+    // has: the knob's settings save through it, and the factory reset erases
+    // through it.
+    let store = mk_static!(Store, store);
+    let calibration = Calibration {
+        portion_scale_pct: cfg.portion_scale_pct,
+        detent_ms: cfg.detent_ms,
+    };
+    BUS.calibration.set(calibration);
+    spawner.spawn(ui_task(button, store, calibration).expect("failed to create ui task"));
+    spawner.spawn(encoder_task(encoder_a, encoder_b).expect("failed to create encoder task"));
 
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
 
@@ -234,14 +260,29 @@ async fn main(spawner: Spawner) -> ! {
     );
     spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
     spawner.spawn(schedule_task().expect("failed to create schedule task"));
-    // `None`: a configured unit has no setup network to describe, so the screen
-    // spends all three lines on what the feeder is for. See `display::render`.
-    spawner.spawn(display_task(oled, None).expect("failed to create display task"));
+    // `None` for setup: a configured unit has no setup network to describe.
+    // What it has instead is a configuration, which the info pages show.
+    let unit = UnitInfo {
+        id: id.as_str(),
+        board: cat_feeder::board::NAME,
+        version: env!("CARGO_PKG_VERSION"),
+        wifi_ssid: cfg.wifi_ssid,
+        mqtt_host: cfg.mqtt_host,
+        mqtt_port: cfg.mqtt_port,
+        mqtt_user: cfg.mqtt_user,
+    };
+    spawner.spawn(display_task(oled, None, Some(unit)).expect("failed to create display task"));
 
     let station = WifiConfig::Station(
         StationConfig::default()
             .with_ssid(cfg.wifi_ssid)
-            .with_password(cfg.wifi_password.into()),
+            .with_password(cfg.wifi_password.into())
+            // Scan every channel and join the strongest node, not the first
+            // one heard. `Fast` is the default and stops at the first match,
+            // which on a mesh network can be a node across the house: seen at
+            // -82 dBm a metre from another node. `WIFI_CONNECT_AP_BY_SIGNAL`
+            // is already set by esp-radio but only applies to a full scan.
+            .with_scan_method(ScanMethod::AllChannels),
     );
 
     let (controller, interfaces) = esp_radio::wifi::new(
@@ -268,6 +309,7 @@ async fn main(spawner: Spawner) -> ! {
     stack.wait_config_up().await;
     if let Some(v4) = stack.config_v4() {
         info!("wifi: connected, ip={}", v4.address);
+        BUS.ip.set(Some(v4.address.address().octets()));
     }
 
     mqtt::run(stack, cfg, id.as_str(), &BUS).await
@@ -311,15 +353,16 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Bo
     }
 
     match stored_config(&mut store) {
-        Some(cfg) => Boot::Configured(cfg),
+        Some(cfg) => Boot::Configured(cfg, store),
         None => Boot::Setup(store),
     }
 }
 
 /// What the boot path found in flash.
 enum Boot {
-    /// A usable record. Run normally.
-    Configured(Config),
+    /// A usable record. Run normally, keeping the `Store` for the knob's
+    /// settings and its factory reset.
+    Configured(Config, Store),
     /// Writable flash with nothing usable in it. Setup mode, carrying the
     /// `Store` the form will save through.
     Setup(Store),
@@ -437,30 +480,34 @@ async fn reset_held_at_boot(button: &Switch<'static>) -> bool {
     held
 }
 
-/// Owns the outside button, and decides nothing.
+/// Owns the knob's click, takes the knob's turns, and decides nothing.
 ///
-/// Every rule belongs to `button::Button`, which is pure and host-tested.
+/// Every rule belongs to `menu::Menu`, which is pure and host-tested.
 ///
-/// **Polls levels rather than awaiting edges**, which is the opposite of
-/// `switch_task` and is deliberate. This loop has to service two sources — the
-/// level changing and time passing — and `Switch::next_transition` is not
-/// cancel-safe: it carries the debounce run in its own stack frame, so dropping
-/// it inside a `select` resets the debounce and re-reads the level as already
-/// settled, silently swallowing the transition. That is the same class of bug
-/// the hub switch got its own task to avoid.
+/// **Polls the click rather than awaiting edges**, which is the opposite of
+/// `switch_task` and is deliberate. This loop has to service three sources —
+/// the level changing, time passing, and turns arriving — and
+/// `Switch::next_transition` is not cancel-safe: it carries the debounce run in
+/// its own stack frame, so dropping it inside a `select` resets the debounce
+/// and re-reads the level as already settled, silently swallowing the
+/// transition. That is the same class of bug the hub switch got its own task
+/// to avoid.
 ///
-/// Polling is free here. The button's shortest deadline is a two-second hold,
-/// so a 20 ms tick is a hundred times finer than anything it must resolve.
+/// Polling is free here. The shortest deadline is a two-second hold, so a
+/// 20 ms tick is a hundred times finer than anything it must resolve. The tick
+/// is a fixed deadline rather than a fresh 20 ms after every wake, so a knob
+/// spun fast cannot starve the click of samples.
 #[embassy_executor::task]
-async fn button_task(button: Switch<'static>) {
+async fn ui_task(button: Switch<'static>, store: &'static mut Store, calibration: Calibration) {
     const TICK: Duration = Duration::from_millis(20);
     /// Consecutive equal samples before a level is believed: 40 ms.
     const STABLE: u8 = 2;
 
-    let mut gesture = ButtonGesture::new();
+    let mut menu = Menu::new(calibration);
     let mut settled = button.is_pressed();
     let mut candidate = settled;
     let mut stable: u8 = 0;
+    let mut next_tick = Instant::now() + TICK;
 
     // The level, not just the pin, exactly as `switch_task` reports it. A
     // button stuck at ground is indistinguishable from a working one until the
@@ -473,58 +520,241 @@ async fn button_task(button: Switch<'static>) {
     );
 
     loop {
-        Timer::after(TICK).await;
-        let now = now_ms();
+        let outcome = match select(Timer::at(next_tick), TURNS.receive()).await {
+            Either::First(()) => {
+                next_tick += TICK;
+                let now = now_ms();
 
-        let level = button.is_pressed();
-        if level == candidate {
-            stable = stable.saturating_add(1);
-        } else {
-            candidate = level;
-            stable = 1;
-        }
+                let level = button.is_pressed();
+                if level == candidate {
+                    stable = stable.saturating_add(1);
+                } else {
+                    candidate = level;
+                    stable = 1;
+                }
 
-        if candidate != settled && stable >= STABLE {
-            settled = candidate;
+                let mut outcome = None;
+                if candidate != settled && stable >= STABLE {
+                    settled = candidate;
 
-            // Any press wakes the screen, whatever the gesture machine makes
-            // of it. Deliberately on the press rather than the release, so the
-            // panel is already lit by the time a finger lifts.
-            if settled {
+                    // Any press wakes the screen, whatever the menu makes of
+                    // it. Deliberately on the press rather than the release,
+                    // so the panel is already lit by the time a finger lifts.
+                    if settled {
+                        BUS.last_press.set(now);
+                    }
+                    outcome = menu.on_change(now, settled);
+                }
+
+                // Time-driven: a hold unlocks while still held, and the window
+                // lapses with nothing touched. Neither is an edge.
+                outcome.or_else(|| menu.poll(now))
+            }
+            Either::Second(steps) => {
+                let now = now_ms();
+                // Whether the panel was lit *before* this turn, which decides
+                // whether the turn steps a page or only wakes the screen.
+                let awake = display::awake(Status::of(BUS.health()), now, BUS.last_press.get());
                 BUS.last_press.set(now);
+                menu.on_turn(now, steps, awake)
             }
-
-            if let Some(event) = gesture.on_change(now, settled) {
-                on_button(event);
-            }
-        }
-
-        // Time-driven events: arming fires while the button is still held, and
-        // the window lapses with nothing pressed at all. Neither is an edge.
-        if let Some(event) = gesture.poll(now) {
-            on_button(event);
-        }
+        };
 
         BUS.button_armed
-            .store(gesture.is_armed(), Ordering::Relaxed);
+            .store(menu.is_unlocked(), Ordering::Relaxed);
+
+        if let Some(outcome) = outcome {
+            if let MenuOutcome::Save { field, value } = outcome {
+                apply_save(&mut menu, store, field, value);
+            } else if on_menu(outcome, store) {
+                // Only the factory reset restarts. Long enough for the
+                // console line to leave the USB buffer first.
+                Timer::after(Duration::from_millis(250)).await;
+                esp_hal::system::software_reset();
+            }
+            BUS.mode.set(menu.mode());
+            BUS.redraw.signal(());
+        }
     }
 }
 
+/// Carries out what the menu decided, and says so. True means restart now.
+///
 /// See [`log_start`] for why this is a separate, never-inlined function.
 #[inline(never)]
-fn on_button(event: ButtonEvent) {
-    match event {
-        ButtonEvent::Armed => info!("button: armed, tap to feed"),
+fn on_menu(outcome: MenuOutcome, store: &mut Store) -> bool {
+    match outcome {
+        // Handled by `apply_save` before this is reached.
+        MenuOutcome::Save { .. } => {}
+        MenuOutcome::FactoryReset => return factory_reset(store),
+        MenuOutcome::Unlocked => info!("menu: unlocked, turn to choose, tap to run"),
         // The two ways back to locked, named apart on purpose: one is a
         // decision and the other is ten seconds passing, and a console that
         // called both "locked again" could not tell you which happened.
-        ButtonEvent::Expired => info!("button: locked, window lapsed"),
-        ButtonEvent::Ignored => info!("button: tap ignored, hold 2s to arm first"),
-        ButtonEvent::Locked => info!("button: locked by hold"),
-        ButtonEvent::Feed => match BUS.feed.try_send(1) {
-            Ok(()) => info!("button: feed 1"),
-            Err(_) => warn!("button: feed queue full, portion dropped"),
+        MenuOutcome::Locked => info!("menu: locked"),
+        MenuOutcome::Expired => info!("menu: locked, window lapsed"),
+        MenuOutcome::Home => info!("menu: home"),
+        MenuOutcome::Woke => info!("menu: woke the screen"),
+        MenuOutcome::Moved(mode) => log_moved(mode),
+        MenuOutcome::Feed => match BUS.feed.try_send(1) {
+            Ok(()) => info!("menu: feed 1"),
+            Err(_) => warn!("menu: feed queue full, portion dropped"),
         },
+        MenuOutcome::TogglePause => toggle_pause(),
+    }
+    false
+}
+
+/// Applied locally at once, so the schedule stops now and the menu's label
+/// flips under the finger, and published so the retained flag — where it
+/// actually lives — agrees. See `Bus::pause_request`.
+#[inline(never)]
+fn toggle_pause() {
+    let paused = !BUS.is_paused();
+    BUS.set_paused(paused);
+    BUS.pause_request.signal(paused);
+    info!(
+        "menu: schedule {}",
+        if paused { "paused" } else { "resumed" }
+    );
+}
+
+/// The same erase the boot gesture does, so the unit comes back up in setup
+/// mode by the one path that already exists. True means restart now.
+#[inline(never)]
+fn factory_reset(store: &mut Store) -> bool {
+    match store.erase() {
+        Ok(()) => {
+            warn!("menu: configuration erased, restarting into setup");
+            true
+        }
+        Err(e) => {
+            warn!("menu: erase failed ({e:?}), nothing changed");
+            false
+        }
+    }
+}
+
+/// Stores a figure the knob chose and puts it in force, without a restart.
+///
+/// Flash first, then the menu and the bus, so nothing claims a value the
+/// record does not hold. The feeder task picks it up from `BUS.calibration` at
+/// its next idle moment — never mid-turn, see `Feeder::recalibrate`.
+#[inline(never)]
+fn apply_save(menu: &mut Menu, store: &mut Store, field: Field, value: u16) {
+    if save_setting(store, field, value) {
+        menu.saved(field, value);
+        BUS.calibration.set(menu.calibration());
+    }
+}
+
+/// Writes one calibration figure into the record, keeping everything else.
+///
+/// Read back from flash rather than rebuilt from `Config`, so the credentials
+/// are written back exactly as they were stored. True means it landed; a
+/// failure changes nothing and says so.
+#[inline(never)]
+fn save_setting(store: &mut Store, field: Field, value: u16) -> bool {
+    let updated = store.update(|record| match field {
+        Field::PortionScale => record.portion_scale_pct = value,
+        Field::Detent => record.detent_ms = value,
+    });
+    match updated {
+        Ok(()) => {
+            let (name, unit) = match field {
+                Field::PortionScale => ("portion scale", "%"),
+                Field::Detent => ("detent", "ms"),
+            };
+            info!("menu: saved {name} {value}{unit}");
+            true
+        }
+        Err(e) => {
+            warn!("menu: save failed ({e:?}), nothing changed");
+            false
+        }
+    }
+}
+
+/// Where a turn landed, by name rather than by `Debug`, which costs a frame.
+#[inline(never)]
+fn log_moved(mode: MenuMode) {
+    let (what, name) = match mode {
+        MenuMode::Locked { page } => (
+            "page",
+            match page {
+                Page::Home => "home",
+                Page::Network => "network",
+                Page::Broker => "broker",
+                Page::Device => "device",
+            },
+        ),
+        MenuMode::Unlocked { item } => (
+            "cursor on",
+            match item {
+                Item::Feed => "feed",
+                Item::Pause => "pause",
+                Item::Settings => "settings",
+                Item::Lock => "lock",
+            },
+        ),
+        MenuMode::Settings { item } => (
+            "settings, cursor on",
+            match item {
+                Setting::PortionScale => "portion",
+                Setting::Detent => "detent",
+                Setting::Reset => "reset",
+                Setting::Back => "back",
+            },
+        ),
+        MenuMode::Editing { field, value } => {
+            let name = match field {
+                Field::PortionScale => "portion",
+                Field::Detent => "detent",
+            };
+            info!("menu: editing {name}, {value}");
+            return;
+        }
+        MenuMode::ConfirmReset { erase } => ("reset?", if erase { "erase" } else { "keep" }),
+    };
+    info!("menu: {what} {name}");
+}
+
+/// Turns of the knob, from the task sampling it to the one that decides.
+static TURNS: Channel<CriticalSectionRawMutex, i8, 8> = Channel::new();
+
+/// Samples the encoder's two lines and forwards whole detents.
+///
+/// **Polled every millisecond**, not interrupt-driven. The decoder in
+/// `encoder.rs` needs every intermediate state to know the direction, and a
+/// knob spun briskly changes state every few milliseconds, so a millisecond is
+/// comfortably inside that. Two pins read in one wake also cannot tear the way
+/// two separately awaited edges can. The cost is a thousand short wakes a
+/// second, which the executor does not notice.
+#[embassy_executor::task]
+async fn encoder_task(a: Input<'static>, b: Input<'static>) {
+    const SAMPLE: Duration = Duration::from_millis(1);
+
+    let mut decoder = Decoder::new(
+        a.is_high(),
+        b.is_high(),
+        cat_feeder::board::ENCODER_REVERSED,
+        cat_feeder::board::ENCODER_HALF_STEP,
+    );
+    info!(
+        "encoder: watching {}/{}, currently {}{}",
+        cat_feeder::board::ENCODER_A_PIN,
+        cat_feeder::board::ENCODER_B_PIN,
+        a.is_high() as u8,
+        b.is_high() as u8,
+    );
+
+    loop {
+        Timer::after(SAMPLE).await;
+        let step = decoder.update(a.is_high(), b.is_high());
+        if step != 0 && TURNS.try_send(step).is_err() {
+            // Only if the ui task has stalled; a detent is not worth blocking for.
+            warn!("encoder: turn dropped");
+        }
     }
 }
 
@@ -675,7 +905,8 @@ fn log_indicator(status: Option<Status>) {
 #[embassy_executor::task]
 async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
     let mut feeder = Feeder::new(cfg.timings, cfg.portion_scale_pct);
-    log_calibration(cfg);
+    log_calibration(cfg.timings, cfg.portion_scale_pct);
+    let mut applied = BUS.calibration.get();
 
     loop {
         let action = feeder.action(now_ms());
@@ -703,6 +934,17 @@ async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
                         continue;
                     }
                 };
+
+                // Before the request, so a meal asked for after the knob saved a
+                // new scale is counted at it. Idle here, so it always applies.
+                let wanted = BUS.calibration.get();
+                if wanted != applied {
+                    let timings = Timings::from_detent(wanted.detent_ms);
+                    if feeder.recalibrate(timings, wanted.portion_scale_pct) {
+                        applied = wanted;
+                        log_calibration(timings, wanted.portion_scale_pct);
+                    }
+                }
 
                 log_clamp(feeder.request(portions));
                 if feeder.pending() == 0 {
@@ -763,16 +1005,17 @@ async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
 ///
 /// Worth a line: these come from the record in flash and differ per unit, so a
 /// feeder behaving oddly is either mis-measured or mis-provisioned, and this is
-/// the only place that distinction is visible.
+/// the only place that distinction is visible. Printed at boot, and again
+/// whenever the knob's settings put new figures in force.
 ///
 /// See [`log_start`] for why it is a separate, never-inlined function — adding
 /// this `info!` inline put `feeder_task` over the crate's stack budget, which
 /// is exactly what `deny(clippy::large_stack_frames)` is there to catch.
 #[inline(never)]
-fn log_calibration(cfg: Config) {
+fn log_calibration(timings: Timings, portion_scale_pct: u16) {
     info!(
         "feeder: clicks >{} ms apart, jam after {} ms, portions x{}%",
-        cfg.timings.min_click_spacing_ms, cfg.timings.jam_timeout_ms, cfg.portion_scale_pct
+        timings.min_click_spacing_ms, timings.jam_timeout_ms, portion_scale_pct
     );
 }
 
@@ -889,42 +1132,25 @@ fn resolve(scheduler: &mut Scheduler, now: Wall) {
 async fn display_task(
     mut oled: Option<&'static mut Oled<'static>>,
     setup: Option<SetupInfo<'static>>,
+    unit: Option<UnitInfo<'static>>,
 ) {
-    let mut shown: Option<Screen> = None;
+    // In a static rather than the task's frame: six lines of twenty-one is
+    // 172 bytes a copy, and an async task's frame is held for the life of the
+    // future. `redraw` builds the new screen in its own short-lived frame and
+    // only this pointer crosses an `.await`.
+    let shown = mk_static!(Option<Screen>, None);
     let mut lit: Option<bool> = None;
 
     loop {
-        // One snapshot, read twice: `Status::of` collapses the ladder and hides
-        // `button_armed` behind a jam, which is the one case the panel wants
-        // both halves of. Sampling `BUS.health()` again for the flag could
-        // straddle a press and render a screen no single instant produced.
-        let health = BUS.health();
-        let status = Status::of(health);
-        let screen = display::render(&View {
-            status,
-            // Constant for the life of setup mode, so this loop renders the same
-            // three lines every tick and pushes none of them after the first.
-            setup,
-            last_fed: BUS
-                .last_fed
-                .get()
-                .map(|(at, portions)| Fed { at, portions }),
-            next: BUS.next.get(),
-            button_armed: health.button_armed,
-        });
+        let status = Status::of(BUS.health());
 
-        // Only on a change, exactly as the LED does. A three-line screen logged
-        // every second would bury every other line on the console, and the
-        // interesting thing about a screen is when it changes anyway.
-        if shown.as_ref() != Some(&screen) {
-            log_screen(&screen);
-            if let Some(oled) = oled.as_mut() {
-                oled.show(&screen).await;
-            }
-            shown = Some(screen);
+        if redraw(shown, setup, unit)
+            && let (Some(oled), Some(screen)) = (oled.as_mut(), shown.as_ref())
+        {
+            oled.show(screen).await;
         }
 
-        // Blanked on a timer and woken by the outside button. The buffer is
+        // Blanked on a timer and woken by the knob. The buffer is
         // still written while dark, so a wake shows current state rather than
         // whatever was on screen when it slept.
         let awake = display::awake(status, now_ms(), BUS.last_press.get());
@@ -937,8 +1163,57 @@ async fn display_task(
             lit = Some(awake);
         }
 
-        Timer::after(DISPLAY_TICK).await;
+        // A tick for the state behind the screen, and the ui task's signal
+        // for the knob, so a turn is drawn at once rather than up to a second
+        // later.
+        select(Timer::after(DISPLAY_TICK), BUS.redraw.wait()).await;
     }
+}
+
+/// Renders the current screen into `shown`, and says whether it changed.
+///
+/// Out of line so the `View` and the fresh `Screen` live in this frame and are
+/// gone before `display_task` awaits the panel. See [`log_start`] for the
+/// pattern.
+#[inline(never)]
+fn redraw(
+    shown: &mut Option<Screen>,
+    setup: Option<SetupInfo<'static>>,
+    unit: Option<UnitInfo<'static>>,
+) -> bool {
+    // One snapshot, read for several fields: sampling `BUS.health()` again
+    // could straddle a change and render a screen no single instant produced.
+    let health = BUS.health();
+    let screen = display::render(&View {
+        status: Status::of(health),
+        // Constant for the life of setup mode, so this renders the same screen
+        // every tick and pushes none of it after the first.
+        setup,
+        last_fed: BUS
+            .last_fed
+            .get()
+            .map(|(at, portions)| Fed { at, portions }),
+        next: BUS.next.get(),
+        mode: BUS.mode.get(),
+        paused: health.paused,
+        net: Net {
+            link: health.link,
+            broker: health.broker,
+            ip: BUS.ip.get(),
+        },
+        unit,
+        calibration: BUS.calibration.get(),
+    });
+
+    // Only on a change, exactly as the LED does. A screen logged every second
+    // would bury every other line on the console, and the interesting thing
+    // about a screen is when it changes anyway.
+    if shown.as_ref() == Some(&screen) {
+        return false;
+    }
+    log_screen(&screen);
+    *shown = Some(screen);
+    true
 }
 
 /// How often the screen is rebuilt.

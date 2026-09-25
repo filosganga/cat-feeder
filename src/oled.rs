@@ -10,7 +10,7 @@
 //! to `embedded-hal-async`, and esp-hal implements both — blocking for any
 //! driver mode, async for `I2c<'_, Async>`.
 //!
-//! Async is the right half here. A 128×32 frame is 512 bytes, which at 400 kHz
+//! Async is the right half here. A 128×64 frame is 1 KB, which at 400 kHz
 //! is several milliseconds on the wire, and a *blocking* write inside an
 //! Embassy task stalls every other task on the executor — including the one
 //! holding the `next_click` future that counts portions. Nothing about a screen
@@ -19,9 +19,9 @@
 //! ## The address is discovered, not assumed
 //!
 //! An SSD1306 answers on `0x3C` or `0x3D`, selected on the module by a jumper
-//! or a resistor. The 0.91" parts are `0x3C`; the 1.3" Adafruit breakout is
-//! usually `0x3D`. Either may end up in a feeder — see `CLAUDE.md`'s *A
-//! display* — which is the point: neither address can be assumed.
+//! or a resistor. The 0.96" SSD1315 on the bench is `0x3C`; the 1.3" Adafruit
+//! breakout tried before it is usually `0x3D`. A replacement part may be
+//! either, which is the point: neither address can be assumed.
 //!
 //! Hardcoding either gives a driver that works on the bench and shows nothing
 //! the day the real panel is fitted — with no clue as to why, because a device
@@ -56,17 +56,18 @@ pub const ADDRESSES: [u8; 2] = [0x3C, 0x3D];
 /// millisecond the I²C peripheral is busy.
 const BUS_HZ: u32 = 400;
 
-/// Row height of `FONT_6X10`. Three of them fill a 128×32 panel with 2 px over.
+/// Row height of `FONT_6X10`. Six of them fill a 128×64 panel with 4 px over.
 const LINE_H: i32 = 10;
 
-#[cfg(not(feature = "panel-128x64"))]
-type PanelSize = DisplaySize128x32;
-#[cfg(feature = "panel-128x64")]
+/// The 0.96" 128×64. `ssd1306` takes the size as a type, and it is not
+/// cosmetic — it sets the multiplex ratio, so a 128×64 panel initialised as
+/// 128×32 shows a garbled half-height image rather than a small one. The
+/// 0.91" 128×32 used to be selectable here and was dropped as a fallback once
+/// this part proved itself; `display.rs` now lays out six rows.
+///
+/// The bench part is an **SSD1315**, which is register-compatible with the
+/// SSD1306 this driver is written for.
 type PanelSize = DisplaySize128x64;
-
-#[cfg(not(feature = "panel-128x64"))]
-const PANEL: PanelSize = DisplaySize128x32;
-#[cfg(feature = "panel-128x64")]
 const PANEL: PanelSize = DisplaySize128x64;
 
 type Panel<'d> =
@@ -128,7 +129,7 @@ impl Oled<'static> {
         // after the flash record is read and every other task is spawned.
         //
         // Off, clear, flush, on — rather than just clear and flush — because
-        // pushing 512 bytes at 400 kHz takes on the order of ten milliseconds
+        // pushing a 1 KB frame at 400 kHz takes over twenty milliseconds
         // and the datasheet is explicit that the buffer can be written while
         // the display is off. This way the noise is never scanned out at all,
         // instead of being shown briefly on every boot.
@@ -150,7 +151,7 @@ impl Oled<'static> {
 
     /// Draws one screen and pushes it.
     ///
-    /// The whole frame every time rather than a diff. At 512 bytes it is not
+    /// The whole frame every time rather than a diff. At 1 KB it is not
     /// worth tracking dirty regions, and the caller already refuses to call
     /// this unless something changed.
     pub async fn show(&mut self, screen: &Screen) {

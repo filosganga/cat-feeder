@@ -20,7 +20,7 @@ use core::net::Ipv4Addr;
 use core::num::NonZero;
 use core::str::FromStr as _;
 
-use embassy_futures::select::{Either, select};
+use embassy_futures::select::{Either3, select3};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Instant, Timer};
@@ -269,6 +269,14 @@ async fn session(
     .await?;
     info!("mqtt: online");
 
+    // A pause chosen on the knob while the broker was unreachable. Published
+    // **before** subscribing, so the retained replay that follows carries the
+    // new value back rather than the stale one — which would otherwise undo
+    // the change the moment the unit reconnected.
+    if let Some(paused) = bus.pause_request.try_take() {
+        publish_paused(&mut client, topics, paused).await?;
+    }
+
     for filter in [
         topics.feed.as_str(),
         TOPIC_ALL_FEED,
@@ -306,10 +314,18 @@ async fn session(
         // `poll_header` is cancel-safe and `poll_body` is not, which is exactly
         // why the select waits on the header alone. Reading the body then runs
         // to completion with nothing racing it.
-        let next = select(client.poll_header(), Timer::at(next_state)).await;
+        //
+        // `Signal::wait` is cancel-safe as well: it only takes the value when
+        // it resolves, so losing the race to a header leaves it pending.
+        let next = select3(
+            client.poll_header(),
+            Timer::at(next_state),
+            bus.pause_request.wait(),
+        )
+        .await;
 
         match next {
-            Either::First(header) => {
+            Either3::First(header) => {
                 let header = header.map_err(|e| warn!("mqtt: poll failed: {e:?}"))?;
                 let event = client
                     .poll_body(header)
@@ -337,7 +353,14 @@ async fn session(
                 }
             }
 
-            Either::Second(()) => {
+            Either3::Third(paused) => {
+                // The broker echoes it straight back on the subscription, and
+                // that echo is what `on_message` acts on and what brings the
+                // state payload forward.
+                publish_paused(&mut client, topics, paused).await?;
+            }
+
+            Either3::Second(()) => {
                 next_state = Instant::now() + STATE_INTERVAL;
 
                 let payload = State::read(bus).to_json();
@@ -345,6 +368,22 @@ async fn session(
             }
         }
     }
+}
+
+/// Publishes the retained pause flag, as Home Assistant's switch would.
+///
+/// For a change made at the feeder itself. The retained topic is where the
+/// flag lives — see `Bus::pause_request` — so this is the same write Home
+/// Assistant makes, and its switch follows through the state payload.
+async fn publish_paused<N: Transport>(
+    client: &mut FeederClient<'_, N>,
+    topics: &Topics,
+    paused: bool,
+) -> Result<(), ()> {
+    let payload = if paused { "ON" } else { "OFF" };
+    publish(client, &topics.paused, payload.as_bytes(), true).await?;
+    info!("mqtt: published paused = {payload}, from the menu");
+    Ok(())
 }
 
 /// Acts on one incoming publication.

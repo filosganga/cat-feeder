@@ -1,13 +1,14 @@
 //! What the OLED shows. Pure logic; the pixels are somebody else's problem.
 //!
-//! The smaller of the two panels is a 0.91" 128×32, which at `FONT_6X10` is
-//! **three lines of twenty-one characters**. That is the budget this module
-//! lays out against, and it is why every line here is built against [`COLS`]
-//! rather than formatted hopefully and truncated later.
+//! The panel is a 0.96" 128×64, which at `FONT_6X10` is **six lines of
+//! twenty-one characters**. That is the budget this module lays out against,
+//! and it is why every line here is built against [`COLS`] rather than
+//! formatted hopefully and truncated later.
 //!
-//! The 1.3" 128×64 under `panel-128x64` is **not wider**. Both are 128 pixels
-//! across, so [`COLS`] is 21 either way and the big panel buys rows alone —
-//! six instead of three. Rows are therefore a floor and columns a ceiling.
+//! Six rows is new; the 0.91" 128×32 this module was first written for had
+//! three, and was dropped as a fallback once the 128×64 part proved itself.
+//! **The rows grew and the columns did not** — both panels are 128 pixels
+//! wide, so [`COLS`] is still 21, and it is still the limit that bites.
 //!
 //! Which matters because the ceiling is enforced by truncation and nothing
 //! else: [`Line`] is a `String<COLS>`, so `push` drops the overflow in silence.
@@ -17,12 +18,23 @@
 //! asserting its exact expected text, or reading a value back out of it the way
 //! `printed_seconds` does.
 //!
+//! ## What is on screen
+//!
+//! The knob decides, through [`Mode`] from `menu.rs`:
+//!
+//! - **Locked**, a page: home (status, last feed, next feed), then the unit's
+//!   network, its broker, and the device itself. Turning steps through them.
+//! - **Unlocked**, the menu: `Feed`, pause or resume, `Lock`, with a cursor.
+//!
+//! The bottom row of every screen says what a hold will do from there, because
+//! a hold is the one gesture nothing on the glass would otherwise suggest.
+//!
 //! ## Nothing is said when nothing is wrong
 //!
 //! The same rule the LED follows, for the same reason: a status that is always
-//! displayed is a status nobody reads. So the top line is **empty** when the
-//! unit is healthy, and the screen spends all three lines on what the feeder is
-//! actually for — when it last fed and when it will next.
+//! displayed is a status nobody reads. So the top line of the home page is
+//! **empty** when the unit is healthy, and the page spends its lines on what
+//! the feeder is actually for — when it last fed and when it will next.
 //!
 //! The difference from the LED is that a screen is read deliberately, from
 //! arm's length, so when something *is* wrong it says so in words rather than
@@ -39,17 +51,25 @@
 //! One consequence worth stating: `Paused` is on that ladder and so appears
 //! here, even though it is not a fault. A feeder left paused is the one state
 //! where cats do not eat and nothing alarms, so it earns the line.
+//!
+//! ## No page shows a password
+//!
+//! The info pages show the SSID, the broker and the user, never a stored
+//! password. Setup mode is not an exception so much as a different thing: the
+//! password it shows is one the unit derived for a network it raised itself,
+//! and showing it is the point.
 
 use crate::button::ARM_HOLD_MS;
 use crate::indicator::Status;
+use crate::menu::{Calibration, Field, Item, Mode, Page, Setting};
 use crate::schedule::{Slot, Wall};
 use heapless::String;
 
 /// Characters per line at `FONT_6X10` on a 128-pixel-wide panel.
 pub const COLS: usize = 21;
 
-/// Lines at `FONT_6X10` on a 32-pixel-high panel: 3 × 10 px, 2 px spare.
-pub const ROWS: usize = 3;
+/// Lines at `FONT_6X10` on a 64-pixel-high panel: 6 × 10 px, 4 px spare.
+pub const ROWS: usize = 6;
 
 /// The address the setup form is served on.
 ///
@@ -58,6 +78,9 @@ pub const ROWS: usize = 3;
 /// screen confidently showing an address nothing answers on would be worse than
 /// no screen at all.
 const SETUP_URL: &str = crate::provisioning::AP_URL;
+
+/// The bottom row, where every screen says what a hold does from there.
+const HINT_ROW: usize = ROWS - 1;
 
 /// One rendered line, already clipped to what the panel can show.
 pub type Line = String<COLS>;
@@ -100,6 +123,29 @@ pub struct Fed {
     pub portions: u8,
 }
 
+/// How this unit is configured, for the info pages. Fixed for a boot.
+///
+/// Carries no password, so no page *can* show one — see the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitInfo<'a> {
+    pub id: &'a str,
+    pub board: &'a str,
+    pub version: &'a str,
+    pub wifi_ssid: &'a str,
+    pub mqtt_host: &'a str,
+    pub mqtt_port: u16,
+    pub mqtt_user: &'a str,
+}
+
+/// What the network is doing right now, for the info pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Net {
+    pub link: bool,
+    pub broker: bool,
+    /// This unit's address, once DHCP has handed one out.
+    pub ip: Option<[u8; 4]>,
+}
+
 /// Everything the screen is allowed to know.
 ///
 /// Deliberately not a borrow of `Bus`: this module stays host-testable, and a
@@ -116,18 +162,25 @@ pub struct View<'a> {
     /// The next slot due, or `None` when the schedule cannot say — no schedule,
     /// no trusted time, or paused.
     pub next: Option<Slot>,
-    /// Whether the outside button is armed, straight from
-    /// [`Health::button_armed`](crate::wiring::Health).
+    /// Which page, or the menu and its cursor. From `menu.rs`.
     ///
-    /// Carried separately because [`Status`] cannot express it during a jam:
-    /// `Status::of` puts `Jammed` above `Armed`, deliberately, so that the LED
-    /// keeps warning while somebody has their hands in the mechanism. The panel
-    /// is the one surface that can show both at once, and a jam is exactly when
-    /// both matter — see [`render`].
+    /// Carried beside `status` rather than read out of it, because
+    /// `Status::of` puts `Jammed` above `Armed` — deliberately, so the LED keeps
+    /// warning while somebody has their hands in the mechanism — and the panel
+    /// is the one surface that can show a jam and an open menu at once.
+    pub mode: Mode,
+    /// Whether the schedule is paused, for the menu's pause-or-resume label.
     ///
-    /// Named for `Health`'s field rather than shortened to `armed`, which in
-    /// that struct means the *schedule* is armed and is a different fact.
-    pub button_armed: bool,
+    /// Not read from `status` either: an open menu is `Armed` on the ladder,
+    /// which hides `Paused`, and the label must not lie about which way a tap
+    /// will flip it.
+    pub paused: bool,
+    pub net: Net,
+    /// `None` only in setup mode, which has no configuration to describe.
+    pub unit: Option<UnitInfo<'a>>,
+    /// The calibration in force, which the knob can change without a restart
+    /// — so it is carried here as a live value rather than in [`UnitInfo`].
+    pub calibration: Calibration,
 }
 
 /// How long the panel stays lit after a press.
@@ -142,8 +195,8 @@ pub const AWAKE_MS: u64 = 30_000;
 ///
 /// **OLEDs burn in.** A feeder spends years showing the same `next 08:00` in
 /// the same pixels, which is the worst case for the technology: a static image
-/// on a panel that is never off. So the screen sleeps, and a press on the
-/// outside button wakes it.
+/// on a panel that is never off. So the screen sleeps, and a press or a turn
+/// of the knob wakes it.
 ///
 /// This costs nothing in reporting, because the screen is not the always-on
 /// channel — the LED is. The division is the same one that makes them worth
@@ -196,54 +249,264 @@ pub fn render(view: &View) -> Screen {
     // the unit has no clock, no schedule and no history, and the one thing the
     // person standing in front of it needs is how to join this network.
     if let Some(setup) = view.setup {
-        return Screen {
-            lines: [clip(setup.ssid), clip(setup.password), clip(SETUP_URL)],
-        };
+        return setup_screen(setup);
     }
 
-    // A jam takes the middle line for an instruction, because it is the one
-    // state the panel can do something about.
-    //
-    // A jammed feeder recovers by being asked to feed again: nothing in
-    // `feeder::Feeder` gates on the flag, and `on_click` clears it as soon as
-    // the mechanism moves. The outside button already sends that request —
-    // hold to arm, tap to feed — so the recovery gesture is built and always
-    // was. What it lacked was any sign that it had landed, because
-    // `Status::of` reports `Jammed` over `Armed` and the LED therefore stays
-    // solid red through the whole hold. Without this line the only honest
-    // reading of the panel is that the button is dead while jammed, which is
-    // how a jam turns into a power cycle.
-    //
-    // The LED keeps its red: that ordering guards fingers in the mechanism and
-    // is not this module's to overturn. The panel says what to do instead,
-    // which it can afford because a jam is one of the two states `awake`
-    // exempts from sleeping, so the line is still there whenever somebody
-    // walks over to look.
-    //
-    // `next` is dropped rather than squeezed in, for the reason `next_line`
-    // already drops it while paused or untrusted: a unit that will not reach
-    // its next slot unaided should not print a time implying it will.
-    if view.status == Status::Jammed {
-        return Screen {
-            lines: [
-                banner(view.status),
-                if view.button_armed {
-                    clip("TAP TO RETRY")
-                } else {
-                    arm_hint()
-                },
-                fed_line(view.last_fed),
-            ],
-        };
-    }
+    let mut screen = match view.mode {
+        Mode::Unlocked { item } => menu_screen(view, item),
+        Mode::Settings { item } => settings_screen(view, item),
+        Mode::Editing { field, value } => edit_screen(view, field, value),
+        Mode::ConfirmReset { erase } => reset_screen(erase),
+        Mode::Locked { page: Page::Home } => home(view),
+        Mode::Locked { page } => info_page(view, page),
+    };
 
+    // A hold locks from anywhere. Inside an edit or a confirmation that also
+    // throws the pending change away, and the hint says so in those words.
+    screen.lines[HINT_ROW] = match view.mode {
+        Mode::Locked { .. } => hold_hint(),
+        Mode::Unlocked { .. } | Mode::Settings { .. } => hold_hint_for(ARM_HOLD_MS, "TO LOCK"),
+        Mode::Editing { .. } | Mode::ConfirmReset { .. } => hold_hint_for(ARM_HOLD_MS, "TO CANCEL"),
+    };
+    screen
+}
+
+/// Two lines to type into a phone, and where to go once joined.
+fn setup_screen(setup: SetupInfo) -> Screen {
     Screen {
         lines: [
-            banner(view.status),
-            fed_line(view.last_fed),
-            next_line(view),
+            clip("JOIN THIS WI-FI"),
+            clip(setup.ssid),
+            clip(setup.password),
+            Line::new(),
+            clip("THEN BROWSE TO"),
+            clip(SETUP_URL),
         ],
     }
+}
+
+/// Status, last feed, next feed.
+///
+/// A jam drops the next feed rather than squeezing it in, for the reason
+/// `next_line` already drops it while paused or untrusted: a unit that will not
+/// reach its next slot unaided should not print a time implying it will.
+///
+/// A jammed feeder recovers by being asked to feed again — nothing in
+/// `feeder::Feeder` gates on the flag, and `on_click` clears it as soon as the
+/// mechanism moves — and the way to ask is the hint row's hold, then a tap on
+/// the menu's `Retry feed`. The LED stays solid red through all of it, so the
+/// panel is what says the gesture landed: `** JAMMED **` stays at the top of
+/// the menu, and its first item changes name.
+fn home(view: &View) -> Screen {
+    let mut screen = Screen::default();
+    screen.lines[0] = banner(view.status);
+    screen.lines[1] = fed_line(view.last_fed);
+    if view.status != Status::Jammed {
+        screen.lines[2] = next_line(view);
+    }
+    screen
+}
+
+/// The menu, with `>` on the item a tap will run.
+fn menu_screen(view: &View, cursor: Item) -> Screen {
+    let mut screen = Screen::default();
+
+    // The jam stays shouted while the menu is open, which the LED cannot do:
+    // `Status::of` puts `Jammed` over `Armed` so red keeps warning, and the
+    // panel is the one place that can show both. `FEEDING` likewise, so a tap
+    // visibly lands.
+    screen.lines[0] = match view.status {
+        Status::Jammed | Status::Feeding => banner(view.status),
+        _ => clip("MENU"),
+    };
+
+    for (row, item) in Item::ALL.iter().enumerate() {
+        let label = match item {
+            Item::Feed if view.status == Status::Jammed => "Retry feed",
+            Item::Feed => "Feed one portion",
+            Item::Pause if view.paused => "Resume schedule",
+            Item::Pause => "Pause schedule",
+            Item::Settings => "Settings",
+            Item::Lock => "Lock",
+        };
+
+        let line = &mut screen.lines[1 + row];
+        push(line, if *item == cursor { "> " } else { "  " });
+        push(line, label);
+    }
+
+    screen
+}
+
+/// Calibration and the reset, each showing its current value.
+fn settings_screen(view: &View, cursor: Setting) -> Screen {
+    let mut screen = Screen::default();
+    screen.lines[0] = clip("SETTINGS");
+
+    for (row, item) in Setting::ALL.iter().enumerate() {
+        let line = &mut screen.lines[1 + row];
+        push(line, if *item == cursor { "> " } else { "  " });
+        match item {
+            Setting::PortionScale => {
+                push(line, "Portion ");
+                push_field(
+                    line,
+                    Field::PortionScale,
+                    view.calibration.portion_scale_pct,
+                );
+            }
+            Setting::Detent => {
+                push(line, "Detent  ");
+                push_field(line, Field::Detent, view.calibration.detent_ms);
+            }
+            Setting::Reset => push(line, "Factory reset"),
+            Setting::Back => push(line, "Back"),
+        }
+    }
+
+    screen
+}
+
+/// One number, what it is now, and what a tap will store.
+fn edit_screen(view: &View, field: Field, value: u16) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+
+    lines[0] = clip(match field {
+        Field::PortionScale => "PORTION SIZE",
+        Field::Detent => "DETENT INTERVAL",
+    });
+    push(&mut lines[1], "now  ");
+    push_field(&mut lines[1], field, view.calibration.get(field));
+    push(&mut lines[2], "new  ");
+    push_field(&mut lines[2], field, value);
+    lines[4] = clip("TAP TO SAVE");
+    screen
+}
+
+/// The one irreversible item, behind a second choice that starts on `Keep`.
+fn reset_screen(erase: bool) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+    lines[0] = clip("FACTORY RESET");
+    lines[1] = clip("erases Wi-Fi, broker");
+    lines[2] = clip("and calibration");
+    push(&mut lines[3], if erase { "  " } else { "> " });
+    push(&mut lines[3], "Keep");
+    push(&mut lines[4], if erase { "> " } else { "  " });
+    push(&mut lines[4], "Erase, restart");
+    screen
+}
+
+/// `x135%` or `1900ms`, or `?` when the value is not known.
+fn push_field(line: &mut Line, field: Field, value: u16) {
+    match field {
+        Field::PortionScale => {
+            push(line, "x");
+            push_u32(line, value as u32);
+            push(line, "%");
+        }
+        Field::Detent => {
+            push_u32(line, value as u32);
+            push(line, "ms");
+        }
+    }
+}
+
+/// One of the pages a locked turn steps through.
+fn info_page(view: &View, page: Page) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+
+    let Some(unit) = view.unit else {
+        lines[0] = title("", page);
+        lines[1] = clip("not configured");
+        return screen;
+    };
+
+    match page {
+        Page::Home => return home(view),
+        Page::Network => {
+            lines[0] = title("WI-FI", page);
+            push(&mut lines[1], "ip ");
+            match view.net.ip {
+                Some(ip) => push_ip(&mut lines[1], ip),
+                None => push(&mut lines[1], "none yet"),
+            }
+            lines[2] = connected(view.net.link);
+            // Last, because it is the one line that may need two: an SSID can
+            // be 32 bytes, and a clipped one does not match the network in a
+            // router's list.
+            [lines[3], lines[4]] = wrap("", unit.wifi_ssid);
+        }
+        Page::Broker => {
+            lines[0] = title("BROKER", page);
+            // `255.255.255.255:65535` is exactly twenty-one characters, so any
+            // address the firmware accepts fits on one line.
+            push(&mut lines[1], unit.mqtt_host);
+            push(&mut lines[1], ":");
+            push_u32(&mut lines[1], unit.mqtt_port as u32);
+            lines[2] = connected(view.net.broker);
+            [lines[3], lines[4]] = wrap("user ", unit.mqtt_user);
+        }
+        Page::Device => {
+            // A feeder behaving oddly is either mis-measured or mis-provisioned
+            // and nothing else tells them apart; this page does, at the feeder.
+            lines[0] = title("DEVICE", page);
+            push(&mut lines[1], "id ");
+            push(&mut lines[1], unit.id);
+            push(&mut lines[1], "  ");
+            push(&mut lines[1], unit.board);
+            push(&mut lines[2], "fw ");
+            push(&mut lines[2], unit.version);
+            push(&mut lines[3], "detent ");
+            push_field(&mut lines[3], Field::Detent, view.calibration.detent_ms);
+            push(&mut lines[4], "portion ");
+            push_field(
+                &mut lines[4],
+                Field::PortionScale,
+                view.calibration.portion_scale_pct,
+            );
+        }
+    }
+
+    screen
+}
+
+/// `WI-FI            2/4`: the name on the left, where it is on the right.
+fn title(name: &str, page: Page) -> Line {
+    let mut counter = Line::new();
+    push_u32(&mut counter, page.index() as u32 + 1);
+    push(&mut counter, "/");
+    push_u32(&mut counter, Page::ALL.len() as u32);
+
+    let mut line = clip(name);
+    while line.len() + counter.len() < COLS {
+        let _ = line.push(' ');
+    }
+    push(&mut line, &counter);
+    line
+}
+
+/// `prefix` and `text` over two lines, so a value up to 42 characters long is
+/// shown whole rather than clipped in silence. Beyond that it is clipped, which
+/// no SSID reaches.
+fn wrap(prefix: &str, text: &str) -> [Line; 2] {
+    let mut first = clip(prefix);
+    let mut rest = text.chars();
+    while first.len() < COLS {
+        match rest.next() {
+            Some(c) => {
+                let _ = first.push(c);
+            }
+            None => break,
+        }
+    }
+    [first, clip(rest.as_str())]
+}
+
+fn connected(up: bool) -> Line {
+    clip(if up { "connected" } else { "not connected" })
 }
 
 /// The top line: what is wrong, in words, or nothing at all.
@@ -256,7 +519,7 @@ fn banner(status: Status) -> Line {
         // it is the only state on the ladder that does.
         Status::Jammed => "** JAMMED **",
         Status::Feeding => "FEEDING",
-        Status::Armed => "TAP TO FEED",
+        Status::Armed => "MENU",
         Status::Setup => "SETUP",
         Status::NoLink => "NO WIFI",
         Status::NoBroker => "NO BROKER",
@@ -272,43 +535,40 @@ fn banner(status: Status) -> Line {
     clip(text)
 }
 
-/// `HOLD 2s TO ARM`, with the 2 taken from [`ARM_HOLD_MS`] rather than typed.
+/// `HOLD 2s FOR MENU`, with the 2 taken from [`ARM_HOLD_MS`] rather than typed.
 ///
 /// A duration written into a string is this repo's own recurring bug — three
 /// copies of the old 800 ms spacing, three of the 5 s jam timeout — and this
 /// would be the worst place yet for it, because it is the line somebody reads
 /// off a jammed feeder when a meal did not happen. Being told to hold for a
-/// time that no longer arms anything reads as a dead button.
+/// time that no longer opens anything reads as a dead button.
 ///
-/// Delegates to [`arm_hint_for`] so the rule can be tested across durations
+/// Delegates to [`hold_hint_for`] so the rule can be tested across durations
 /// instead of only at whichever value the constant happens to hold. A test
 /// that can only see one value cannot tell a derivation from a literal.
-fn arm_hint() -> Line {
-    arm_hint_for(ARM_HOLD_MS)
+fn hold_hint() -> Line {
+    hold_hint_for(ARM_HOLD_MS, "FOR MENU")
 }
 
 /// The hint for an arbitrary hold, in whole seconds, **rounded up**.
 ///
 /// Rounding up is the whole point and is not interchangeable with rounding to
 /// nearest. This line is an *instruction*, so the two directions fail very
-/// differently: holding for longer than the printed time always arms, while
+/// differently: holding for longer than the printed time always works, while
 /// holding for exactly the printed time may not. Flooring 2 500 ms to `2s`
 /// would print an instruction that does not work, which is the failure this
 /// function exists to prevent rather than a rounding detail.
 ///
 /// It also disposes of the sub-second case for free: 500 ms prints `1s` rather
 /// than a `0s` nobody can act on.
-///
-/// The seconds count saturates at `u8::MAX` because [`push_u8`] takes one. A
-/// hold of over four minutes is absurd, but a silent wrap would print a small
-/// number — the unsafe direction again, and for the same reason.
-fn arm_hint_for(hold_ms: u64) -> Line {
-    let seconds = hold_ms.div_ceil(1_000).min(u8::MAX as u64) as u8;
+fn hold_hint_for(hold_ms: u64, what: &str) -> Line {
+    let seconds = hold_ms.div_ceil(1_000).min(u32::MAX as u64) as u32;
 
     let mut line = Line::new();
     push(&mut line, "HOLD ");
-    push_u8(&mut line, seconds);
-    push(&mut line, "s TO ARM");
+    push_u32(&mut line, seconds);
+    push(&mut line, "s ");
+    push(&mut line, what);
     line
 }
 
@@ -324,7 +584,7 @@ fn fed_line(last: Option<Fed>) -> Line {
     push(&mut line, "fed  ");
     push_hhmm(&mut line, fed.at.second_of_day / 60);
     push(&mut line, "  x");
-    push_u8(&mut line, fed.portions);
+    push_u32(&mut line, fed.portions as u32);
     line
 }
 
@@ -356,7 +616,7 @@ fn next_line(view: &View) -> Line {
     push(&mut line, "next ");
     push_hhmm(&mut line, slot.minute_of_day as u32);
     push(&mut line, "  x");
-    push_u8(&mut line, slot.portions);
+    push_u32(&mut line, slot.portions as u32);
     line
 }
 
@@ -393,22 +653,31 @@ fn push_two(line: &mut Line, value: u8) {
     let _ = line.push((b'0' + value % 10) as char);
 }
 
-fn push_u8(line: &mut Line, mut value: u8) {
+fn push_u32(line: &mut Line, mut value: u32) {
     if value == 0 {
         let _ = line.push('0');
         return;
     }
 
-    let mut digits = [0u8; 3];
+    let mut digits = [0u8; 10];
     let mut n = 0;
     while value > 0 {
-        digits[n] = b'0' + value % 10;
+        digits[n] = b'0' + (value % 10) as u8;
         value /= 10;
         n += 1;
     }
     while n > 0 {
         n -= 1;
         let _ = line.push(digits[n] as char);
+    }
+}
+
+fn push_ip(line: &mut Line, ip: [u8; 4]) {
+    for (i, octet) in ip.iter().enumerate() {
+        if i > 0 {
+            push(line, ".");
+        }
+        push_u32(line, *octet as u32);
     }
 }
 
@@ -429,13 +698,47 @@ mod tests {
         }
     }
 
+    const UNIT: UnitInfo<'static> = UnitInfo {
+        id: "99177c",
+        board: "zero",
+        version: "0.1.0",
+        wifi_ssid: "fdlgrm",
+        mqtt_host: "192.168.68.126",
+        mqtt_port: 1883,
+        mqtt_user: "cat-feeder",
+    };
+
+    const CAL: Calibration = Calibration {
+        portion_scale_pct: 100,
+        detent_ms: 1900,
+    };
+
     fn view() -> View<'static> {
         View {
             status: Status::Healthy,
             setup: None,
             last_fed: None,
             next: None,
-            button_armed: false,
+            mode: Mode::default(),
+            paused: false,
+            net: Net::default(),
+            unit: Some(UNIT),
+            calibration: CAL,
+        }
+    }
+
+    fn page(page: Page) -> View<'static> {
+        View {
+            mode: Mode::Locked { page },
+            ..view()
+        }
+    }
+
+    fn menu(item: Item) -> View<'static> {
+        View {
+            status: Status::Armed,
+            mode: Mode::Unlocked { item },
+            ..view()
         }
     }
 
@@ -467,6 +770,7 @@ mod tests {
         assert_eq!(screen.lines[0], "");
         assert_eq!(screen.lines[1], "fed  08:00  x2");
         assert_eq!(screen.lines[2], "next 19:00  x2");
+        assert_eq!(screen.lines[5], "HOLD 2s FOR MENU");
         assert_fits(&screen);
     }
 
@@ -484,43 +788,27 @@ mod tests {
         });
 
         assert_eq!(screen.lines[0], "** JAMMED **");
-        assert_eq!(screen.lines[1], "HOLD 2s TO ARM");
-        assert_eq!(screen.lines[2], "fed  08:00  x2");
+        assert_eq!(screen.lines[1], "fed  08:00  x2");
+        assert_eq!(screen.lines[5], "HOLD 2s FOR MENU");
         assert_fits(&screen);
     }
 
+    /// The whole point of carrying `mode` beside `status`.
+    ///
+    /// `Status::of` reports `Jammed` over `Armed`, so a screen driven by the
+    /// status alone could not tell a jammed unit with its menu open from one
+    /// without — and they are the two the person standing at a jammed feeder is
+    /// trying to distinguish.
     #[test]
-    fn an_armed_jam_says_the_tap_will_land() {
+    fn a_jammed_menu_still_shouts_and_offers_a_retry() {
         let screen = render(&View {
             status: Status::Jammed,
-            button_armed: true,
-            ..view()
+            ..menu(Item::Feed)
         });
 
         assert_eq!(screen.lines[0], "** JAMMED **");
-        assert_eq!(screen.lines[1], "TAP TO RETRY");
+        assert_eq!(screen.lines[1], "> Retry feed");
         assert_fits(&screen);
-    }
-
-    /// The whole point of carrying `button_armed` beside `status`.
-    ///
-    /// `Status::of` reports `Jammed` over `Armed`, so a screen driven by the
-    /// status alone cannot tell these two apart — and they are the two the
-    /// person standing at a jammed feeder is trying to distinguish.
-    #[test]
-    fn arming_changes_the_jam_screen_although_the_status_does_not() {
-        let locked = render(&View {
-            status: Status::Jammed,
-            ..view()
-        });
-        let armed = render(&View {
-            status: Status::Jammed,
-            button_armed: true,
-            ..view()
-        });
-
-        assert_eq!(locked.lines[0], armed.lines[0], "both still shout JAMMED");
-        assert_ne!(locked.lines[1], armed.lines[1]);
     }
 
     /// A jammed unit will not reach its next slot without someone intervening,
@@ -542,40 +830,22 @@ mod tests {
         }
     }
 
-    /// The hint is the only thing arming changes; the warning stays put.
-    ///
-    /// Not a claim about food — this module cannot make one — only that a
-    /// screen never stops shouting about a jam merely because somebody armed
-    /// the button. The LED cannot say both, which is why this one must.
-    #[test]
-    fn arming_never_removes_the_jam_warning() {
-        for button_armed in [false, true] {
-            let screen = render(&View {
-                status: Status::Jammed,
-                button_armed,
-                ..view()
-            });
-
-            assert_eq!(screen.lines[0], "** JAMMED **");
-            assert_fits(&screen);
-        }
-    }
-
     /// The hint follows [`ARM_HOLD_MS`] rather than a typed-in `2`.
     ///
-    /// Exercised through [`arm_hint_for`] across durations, because a test that
-    /// only ever sees the one value the constant currently holds cannot tell a
-    /// derivation from a literal — `clip("HOLD 2s TO ARM")` would satisfy any
-    /// assertion made solely about `ARM_HOLD_MS == 2_000`.
+    /// Exercised through [`hold_hint_for`] across durations, because a test
+    /// that only ever sees the one value the constant currently holds cannot
+    /// tell a derivation from a literal.
     #[test]
-    fn the_arm_hint_never_asks_for_less_than_it_takes() {
+    fn the_hold_hint_never_asks_for_less_than_it_takes() {
         // An instruction may overstate a hold and must never understate one:
-        // holding longer than the printed time always arms, holding for
+        // holding longer than the printed time always works, holding for
         // exactly a floored figure need not. 2_500 ms is the case that made
-        // this explicit — flooring prints `2s`, and 2 s would arm nothing.
-        for hold_ms in [1, 500, 999, 1_000, 1_001, 2_000, 2_500, 2_999, 3_000, 10_000] {
-            let line = arm_hint_for(hold_ms);
-            let seconds = printed_seconds(&line) as u64;
+        // this explicit — flooring prints `2s`, and 2 s would open nothing.
+        for hold_ms in [
+            1, 500, 999, 1_000, 1_001, 2_000, 2_500, 2_999, 3_000, 10_000,
+        ] {
+            let line = hold_hint_for(hold_ms, "FOR MENU");
+            let seconds = printed_seconds(&line, "FOR MENU") as u64;
 
             assert!(
                 seconds * 1_000 >= hold_ms,
@@ -589,26 +859,32 @@ mod tests {
     }
 
     #[test]
-    fn the_jam_screen_renders_that_hint_rather_than_its_own() {
-        let screen = render(&View {
-            status: Status::Jammed,
-            ..view()
-        });
+    fn every_screen_renders_that_hint_rather_than_its_own() {
+        for view in [view(), page(Page::Network), page(Page::Device)] {
+            let screen = render(&view);
+            assert_eq!(screen.lines[5], hold_hint_for(ARM_HOLD_MS, "FOR MENU"));
+            assert_eq!(
+                printed_seconds(&screen.lines[5], "FOR MENU") as u64 * 1_000,
+                ARM_HOLD_MS
+            );
+        }
 
-        assert_eq!(screen.lines[1], arm_hint_for(ARM_HOLD_MS));
+        let screen = render(&menu(Item::Feed));
+        assert_eq!(screen.lines[5], hold_hint_for(ARM_HOLD_MS, "TO LOCK"));
         // Spelled out as well, so a reader sees what the panel says today.
-        assert_eq!(screen.lines[1], "HOLD 2s TO ARM");
+        assert_eq!(screen.lines[5], "HOLD 2s TO LOCK");
     }
 
     /// Reads the number back out of a rendered hint.
     ///
     /// Measuring what the panel shows rather than what the arithmetic intended
     /// is also the only width check that can fail here: `Line` truncates at
-    /// [`COLS`], so an over-long hint loses its `s TO ARM` tail and this
-    /// stops parsing. Asserting `len() <= COLS` could never fail.
-    fn printed_seconds(line: &Line) -> u8 {
+    /// [`COLS`], so an over-long hint loses its tail and this stops parsing.
+    /// Asserting `len() <= COLS` could never fail.
+    fn printed_seconds(line: &Line, what: &str) -> u32 {
         line.strip_prefix("HOLD ")
-            .and_then(|rest| rest.strip_suffix("s TO ARM"))
+            .and_then(|rest| rest.strip_suffix(what))
+            .and_then(|rest| rest.strip_suffix("s "))
             .expect("the hint kept its shape")
             .parse()
             .expect("the hint's number")
@@ -679,6 +955,229 @@ mod tests {
         );
     }
 
+    // --- the menu -------------------------------------------------------------
+
+    #[test]
+    fn the_menu_points_at_the_item_a_tap_will_run() {
+        let screen = render(&menu(Item::Feed));
+        assert_eq!(screen.lines[0], "MENU");
+        assert_eq!(screen.lines[1], "> Feed one portion");
+        assert_eq!(screen.lines[2], "  Pause schedule");
+        assert_eq!(screen.lines[3], "  Settings");
+        assert_eq!(screen.lines[4], "  Lock");
+        assert_fits(&screen);
+
+        let screen = render(&menu(Item::Lock));
+        assert_eq!(screen.lines[1], "  Feed one portion");
+        assert_eq!(screen.lines[4], "> Lock");
+    }
+
+    // --- settings -------------------------------------------------------------
+
+    fn in_mode(mode: Mode) -> View<'static> {
+        View {
+            status: Status::Armed,
+            mode,
+            ..view()
+        }
+    }
+
+    #[test]
+    fn the_settings_list_shows_what_each_value_is_now() {
+        let screen = render(&in_mode(Mode::Settings {
+            item: Setting::Detent,
+        }));
+
+        assert_eq!(screen.lines[0], "SETTINGS");
+        assert_eq!(screen.lines[1], "  Portion x100%");
+        assert_eq!(screen.lines[2], "> Detent  1900ms");
+        assert_eq!(screen.lines[3], "  Factory reset");
+        assert_eq!(screen.lines[4], "  Back");
+        assert_eq!(screen.lines[5], "HOLD 2s TO LOCK");
+        assert_fits(&screen);
+    }
+
+    #[test]
+    fn an_edit_shows_now_and_new_and_warns_of_the_restart() {
+        let screen = render(&in_mode(Mode::Editing {
+            field: Field::PortionScale,
+            value: 135,
+        }));
+
+        assert_eq!(screen.lines[0], "PORTION SIZE");
+        assert_eq!(screen.lines[1], "now  x100%");
+        assert_eq!(screen.lines[2], "new  x135%");
+        assert_eq!(screen.lines[4], "TAP TO SAVE");
+        assert_eq!(screen.lines[5], "HOLD 2s TO CANCEL");
+        assert_fits(&screen);
+
+        let screen = render(&in_mode(Mode::Editing {
+            field: Field::Detent,
+            value: 2_050,
+        }));
+        assert_eq!(screen.lines[1], "now  1900ms");
+        assert_eq!(screen.lines[2], "new  2050ms");
+    }
+
+    #[test]
+    fn the_reset_confirmation_points_at_its_choice() {
+        let keep = render(&in_mode(Mode::ConfirmReset { erase: false }));
+        assert_eq!(keep.lines[3], "> Keep");
+        assert_eq!(keep.lines[4], "  Erase, restart");
+        assert_eq!(keep.lines[5], "HOLD 2s TO CANCEL");
+        assert_fits(&keep);
+
+        let erase = render(&in_mode(Mode::ConfirmReset { erase: true }));
+        assert_eq!(erase.lines[3], "  Keep");
+        assert_eq!(erase.lines[4], "> Erase, restart");
+    }
+
+    /// The widest values each field can take.
+    #[test]
+    fn the_extreme_values_fit() {
+        for field in [Field::PortionScale, Field::Detent] {
+            let (min, max, _) = field.range();
+            for value in [min, max] {
+                let screen = render(&in_mode(Mode::Editing { field, value }));
+                assert_fits(&screen);
+                assert!(screen.lines[2].ends_with('%') || screen.lines[2].ends_with("ms"));
+            }
+        }
+    }
+
+    /// The label says which way a tap flips it, and that comes from `paused`
+    /// rather than the status, which an open menu hides behind `Armed`.
+    #[test]
+    fn a_paused_unit_offers_to_resume() {
+        let screen = render(&View {
+            paused: true,
+            ..menu(Item::Pause)
+        });
+        assert_eq!(screen.lines[2], "> Resume schedule");
+    }
+
+    #[test]
+    fn a_menu_tap_that_feeds_shows_it_happening() {
+        let screen = render(&View {
+            status: Status::Feeding,
+            ..menu(Item::Feed)
+        });
+        assert_eq!(screen.lines[0], "FEEDING");
+        assert_eq!(screen.lines[1], "> Feed one portion");
+    }
+
+    // --- the info pages -------------------------------------------------------
+
+    #[test]
+    fn the_network_page_says_where_this_unit_is() {
+        let screen = render(&View {
+            net: Net {
+                link: true,
+                broker: false,
+                ip: Some([192, 168, 68, 105]),
+            },
+            ..page(Page::Network)
+        });
+
+        assert_eq!(screen.lines[0], "WI-FI             2/4");
+        assert_eq!(screen.lines[1], "ip 192.168.68.105");
+        assert_eq!(screen.lines[2], "connected");
+        assert_eq!(screen.lines[3], "fdlgrm");
+        assert_eq!(screen.lines[4], "");
+        assert_fits(&screen);
+    }
+
+    #[test]
+    fn an_address_not_yet_handed_out_says_so() {
+        let screen = render(&page(Page::Network));
+        assert_eq!(screen.lines[1], "ip none yet");
+        assert_eq!(screen.lines[2], "not connected");
+    }
+
+    /// An SSID is up to 32 bytes, and a clipped one names a network that does
+    /// not exist — so it wraps onto a second line rather than losing its tail.
+    #[test]
+    fn a_long_ssid_wraps_rather_than_being_clipped() {
+        let ssid = "a-rather-long-home-network-name!"; // 32
+        let screen = render(&View {
+            unit: Some(UnitInfo {
+                wifi_ssid: ssid,
+                ..UNIT
+            }),
+            ..page(Page::Network)
+        });
+
+        let shown = alloc::format!("{}{}", screen.lines[3], screen.lines[4]);
+        assert_eq!(shown, ssid);
+        assert_fits(&screen);
+    }
+
+    #[test]
+    fn a_long_user_wraps_after_its_label() {
+        let user = "cat-feeder-upstairs-kitchen"; // 27
+        let screen = render(&View {
+            unit: Some(UnitInfo {
+                mqtt_user: user,
+                ..UNIT
+            }),
+            ..page(Page::Broker)
+        });
+
+        let shown = alloc::format!("{}{}", screen.lines[3], screen.lines[4]);
+        assert_eq!(shown, alloc::format!("user {user}"));
+    }
+
+    #[test]
+    fn the_broker_page_names_the_broker_and_never_its_password() {
+        let screen = render(&View {
+            net: Net {
+                broker: true,
+                ..Net::default()
+            },
+            ..page(Page::Broker)
+        });
+
+        assert_eq!(screen.lines[0], "BROKER            3/4");
+        assert_eq!(screen.lines[1], "192.168.68.126:1883");
+        assert_eq!(screen.lines[2], "connected");
+        assert_eq!(screen.lines[3], "user cat-feeder");
+        assert_fits(&screen);
+    }
+
+    /// The widest address the firmware accepts, and the widest port.
+    #[test]
+    fn the_longest_broker_address_fits_exactly() {
+        let screen = render(&View {
+            unit: Some(UnitInfo {
+                mqtt_host: "255.255.255.255",
+                mqtt_port: 65535,
+                ..UNIT
+            }),
+            ..page(Page::Broker)
+        });
+        assert_eq!(screen.lines[1], "255.255.255.255:65535");
+    }
+
+    #[test]
+    fn the_device_page_says_what_this_unit_was_calibrated_for() {
+        let screen = render(&View {
+            calibration: Calibration {
+                detent_ms: 2048,
+                portion_scale_pct: 133,
+            },
+            ..page(Page::Device)
+        });
+
+        assert_eq!(screen.lines[0], "DEVICE            4/4");
+        assert_eq!(screen.lines[1], "id 99177c  zero");
+        assert_eq!(screen.lines[2], "fw 0.1.0");
+        assert_eq!(screen.lines[3], "detent 2048ms");
+        assert_eq!(screen.lines[4], "portion x133%");
+        assert_fits(&screen);
+    }
+
+    // --- setup ----------------------------------------------------------------
+
     #[test]
     fn setup_mode_replaces_the_whole_screen() {
         let screen = render(&View {
@@ -687,15 +1186,16 @@ mod tests {
                 ssid: "cat-feeder-99177c",
                 password: "H75T-C7VT-6FAV",
             }),
+            unit: None,
             ..view()
         });
 
-        assert_eq!(screen.lines[0], "cat-feeder-99177c");
-        assert_eq!(screen.lines[1], "H75T-C7VT-6FAV");
+        assert_eq!(screen.lines[1], "cat-feeder-99177c");
+        assert_eq!(screen.lines[2], "H75T-C7VT-6FAV");
         // `AP_URL`, not the string it happens to hold: `setup.rs` binds a
         // socket built from the same octets, and a second literal here would be
         // a second place for that address to be wrong.
-        assert_eq!(screen.lines[2], crate::provisioning::AP_URL);
+        assert_eq!(screen.lines[5], crate::provisioning::AP_URL);
         assert_fits(&screen);
     }
 
@@ -723,14 +1223,33 @@ mod tests {
             ..view()
         });
 
-        assert_eq!(screen.lines[0], ssid.as_str(), "the SSID was clipped");
+        assert_eq!(screen.lines[1], ssid.as_str(), "the SSID was clipped");
         assert_eq!(
-            screen.lines[1],
+            screen.lines[2],
             password.as_str(),
             "the password was clipped"
         );
-        assert_eq!(screen.lines[2], AP_URL);
+        assert_eq!(screen.lines[5], AP_URL);
     }
+
+    /// A long SSID is clipped rather than dropped, because a clipped one is
+    /// still enough to pick the network out of a phone's list.
+    #[test]
+    fn an_overlong_setup_line_is_clipped_not_lost() {
+        let screen = render(&View {
+            status: Status::Setup,
+            setup: Some(SetupInfo {
+                ssid: "cat-feeder-with-a-very-long-name",
+                password: "H75T-C7VT-6FAV",
+            }),
+            ..view()
+        });
+
+        assert_eq!(screen.lines[1], "cat-feeder-with-a-ver");
+        assert_fits(&screen);
+    }
+
+    // --- the home page's lines ------------------------------------------------
 
     #[test]
     fn a_unit_that_has_never_fed_says_so() {
@@ -790,23 +1309,48 @@ mod tests {
         assert_fits(&screen);
     }
 
-    /// Every rung of the ladder must fit, including the longest wording. This
-    /// is the test that catches a banner edited to something a shade too long.
+    const EVERY_STATUS: [Status; 9] = [
+        Status::Jammed,
+        Status::Feeding,
+        Status::Armed,
+        Status::Setup,
+        Status::NoLink,
+        Status::NoBroker,
+        Status::NoTime,
+        Status::Paused,
+        Status::Healthy,
+    ];
+
+    /// Every rung of the ladder, on every page and every menu position, must
+    /// fit — including the longest wording. This is the test that catches a
+    /// banner or a label edited to something a shade too long.
     #[test]
-    fn every_status_fits_the_panel() {
-        for status in [
-            Status::Jammed,
-            Status::Feeding,
-            Status::Armed,
-            Status::Setup,
-            Status::NoLink,
-            Status::NoBroker,
-            Status::NoTime,
-            Status::Paused,
-            Status::Healthy,
-        ] {
-            let screen = render(&View { status, ..view() });
-            assert_fits(&screen);
+    fn every_screen_fits_the_panel() {
+        for status in EVERY_STATUS {
+            for mode in Page::ALL
+                .map(|page| Mode::Locked { page })
+                .into_iter()
+                .chain(Item::ALL.map(|item| Mode::Unlocked { item }))
+                .chain(Setting::ALL.map(|item| Mode::Settings { item }))
+                .chain([
+                    Mode::ConfirmReset { erase: false },
+                    Mode::ConfirmReset { erase: true },
+                    Mode::Editing {
+                        field: Field::Detent,
+                        value: 5_000,
+                    },
+                ])
+            {
+                for paused in [false, true] {
+                    let screen = render(&View {
+                        status,
+                        mode,
+                        paused,
+                        ..view()
+                    });
+                    assert_fits(&screen);
+                }
+            }
         }
     }
 
@@ -814,15 +1358,10 @@ mod tests {
     /// built on — an empty top line means all is well — stops being true.
     #[test]
     fn only_a_healthy_unit_has_an_empty_banner() {
-        for status in [
-            Status::Jammed,
-            Status::Feeding,
-            Status::Armed,
-            Status::NoLink,
-            Status::NoBroker,
-            Status::NoTime,
-            Status::Paused,
-        ] {
+        for status in EVERY_STATUS {
+            if matches!(status, Status::Healthy | Status::Setup) {
+                continue;
+            }
             let screen = render(&View { status, ..view() });
             assert!(
                 !screen.lines[0].is_empty(),
@@ -925,22 +1464,5 @@ mod tests {
     fn a_press_from_the_future_does_not_wedge_it_on() {
         assert!(awake(Status::Healthy, 500, Some(1_000)));
         assert!(!awake(Status::Healthy, 1_000 + AWAKE_MS, Some(1_000)));
-    }
-
-    /// A long SSID is clipped rather than dropped, because a clipped one is
-    /// still enough to pick the network out of a phone's list.
-    #[test]
-    fn an_overlong_setup_line_is_clipped_not_lost() {
-        let screen = render(&View {
-            status: Status::Setup,
-            setup: Some(SetupInfo {
-                ssid: "cat-feeder-with-a-very-long-name",
-                password: "H75T-C7VT-6FAV",
-            }),
-            ..view()
-        });
-
-        assert_eq!(screen.lines[0], "cat-feeder-with-a-ver");
-        assert_fits(&screen);
     }
 }

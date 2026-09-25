@@ -18,9 +18,9 @@
 //! arming alone dispenses no food; a cat would have to hold for two seconds and
 //! *then* tap within the window. The arm lapses on its own ten seconds later.
 //!
-//! **Firmware is the second line of defence, not the first.** Recessing the
-//! button so it needs a fingertip defeats a paw outright and cannot be
-//! defeated by a lucky sequence. Do both.
+//! **Firmware is the second line of defence, not the first.** The button is
+//! the knob's shaft switch now, and a knob cannot be recessed, so the first
+//! line is placement: a case mounted where a paw has no footing.
 //!
 //! ## Why reset is not a gesture here
 //!
@@ -36,7 +36,9 @@
 //! [`held_at_boot`].
 //!
 //! That leaves two runtime gestures, distinguished by *kind* rather than by
-//! duration: a long press arms, a short press feeds.
+//! duration: a long press toggles armed, a short press selects. What a
+//! selection does belongs to `menu.rs`; this module only guarantees that no
+//! short press does anything until a deliberate hold has come first.
 
 /// How long the button must be held to arm it.
 ///
@@ -47,7 +49,8 @@ pub const ARM_HOLD_MS: u64 = 2_000;
 
 /// How long the button stays armed with nothing pressed.
 ///
-/// Every feed refreshes it, so three portions is three taps rather than three
+/// Every select refreshes it, and so does every turn of the knob (see
+/// [`Button::refresh`]), so three portions is three taps rather than three
 /// arm-and-tap cycles.
 pub const ARMED_WINDOW_MS: u64 = 10_000;
 
@@ -64,11 +67,11 @@ pub enum Event {
     Armed,
     /// The arm window lapsed with nothing pressed.
     Expired,
-    /// A short press while armed: one portion.
-    Feed,
-    /// A short press while locked. Deliberately does nothing, but is worth a
-    /// log line — it is the difference between "the button is broken" and "the
-    /// button is working and you did not arm it".
+    /// A short press while armed. What it does is the menu's decision — see
+    /// `menu.rs` — and with the cursor where unlocking puts it, it feeds.
+    Select,
+    /// A short press while locked. Never dispenses; `menu.rs` uses it to send
+    /// the screen back to the home page.
     Ignored,
     /// Held long enough **while armed**: locked again, deliberately, without
     /// waiting the window out.
@@ -132,9 +135,10 @@ impl Button {
         debug_assert!(now_ms.saturating_sub(since) < ARM_HOLD_MS);
 
         if self.armed_until.is_some() {
-            // Feeding refreshes the window rather than spending it.
+            // Selecting refreshes the window rather than spending it, so three
+            // portions is three taps and not three arms.
             self.armed_until = Some(now_ms + ARMED_WINDOW_MS);
-            Some(Event::Feed)
+            Some(Event::Select)
         } else {
             Some(Event::Ignored)
         }
@@ -173,9 +177,29 @@ impl Button {
         None
     }
 
-    /// Whether a tap would feed right now. Read by the LED.
+    /// Whether the button is armed — the menu is open. Read by the LED.
     pub fn is_armed(&self) -> bool {
         self.armed_until.is_some()
+    }
+
+    /// Locks now, as if the window had lapsed but deliberately.
+    ///
+    /// For the menu's own `Lock` item: a tap that means "done" must end the
+    /// window exactly as a hold does, or an `Expired` would arrive later to
+    /// contradict it.
+    pub fn lock(&mut self) {
+        self.armed_until = None;
+    }
+
+    /// Something other than a press showed somebody is still here — the knob
+    /// turning. Restarts the window if armed, and does nothing if not.
+    ///
+    /// Turning never arms: only a hold does, so a cat batting the knob opens
+    /// nothing.
+    pub fn refresh(&mut self, now_ms: u64) {
+        if self.armed_until.is_some() {
+            self.armed_until = Some(now_ms + ARMED_WINDOW_MS);
+        }
     }
 }
 
@@ -300,7 +324,7 @@ mod tests {
         idle(&mut button, 2_200, 3_000, &mut events);
         press(&mut button, 3_000, 80, &mut events);
 
-        assert_eq!(kinds(&events), [Event::Armed, Event::Feed]);
+        assert_eq!(kinds(&events), [Event::Armed, Event::Select]);
     }
 
     #[test]
@@ -322,7 +346,7 @@ mod tests {
 
         assert_eq!(
             kinds(&events),
-            [Event::Armed, Event::Feed, Event::Feed, Event::Feed]
+            [Event::Armed, Event::Select, Event::Select, Event::Select]
         );
     }
 
@@ -343,7 +367,7 @@ mod tests {
         idle(&mut button, 9_080, 13_000, &mut events);
         assert!(button.is_armed(), "the feed did not refresh the window");
 
-        assert_eq!(kinds(&events), [Event::Armed, Event::Feed]);
+        assert_eq!(kinds(&events), [Event::Armed, Event::Select]);
     }
 
     #[test]
@@ -422,7 +446,7 @@ mod tests {
         press(&mut b, 4_000, ARM_HOLD_MS + 50, &mut events);
 
         assert!(
-            !events.iter().any(|(_, e)| *e == Event::Feed),
+            !events.iter().any(|(_, e)| *e == Event::Select),
             "a lock hold fed something: {events:?}"
         );
     }

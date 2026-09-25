@@ -83,7 +83,7 @@ pub const AMBER: Rgb = Rgb::new(22, 7, 0);
 pub const WHITE: Rgb = Rgb::new(16, 16, 16);
 /// Deliberately not [`BLUE`]: setup mode already owns blue, and these two must
 /// not be confused — one means "type your Wi-Fi password in", the other means
-/// "a tap will dispense food".
+/// "the menu is open, and a tap on `Feed` will dispense food".
 pub const CYAN: Rgb = Rgb::new(0, 16, 22);
 
 /// How long one flash is lit, and how long the gap after it is.
@@ -101,7 +101,7 @@ const FLASH_MS: u64 = FLASH_ON_MS + FLASH_GAP_MS;
 /// be tested only on hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Health {
-    /// The outside button is armed, so a tap will feed. See `button.rs`.
+    /// The knob's menu is open. See `menu.rs`.
     pub button_armed: bool,
     /// Setup mode: this unit has raised its own access point. Roadmap step 9.
     pub setup: bool,
@@ -128,7 +128,7 @@ pub enum Status {
     /// The motor is turning. Also the fastest way to tell "the command never
     /// arrived" from "the motor is dead" while wiring a unit up.
     Feeding,
-    /// The outside button is armed: a tap now dispenses a portion.
+    /// The knob's menu is open: a tap on `Feed` now dispenses a portion.
     ///
     /// Transient and user-initiated, which is why it outranks everything below.
     /// Whatever it hides is still there ten seconds later, and during those ten

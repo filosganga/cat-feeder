@@ -36,6 +36,8 @@ pub struct Config {
     /// This unit's mechanical timings, derived from its measured detent
     /// interval. See `feeder::Timings`.
     pub timings: Timings,
+    /// The detent interval those timings were derived from, for the device page.
+    pub detent_ms: u16,
     /// How much this unit dispenses per click. See `portions::clicks_for`.
     pub portion_scale_pct: u16,
 }
@@ -54,6 +56,7 @@ impl Config {
             // stop a unit reaching the broker — that would leave the button as
             // the only way to re-provision it.
             timings: Timings::from_detent(record.detent_ms()),
+            detent_ms: record.detent_ms(),
             portion_scale_pct: record.portion_scale_pct(),
         }
     }

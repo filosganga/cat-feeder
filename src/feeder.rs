@@ -288,6 +288,23 @@ impl Feeder {
         self.pending.count()
     }
 
+    /// New figures from the knob's settings. Applied only while idle, and
+    /// returns whether they were.
+    ///
+    /// Never mid-turn: the jam budget and the spacing floor of a turn in
+    /// progress were promised from the old detent, and the pending clicks were
+    /// counted at the old scale. Changing either underneath would make one turn
+    /// obey two calibrations. The task retries at its next idle moment, which
+    /// is at most one meal away.
+    pub fn recalibrate(&mut self, timings: Timings, portion_scale_pct: u16) -> bool {
+        if self.phase != Phase::Idle {
+            return false;
+        }
+        self.timings = timings;
+        self.portion_scale_pct = portion_scale_pct;
+        true
+    }
+
     /// Whether the last attempt to turn ended in a jam. Published in the state
     /// topic and surfaced in Home Assistant.
     pub fn is_jammed(&self) -> bool {
@@ -670,6 +687,28 @@ mod tests {
         let mut big_clicks = Feeder::new(Timings::from_detent(REFERENCE_DETENT_MS), 50);
         big_clicks.request(2);
         assert_eq!(big_clicks.pending(), 1);
+    }
+
+    #[test]
+    fn recalibrating_while_idle_changes_the_next_request() {
+        let mut f = feeder();
+        assert!(f.recalibrate(Timings::from_detent(REFERENCE_DETENT_MS), 200));
+        f.request(2);
+        assert_eq!(f.pending(), 4, "the new scale did not apply");
+    }
+
+    /// One turn must obey one calibration: its jam budget and spacing floor
+    /// were promised from the figures it started with.
+    #[test]
+    fn recalibrating_mid_turn_is_refused() {
+        let mut f = feeder();
+        f.request(1);
+        f.start(0, true);
+        let before = f.action(0);
+
+        assert!(!f.recalibrate(Timings::from_detent(REFERENCE_DETENT_MS * 2), 200));
+        assert_eq!(f.action(0), before);
+        assert_eq!(f.pending(), 1);
     }
 
     #[test]

@@ -760,10 +760,12 @@ captured. Expect roughly:
 INFO (301) - oled: found a panel at 0x3c
 INFO (315) - setup: raising cat-feeder-db0260
 INFO (1240) - display: +---------------------+
-INFO (1245) - display: |cat-feeder-db0260    |
-INFO (1250) - display: |DAKS-2W9X-NVQG       |
-INFO (1255) - display: |http://192.168.4.1   |
-INFO (1260) - display: +---------------------+
+INFO (1241) - display: |JOIN THIS WI-FI      |
+INFO (1242) - display: |cat-feeder-db0260    |
+INFO (1243) - display: |DAKS-2W9X-NVQG       |
+INFO (1244) - display: |                     |
+INFO (1245) - display: |THEN BROWSE TO       |
+INFO (1246) - display: |http://192.168.4.1   |
 INFO (1265) - display: awake
 ```
 
