@@ -1,6 +1,6 @@
 ---
 name: ha-mqtt-discovery
-description: Supplies this project's MQTT topic contract and the exact Home Assistant discovery payloads for the feed button, the paused switch and the jammed binary sensor, so they are copied rather than reconstructed. Use when writing or reviewing mqtt.rs, changing a topic or payload, adding an entity, debugging an entity that does not appear in Home Assistant or shows as unavailable, or writing the Home Assistant side that publishes time and schedule.
+description: Supplies this project's MQTT topic contract and the exact Home Assistant discovery payloads for the feed button, the paused switch and the jammed binary sensor, so they are copied rather than reconstructed. Use when writing or reviewing mqtt.rs, changing a topic or payload, adding an entity, debugging an entity that does not appear in Home Assistant or shows as unavailable, or writing the Home Assistant side that publishes the time and sends the schedule.
 ---
 
 # Home Assistant MQTT discovery for cat-feeder
@@ -21,19 +21,30 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 | `feeder/<id>/feed` | `<portions:u8>` | → device | **no** |
 | `feeder/all/feed` | `<portions:u8>` | → all devices | **no** |
 | `feeder/<id>/paused` | `ON` / `OFF` | → device, and device → from the knob's menu | yes |
-| `feeder/schedule` | `[{"time":"08:00","portions":2}]` | HA → all | yes |
+| `feeder/<id>/schedule` | `[{"time":"08:00","portions":2}]` | → one device | **no** |
+| `feeder/all/schedule` | `[{"time":"08:00","portions":2}]` | → all devices | **no** |
+| `feeder/<id>/schedule/state` | `[{"time":"08:00","portions":2}]`, `[]` for none | device → | yes |
 | `feeder/time` | `"2026-09-14T08:00:00+02:00"` | HA → all, each minute | yes |
 | `feeder/time/request` | `<id>` | device → HA | **no** |
-| `feeder/<id>/state` | `{"feeding":bool,"jammed":bool,"paused":bool,"last_fed":"..."}` | device → | yes |
+| `feeder/<id>/state` | `{"feeding":bool,"jammed":bool,"paused":bool,"meals":n,"last_fed":"..."}` | device → | yes |
 
-The schedule, the time and the paused flag are retained because the firmware
-keeps nothing in flash. On reboot the device re-subscribes and the broker
-replays all three. That is the whole persistence story — do not add flash
-storage to work around a missing retain flag.
+The unit owns its schedule and keeps it in flash (its own sector, `FDS1`), and
+keeps its time in a DS3231. What stays broker state is the time — retained so
+a unit has *a* time to log, though only a live one or a set RTC arms the
+schedule — and the paused flag, which is not in flash and is replayed on every
+reconnect. `feeder/<id>/schedule/state` is retained too, but only as an echo of what
+the unit holds, published on every connect and every change; the unit never
+reads it back.
 
-The two `feed` topics are the exception and must **never** be retained. A
-retained feed command is replayed on every reconnect, and because manual feeds
-accumulate, a boot loop would empty the hopper.
+The two `feed` topics and the two schedule commands must **never** be
+retained. A retained feed command is replayed on every reconnect, and because
+manual feeds accumulate, a boot loop would empty the hopper. A retained
+schedule command would hand meals to every unit that subscribes later, which
+is exactly what *a new unit starts blank* exists to prevent: the firmware
+refuses one replayed at subscribe time (`mqtt: ignored a retained schedule
+command; publish it without retain`). It cannot refuse a retained publish made
+while it is already subscribed — the broker forwards that live with the retain
+flag cleared — so the rule is on the publisher.
 
 ## Manual feeds accumulate
 
@@ -93,7 +104,10 @@ Get this wrong and entities appear unavailable or never appear at all.
    retained replay the subscription triggers carries the new value back rather
    than undoing it.
 4. Subscribe to `feeder/<id>/feed`, `feeder/all/feed`, `feeder/<id>/paused`,
-   `feeder/schedule`, `feeder/time`.
+   `feeder/<id>/schedule`, `feeder/all/schedule`, `feeder/time`.
+4a. Publish what the unit holds to `feeder/<id>/schedule/state`, retained — `[]` for
+   none — because the broker's copy may be from before a reboot or a factory
+   reset.
 5. Publish this unit's id to `feeder/time/request`, so Home Assistant sends a
    live time now instead of at the next minute boundary. See *Asking for the
    time instead of waiting for it* in CLAUDE.md.

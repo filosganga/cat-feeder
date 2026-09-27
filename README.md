@@ -11,15 +11,19 @@ orders from Home Assistant over MQTT.
 Home Assistant asks for *portions*; each unit turns as many *clicks* as its own
 mechanism needs, because the three feeders are not all the same model.
 
-There is no real-time clock and no NTP. Home Assistant publishes the time and
-the feeding schedule as retained MQTT messages, and each feeder keeps them in
-RAM. The broker is the only thing that remembers *when to feed*, which is why a
-feeder that loses power and finds no broker waits rather than guessing.
+Each unit owns its clock and its schedule. A DS3231 real-time clock with a coin
+cell keeps the time through a power cut, and Home Assistant's `feeder/time`,
+published every minute, keeps it corrected; there is no NTP. The schedule is
+sent to a unit deliberately — a new unit starts with no meals and does not feed
+until given some — and the unit keeps it in its own flash. So a feeder that
+loses power comes back feeding, with or without a broker, as long as its RTC
+was set. One whose RTC was never set, or whose coin cell is flat, waits rather
+than guessing.
 
-Flash holds one thing only: how to reach the broker, plus each unit's own
-mechanical calibration. Those are the facts the broker cannot supply, because
-they are how a unit reaches it in the first place — and because the three
-feeders are not all the same model.
+Flash holds three things: how to reach the broker, each unit's own mechanical
+calibration, and its meals. The first two are facts the broker cannot supply,
+because they are how a unit reaches it in the first place — and because the
+three feeders are not all the same model.
 
 ## Status
 
@@ -34,7 +38,9 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Debounced switch, feeding logic, jam detection | working, against a real bridge |
 | Home Assistant discovery, commands, pause | working |
 | Schedule, clock, double-feed guard | working |
-| Home Assistant automations publishing time and schedule | working |
+| DS3231 real-time clock: arms the schedule at boot, with no Home Assistant | working, verified on the Zero |
+| The unit owns its schedule, in flash; a new unit starts blank | working, verified on the Zero |
+| Home Assistant: an automation publishing the time, a script sending the schedule | working |
 | Status LED on the onboard WS2812 | working, verified by eye |
 | The knob: turn for info pages, hold for a menu, tap `Feed` to feed | working on a Zero; the info pages are host-tested but not yet seen on the panel |
 | Per-board provisioning from the host (`dev/provision.sh`) | working |
@@ -107,16 +113,22 @@ setup`, and there is no third answer.
 A healthy boot looks like this:
 
 ```
-INFO (303)   - board: zero, id=99177c
-INFO (11852) - wifi: connected, ip=192.168.68.115/24
-INFO (11923) - mqtt: connected, id=feeder_99177c
-INFO (11989) - mqtt: discovery published
-INFO (12007) - mqtt: online
-INFO (12088) - mqtt: subscribed
-INFO (12110) - mqtt: asked for the time
-INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed
-INFO (12737) - schedule: 2 slots
+INFO - board: zero, id=99177c
+INFO - rtc: DS3231 holds 2026-09-25T19:03:12, running since last set, 26.00 C
+INFO - schedule: 2 slots from flash
+INFO - clock: RTC time 2026-09-25T19:03:12, schedule armed
+INFO - wifi: connected, ip=192.168.68.115/24
+INFO - mqtt: connected, id=feeder_99177c
+INFO - mqtt: discovery published
+INFO - mqtt: online
+INFO - mqtt: subscribed
+INFO - mqtt: asked for the time
 ```
+
+With the RTC set, the schedule arms about 1.4 s after power-on, before Wi-Fi is
+up — the unit does not need Home Assistant to feed. A unit with no meals says
+`schedule: none stored; this unit will not feed until given one` instead, and
+shows `NO MEALS SET` on its panel.
 
 The device id comes from the MAC, so one binary flashes all three units and
 they still address distinct MQTT topics.
@@ -126,10 +138,13 @@ connection after subscribing. The schedule only starts on a *live* time — a
 retained one may be any age if Home Assistant has stopped — and without asking,
 a unit waits for the next minute boundary, up to a full minute of doing nothing.
 
-So `schedule armed` normally follows within a second. If instead the console
-shows `clock: started, ... (retained; waiting for a live time)` and stops there,
-nobody answered: the broker is up but Home Assistant is not publishing, and that
-unit will not feed on schedule until it does.
+For a unit whose RTC is set, this only keeps the clock corrected. For one whose
+RTC is not — its console says `oscillator stopped since last set: not trusted` —
+the live answer is what arms it, so `clock: live time ..., schedule armed`
+normally follows within a second. If instead the console shows `clock:
+started, ... (retained; waiting for a live time)` and stops there, nobody
+answered: the broker is up but Home Assistant is not publishing, and that unit
+will not feed on schedule until it does.
 
 The board flashes both boards from one source:
 
@@ -148,7 +163,7 @@ To watch what the firmware is saying:
 ```
 
 The local stack, including the three different addresses the broker answers on
-and the Home Assistant automations that publish the time and the schedule, is
+and the Home Assistant package that publishes the time and sends the schedule, is
 documented in [dev/README.md](dev/README.md).
 
 ## Setting up a feeder
@@ -241,7 +256,8 @@ Red ×3 should be a flicker on the way up, not something you can count: the unit
 asks for the time on connecting and Home Assistant answers within a second. Red
 ×3 you can actually sit and count means nobody answered — Home Assistant is down
 or its publish-the-time automation is missing — and that unit will not feed on
-schedule until it is fixed.
+schedule until it is fixed. A unit whose RTC is set arms from it at boot and
+never shows red ×3 at all.
 
 The knob — a rotary encoder whose click is the outside button:
 
@@ -258,9 +274,11 @@ dispenses food is a control cats will learn to use.** Turning never dispenses.
 A knob cannot be recessed the way a button can, so mount the case where a paw
 has no footing.
 
-`Settings` holds this unit's portion scale and detent interval — the two
-figures `dev/provision.sh --portion-scale` and `--detent-ms` set — and a
-factory reset that asks `Keep` or `Erase` first. A pause set from the menu
+`Settings` holds the clock, set by hand, this unit's portion scale and detent
+interval — the two figures `dev/provision.sh --portion-scale` and `--detent-ms` set — and a
+factory reset that asks `Keep` or `Erase` first. The factory reset erases the
+credentials, the calibration *and the meals*; holding the button while plugging
+in erases only the credentials and keeps the meals. A pause set from the menu
 lasts until Home Assistant next restarts or its schedule helper changes; Home
 Assistant is the authority.
 
@@ -271,10 +289,12 @@ feeder/<id>/availability   online | offline          retained, last will
 feeder/<id>/feed           <portions>                manual feed
 feeder/all/feed            <portions>                all units at once
 feeder/<id>/paused         ON | OFF                  retained, pauses the schedule
-feeder/schedule            [{"time":"08:00","portions":2}]   retained, from HA
+feeder/<id>/schedule       [{"time":"08:00","portions":2}]   never retained, this unit's meals
+feeder/all/schedule        [{"time":"08:00","portions":2}]   never retained, every unit's meals
+feeder/<id>/schedule/state [{"time":"08:00","portions":2}]   retained, what the unit holds
 feeder/time                "2026-09-14T08:00:00+02:00"       retained, from HA
 feeder/time/request        <id>                      never retained, to HA
-feeder/<id>/state          {"feeding":…,"jammed":…,"paused":…,"last_fed":…}
+feeder/<id>/state          {"feeding":…,"jammed":…,"paused":…,"meals":…,"last_fed":…}
 ```
 
 Each unit publishes Home Assistant discovery configs on connect, so a feeder
@@ -308,7 +328,10 @@ src/
   oled.rs         the SSD1306 panel, over async I2C
   motor.rs        MotorDriver, the DRV8833, and a logging stand-in
   mqtt.rs         connection, last will, discovery, commands, state
-  store.rs        reads and writes the record in the nvs partition
+  ds3231.rs       pure: the DS3231's registers — time, OSF, EOSC, temperature
+  rtc.rs          the DS3231 over the shared I2C bus
+  i2c.rs          the one I2C bus, shared by the panel and the RTC
+  store.rs        reads and writes the records in the nvs partition
   wiring.rs       what the tasks share
   config.rs       Config from the flash record, and the MAC-derived device id
   dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
@@ -316,7 +339,7 @@ src/
 
 build.rs          reads cfg.toml into the build
 dev/              local Mosquitto and Home Assistant, plus the scripts
-homeassistant/    the automations that publish time and schedule
+homeassistant/    the package that publishes the time and sends the schedule
 CLAUDE.md         design decisions and the contract the firmware implements
 ```
 
@@ -331,4 +354,4 @@ link.
 `CLAUDE.md` is worth reading before changing anything. It records what was
 decided and why, including the parts that look arbitrary: why feeding counts
 switch edges instead of levels, why a missed meal is preferable to a double
-one, and why there is no local clock.
+one, and why the unit keeps its own clock and schedule.

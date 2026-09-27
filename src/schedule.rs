@@ -4,10 +4,13 @@
 //! parsed [`Wall`] and monotonic time as milliseconds, so every decision is a
 //! function of its inputs and the whole thing is testable on the host.
 //!
-//! There is no RTC and no NTP. Home Assistant publishes the current time and
-//! the schedule as retained messages; this unit holds them in RAM and advances
-//! a [`LocalClock`] between them. Nothing is written to flash, so a power cycle
-//! forgets everything and waits to be told again rather than guessing.
+//! The unit owns both. The time comes from a DS3231 at boot if it kept time,
+//! from Home Assistant's `feeder/time` every minute, or from the knob, and a
+//! [`LocalClock`] advances between them — see [`TimeSource`] for how far each
+//! is trusted. The schedule is kept in flash (the record is [`Schedule::encode`])
+//! and replaced only by an explicit command. No NTP. A unit whose RTC lost its
+//! time waits to be told rather than guessing; a unit never given a schedule
+//! never feeds.
 //!
 //! ## Never feed twice
 //!
@@ -61,7 +64,7 @@ impl Date {
         year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
     }
 
-    fn days_in_month(year: u16, month: u8) -> u8 {
+    pub(crate) fn days_in_month(year: u16, month: u8) -> u8 {
         match month {
             1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
             4 | 6 | 9 | 11 => 30,
@@ -71,7 +74,7 @@ impl Date {
         }
     }
 
-    fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         self.month >= 1
             && self.month <= 12
             && self.day >= 1
@@ -174,7 +177,7 @@ impl Wall {
     /// The rollover loop is bounded. A monotonic counter far ahead of the last
     /// alignment means something is badly wrong, and spinning through a century
     /// of dates is not a useful response.
-    fn plus_seconds(self, seconds: u64) -> Option<Self> {
+    pub fn plus_seconds(self, seconds: u64) -> Option<Self> {
         let total = self.second_of_day as u64 + seconds;
         let days = total / DAY_S as u64;
         if days > MAX_ROLLOVER_DAYS {
@@ -315,6 +318,21 @@ pub enum TimeSource {
     /// if Home Assistant has stopped while the broker keeps running, nothing
     /// refreshes it and it can be any age at all.
     Retained,
+    /// Read from the DS3231 at boot, with its oscillator-stop flag clear: it
+    /// has been ticking on its own crystal since a live time last set it.
+    ///
+    /// Earns trust like [`TimeSource::Live`], so a unit that reboots while Home
+    /// Assistant is down still feeds. Unlike a live time it never *overrides* a
+    /// trusted clock: once a live time has arrived, that is the better source,
+    /// and the RTC is rewritten from it rather than the other way round. An RTC
+    /// whose flag is set never becomes a `TimeSource` at all — see
+    /// `ds3231::Reading::trustworthy`.
+    Rtc,
+    /// Set by hand on the knob. Treated as a live time — it earns trust and
+    /// overrides a trusted clock — because somebody standing at the feeder
+    /// saying what time it is is as current as a source gets. If Home
+    /// Assistant disagrees, its next live time wins in turn.
+    Manual,
 }
 
 /// Wall-clock time held in RAM and advanced by the monotonic counter.
@@ -379,7 +397,10 @@ impl LocalClock {
 
     /// Pins wall-clock time to a reading of the monotonic counter.
     pub fn align(&mut self, monotonic_ms: u64, wall: Wall, source: TimeSource) -> Alignment {
-        if source == TimeSource::Retained && self.trusted {
+        // Only a live or hand-set time may move a clock that is already
+        // trusted. A replay would drag it back to whatever the broker holds,
+        // and an RTC read is never fresher than the time that set it.
+        if matches!(source, TimeSource::Retained | TimeSource::Rtc) && self.trusted {
             return Alignment {
                 change: Change::IgnoredStale,
                 trusted: true,
@@ -387,8 +408,12 @@ impl LocalClock {
             };
         }
 
-        let armed_now = source == TimeSource::Live && !self.trusted;
-        self.trusted |= source == TimeSource::Live;
+        let trusting = matches!(
+            source,
+            TimeSource::Live | TimeSource::Rtc | TimeSource::Manual
+        );
+        let armed_now = trusting && !self.trusted;
+        self.trusted |= trusting;
 
         let before = self.now(monotonic_ms);
         self.anchor = Some((monotonic_ms, wall));
@@ -429,23 +454,34 @@ impl LocalClock {
     }
 }
 
-/// Signed difference in seconds, `to - from`, for reporting drift only.
+/// Whether `a` is a later calendar day than `b`.
+fn later(a: Date, b: Date) -> bool {
+    (a.year, a.month, a.day) > (b.year, b.month, b.day)
+}
+
+/// Days since 1970-01-01, for exact differences across any span of dates.
 ///
-/// Saturates well before overflowing, and does not attempt real calendar
-/// arithmetic across a date change: a correction that also moves the date is
-/// reported as a whole number of days plus the difference within the day, which
-/// is accurate enough for a log line.
-fn seconds_between(from: Wall, to: Wall) -> i64 {
-    let within_day = to.second_of_day as i64 - from.second_of_day as i64;
-    if to.date == from.date {
-        within_day
-    } else if (to.date.year, to.date.month, to.date.day)
-        > (from.date.year, from.date.month, from.date.day)
-    {
-        within_day + DAY_S as i64
-    } else {
-        within_day - DAY_S as i64
-    }
+/// Howard Hinnant's `days_from_civil`, which is exact for the proleptic
+/// Gregorian calendar and needs no tables.
+fn days_from_civil(date: Date) -> i64 {
+    let (m, d) = (date.month as i64, date.day as i64);
+    let y = date.year as i64 - (m <= 2) as i64;
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Signed difference in seconds, `to - from`, exact across any dates.
+///
+/// Used for the drift a clock correction reports, and by `ds3231::needs_set`
+/// to decide whether the RTC is far enough out to rewrite — which is why it is
+/// exact: it used to count any change of date as one day, so an RTC a year out
+/// could come out as two seconds and be left alone.
+pub fn seconds_between(from: Wall, to: Wall) -> i64 {
+    (days_from_civil(to.date) - days_from_civil(from.date)) * DAY_S as i64 + to.second_of_day as i64
+        - from.second_of_day as i64
 }
 
 /// One feeding time. `minute_of_day` is local wall-clock, matching [`Wall`].
@@ -455,7 +491,7 @@ pub struct Slot {
     pub portions: u8,
 }
 
-/// Why a `feeder/schedule` payload could not be used.
+/// Why a schedule command's payload could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScheduleError {
     /// Not the JSON this contract describes.
@@ -467,7 +503,9 @@ pub enum ScheduleError {
     BadSlot,
 }
 
-/// The feeding schedule, as published retained by Home Assistant.
+/// The feeding schedule. Owned by the unit: kept in flash, replaced by a
+/// `feeder/<id>/schedule` or `feeder/all/schedule` command, and echoed on
+/// `feeder/<id>/schedule/state`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Schedule {
     slots: Vec<Slot, MAX_SLOTS>,
@@ -521,6 +559,112 @@ impl Schedule {
 
         json.end()?;
         Ok(Self { slots })
+    }
+}
+
+/// Bytes a schedule takes in flash: magic, count, eight slots, CRC.
+///
+/// Fixed-size, so the record is the same length whatever it holds and an
+/// unused slot is zeroes rather than whatever the sector held before.
+pub const SCHEDULE_RECORD_LEN: usize = 4 + 1 + MAX_SLOTS * 3 + 4;
+
+/// `FDS` for feeder schedule, and a layout version. A separate record from the
+/// credentials' `FDR2`, in its own sector, so neither format has to move for
+/// the other.
+const SCHEDULE_MAGIC: [u8; 4] = *b"FDS1";
+
+/// The longest `to_json` can produce: eight slots of
+/// `{"time":"08:00","portions":255}` plus separators and brackets.
+pub const SCHEDULE_JSON_LEN: usize = 2 + MAX_SLOTS * 32;
+
+/// Why a stored schedule could not be read back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduleRecordError {
+    /// Erased flash: this unit has never been given a schedule. The normal
+    /// state of a new unit, and of one after a factory reset.
+    NotStored,
+    /// Something is there and it is not a schedule this firmware wrote, or it
+    /// was interrupted mid-write. Treated exactly like `NotStored` by the
+    /// caller — a unit with no schedule does not feed, which is the safe way
+    /// to be wrong — but worth a different log line.
+    Corrupt,
+}
+
+impl Schedule {
+    /// The flash record for this schedule.
+    pub fn encode(&self) -> [u8; SCHEDULE_RECORD_LEN] {
+        let mut out = [0u8; SCHEDULE_RECORD_LEN];
+        out[0..4].copy_from_slice(&SCHEDULE_MAGIC);
+        out[4] = self.slots.len() as u8;
+        for (i, slot) in self.slots.iter().enumerate() {
+            let at = 5 + i * 3;
+            out[at..at + 2].copy_from_slice(&slot.minute_of_day.to_le_bytes());
+            out[at + 2] = slot.portions;
+        }
+        let crc = crate::provisioning::crc32(&out[..SCHEDULE_RECORD_LEN - 4]);
+        out[SCHEDULE_RECORD_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    /// Reads a record back, refusing anything it cannot vouch for.
+    ///
+    /// Every slot is checked as `parse` would check it, so a record that
+    /// passes the CRC but holds nonsense — written by a future firmware with
+    /// the same magic, say — is still refused rather than fed from.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ScheduleRecordError> {
+        let bytes = bytes
+            .get(..SCHEDULE_RECORD_LEN)
+            .ok_or(ScheduleRecordError::Corrupt)?;
+        if bytes.iter().all(|b| *b == 0xFF) {
+            return Err(ScheduleRecordError::NotStored);
+        }
+        if bytes[0..4] != SCHEDULE_MAGIC {
+            return Err(ScheduleRecordError::Corrupt);
+        }
+        let crc = u32::from_le_bytes(bytes[SCHEDULE_RECORD_LEN - 4..].try_into().unwrap());
+        if crc != crate::provisioning::crc32(&bytes[..SCHEDULE_RECORD_LEN - 4]) {
+            return Err(ScheduleRecordError::Corrupt);
+        }
+
+        let count = bytes[4] as usize;
+        if count > MAX_SLOTS {
+            return Err(ScheduleRecordError::Corrupt);
+        }
+        let mut slots = Vec::new();
+        for i in 0..count {
+            let at = 5 + i * 3;
+            let slot = Slot {
+                minute_of_day: u16::from_le_bytes([bytes[at], bytes[at + 1]]),
+                portions: bytes[at + 2],
+            };
+            if slot.minute_of_day >= 24 * 60 {
+                return Err(ScheduleRecordError::Corrupt);
+            }
+            let _ = slots.push(slot);
+        }
+        Ok(Self { slots })
+    }
+
+    /// The schedule in the same JSON the commands carry, for the retained
+    /// `feeder/<id>/schedule/state` echo. `parse(to_json(s)) == s`.
+    pub fn to_json(&self) -> heapless::String<SCHEDULE_JSON_LEN> {
+        use core::fmt::Write as _;
+        let mut out = heapless::String::new();
+        let _ = out.push('[');
+        for (i, slot) in self.slots.iter().enumerate() {
+            if i > 0 {
+                let _ = out.push(',');
+            }
+            let _ = write!(
+                out,
+                r#"{{"time":"{:02}:{:02}","portions":{}}}"#,
+                slot.minute_of_day / 60,
+                slot.minute_of_day % 60,
+                slot.portions
+            );
+        }
+        let _ = out.push(']');
+        out
     }
 }
 
@@ -737,6 +881,18 @@ pub struct Scheduler {
     consumed_through: Option<(Date, u16)>,
     /// False until the first look at the clock. See the module docs.
     baselined: bool,
+    /// Whether any schedule has arrived at all — an empty one included.
+    ///
+    /// The baseline is only meaningful against a schedule. Normally the one
+    /// in flash is set before the clock is trusted, so the first look has it.
+    /// But a unit with nothing stored can have its clock trusted — by the RTC,
+    /// a second after boot — long before a schedule command arrives, and a
+    /// baseline spent on no slots would leave the first real schedule to the
+    /// lateness limit alone: given one at 19:01, it would serve the 19:00
+    /// meal. So the first look waits for a schedule, however early the clock
+    /// was trusted. Found when the RTC first armed ahead of the broker's
+    /// replay, back when the schedule lived there.
+    received: bool,
 }
 
 impl Scheduler {
@@ -745,6 +901,7 @@ impl Scheduler {
             schedule: Schedule::new(),
             consumed_through: None,
             baselined: false,
+            received: false,
         }
     }
 
@@ -755,6 +912,7 @@ impl Scheduler {
     /// loses slots — which is exactly why it is not an index.
     pub fn set_schedule(&mut self, schedule: Schedule) {
         self.schedule = schedule;
+        self.received = true;
     }
 
     pub fn schedule(&self) -> &Schedule {
@@ -767,11 +925,38 @@ impl Scheduler {
     /// often changes nothing, because a resolved slot is marked consumed before
     /// this returns.
     pub fn next_due(&mut self, now: Wall, paused: bool) -> Due {
+        // No schedule yet: nothing is due, and — crucially — this is not the
+        // first look. See `received`.
+        if !self.received {
+            return Due::Nothing;
+        }
+
         let after = match self.consumed_through {
-            Some((date, minute)) if date == now.date => Some(minute),
-            // A new day re-arms every slot. Yesterday's marker says nothing
-            // about today.
-            _ => None,
+            // A later day re-arms every slot: yesterday's marker says nothing
+            // about today. Only *forward* — see below.
+            Some((date, _)) if later(now.date, date) => None,
+            // The same day, or a clock that has gone **backwards** across
+            // midnight. The second is not a new day, it is a clock being
+            // corrected — a date set wrong by hand on the knob, then put right
+            // by Home Assistant — and treating it as a fresh day would serve
+            // again a meal served minutes earlier. So the marker's time of day
+            // still holds: nothing at or before the last slot resolved fires
+            // again. The price is that a clock set *back* by a day skips that
+            // day's earlier meals, which is the direction this project always
+            // chooses.
+            Some((date, minute)) => {
+                // Moved back: re-date the marker to today, keeping its time of
+                // day. Left dated in the future it would hold every slot up to
+                // that minute on every earlier day — a year set one too far,
+                // then corrected, would skip those meals for a year. Re-dated,
+                // the correction still cannot repeat a meal, and the next
+                // midnight re-arms as usual.
+                if later(date, now.date) {
+                    self.consumed_through = Some((now.date, minute));
+                }
+                Some(minute)
+            }
+            None => None,
         };
 
         let now_minute = now.minute_of_day();
@@ -1220,6 +1405,249 @@ mod tests {
         assert!(replayed.trusted, "a stale replay must never disarm a unit");
         // The clock kept free-running instead of jumping back two hours.
         assert_eq!(clock.now(600_000).unwrap(), wall(14, 8, 10));
+    }
+
+    /// The double feed the RTC nearly introduced. The clock is trusted before
+    /// any schedule arrives; a reboot one minute after the 19:00 meal must not
+    /// serve it again when the schedule turns up seconds later.
+    #[test]
+    fn the_baseline_waits_for_a_schedule_to_arrive() {
+        let mut scheduler = Scheduler::new();
+        assert_eq!(scheduler.next_due(wall(17, 19, 1), false), Due::Nothing);
+        assert_eq!(
+            scheduler.next_due(wall_s(17, 19, 1, 3), false),
+            Due::Nothing
+        );
+
+        scheduler.set_schedule(Schedule::parse(br#"[{"time":"19:00","portions":2}]"#).unwrap());
+
+        assert_eq!(
+            scheduler.next_due(wall_s(17, 19, 1, 5), false),
+            Due::Consumed {
+                minute_of_day: 19 * 60,
+                why: Skipped::Baseline,
+            },
+            "a meal served before the reboot was fed again"
+        );
+    }
+
+    /// An empty schedule is still a schedule: the first look after it is the
+    /// baseline, and a slot added later is judged as a new one.
+    #[test]
+    fn an_empty_schedule_still_counts_as_received() {
+        let mut scheduler = Scheduler::new();
+        scheduler.set_schedule(Schedule::parse(b"[]").unwrap());
+        assert_eq!(scheduler.next_due(wall(17, 12, 0), false), Due::Nothing);
+
+        scheduler.set_schedule(Schedule::parse(br#"[{"time":"12:01","portions":1}]"#).unwrap());
+        assert_eq!(
+            scheduler.next_due(wall_s(17, 12, 1, 10), false),
+            Due::Feed {
+                minute_of_day: 12 * 60 + 1,
+                portions: 1
+            }
+        );
+    }
+
+    /// The sequence the knob made possible: a meal served, the date set a day
+    /// ahead by hand — which *is* a new day, and feeds — then Home Assistant
+    /// putting the date back. The correction must not serve today's meal a
+    /// second time.
+    #[test]
+    fn a_date_corrected_backwards_does_not_serve_a_meal_again() {
+        let mut scheduler = two_meals();
+        scheduler.next_due(wall(17, 7, 0), false);
+        assert!(matches!(
+            scheduler.next_due(wall_s(17, 19, 0, 30), false),
+            Due::Feed { .. }
+        ));
+
+        // Set to tomorrow, 19:00: tomorrow's meal, genuinely due.
+        assert!(matches!(
+            scheduler.next_due(wall_s(18, 19, 0, 40), false),
+            Due::Feed { .. }
+        ));
+
+        // Home Assistant puts it back to today, a minute after the meal.
+        assert_eq!(scheduler.next_due(wall(17, 19, 1), false), Due::Nothing);
+
+        // And the real tomorrow is a normal day: both meals, not skipped
+        // because the marker was once dated the 18th.
+        assert!(matches!(
+            scheduler.next_due(wall(18, 8, 0), false),
+            Due::Feed { .. }
+        ));
+        assert!(matches!(
+            scheduler.next_due(wall(18, 19, 0), false),
+            Due::Feed { .. }
+        ));
+    }
+
+    /// A year set one too far on the knob, a meal served under it, then the
+    /// date corrected: the following days feed normally rather than waiting a
+    /// year for the calendar to catch up with the marker.
+    #[test]
+    fn a_year_set_wrong_then_corrected_does_not_skip_a_year_of_meals() {
+        let mut scheduler = two_meals();
+        let next_year = |day, hour, minute| Wall {
+            date: date(2027, 9, day),
+            ..wall(day, hour, minute)
+        };
+        scheduler.next_due(next_year(17, 7, 0), false);
+        assert!(matches!(
+            scheduler.next_due(next_year(17, 19, 0), false),
+            Due::Feed { .. }
+        ));
+
+        // Corrected to the real year, the same evening.
+        assert_eq!(scheduler.next_due(wall(17, 19, 1), false), Due::Nothing);
+        // The next morning and evening, in the real year.
+        assert!(matches!(
+            scheduler.next_due(wall(18, 8, 0), false),
+            Due::Feed { .. }
+        ));
+        assert!(matches!(
+            scheduler.next_due(wall(18, 19, 0), false),
+            Due::Feed { .. }
+        ));
+    }
+
+    #[test]
+    fn seconds_between_is_exact_across_any_dates() {
+        let at = |y, m, d, s| Wall {
+            date: Date {
+                year: y,
+                month: m,
+                day: d,
+            },
+            second_of_day: s,
+            offset_minutes: None,
+        };
+        assert_eq!(seconds_between(at(2026, 9, 25, 10), at(2026, 9, 25, 13)), 3);
+        assert_eq!(
+            seconds_between(at(2026, 9, 25, 86_399), at(2026, 9, 26, 1)),
+            2
+        );
+        assert_eq!(
+            seconds_between(at(2026, 9, 26, 1), at(2026, 9, 25, 86_399)),
+            -2
+        );
+        // A year apart, which the old one-day rule reported as two seconds.
+        assert_eq!(
+            seconds_between(at(2025, 9, 25, 86_399), at(2026, 9, 26, 1)),
+            365 * 86_400 + 2
+        );
+        // Across a leap day.
+        assert_eq!(
+            seconds_between(at(2028, 2, 28, 0), at(2028, 3, 1, 0)),
+            2 * 86_400
+        );
+        assert_eq!(
+            seconds_between(at(1970, 1, 1, 0), at(2000, 1, 1, 0)),
+            10_957 * 86_400
+        );
+    }
+
+    /// Midnight still re-arms the day: the forward case is unchanged.
+    #[test]
+    fn midnight_still_re_arms_every_slot() {
+        let mut scheduler = two_meals();
+        scheduler.next_due(wall(17, 7, 0), false);
+        assert!(matches!(
+            scheduler.next_due(wall(17, 8, 0), false),
+            Due::Feed { .. }
+        ));
+        assert!(matches!(
+            scheduler.next_due(wall(17, 19, 0), false),
+            Due::Feed { .. }
+        ));
+        assert!(matches!(
+            scheduler.next_due(wall(18, 8, 0), false),
+            Due::Feed { .. }
+        ));
+    }
+
+    /// A clock set by hand arms a unit that has never seen a network, and
+    /// corrects one that has.
+    #[test]
+    fn a_hand_set_time_arms_and_overrides() {
+        let mut clock = LocalClock::new();
+        assert!(clock.align(0, wall(14, 8, 0), TimeSource::Manual).armed_now);
+
+        let mut trusted = LocalClock::new();
+        trusted.align(0, wall(14, 8, 0), TimeSource::Live);
+        let set = trusted.align(1_000, wall(14, 9, 0), TimeSource::Manual);
+        assert_eq!(set.change, Change::Adjusted { drift_s: 3_599 });
+        assert_eq!(trusted.now(1_000).unwrap(), wall(14, 9, 0));
+    }
+
+    /// Setting the clock *back* across a meal already served must not serve it
+    /// again. The consumed marker is keyed on the time of day, so the slot is
+    /// still behind it when the clock reaches 19:00 a second time.
+    #[test]
+    fn setting_the_clock_back_over_a_meal_does_not_repeat_it() {
+        let mut scheduler = two_meals();
+        scheduler.next_due(wall(17, 7, 0), false);
+        assert!(matches!(
+            scheduler.next_due(wall(17, 19, 0), false),
+            Due::Feed { .. }
+        ));
+
+        // Somebody sets it back to 18:55, and the clock walks forward again.
+        assert_eq!(scheduler.next_due(wall(17, 18, 55), false), Due::Nothing);
+        assert_eq!(scheduler.next_due(wall(17, 19, 0), false), Due::Nothing);
+        assert_eq!(scheduler.next_due(wall(17, 19, 1), false), Due::Nothing);
+    }
+
+    /// The point of the RTC: a unit rebooted with Home Assistant down arms its
+    /// schedule from a clock that has kept time on its own crystal.
+    #[test]
+    fn a_trustworthy_rtc_arms_the_schedule() {
+        let mut clock = LocalClock::new();
+        let a = clock.align(0, wall(14, 8, 0), TimeSource::Rtc);
+
+        assert!(a.trusted);
+        assert!(a.armed_now);
+        assert!(clock.is_trusted());
+    }
+
+    /// Once the RTC has armed the clock, a retained replay is as stale as ever.
+    #[test]
+    fn a_retained_time_after_the_rtc_is_ignored() {
+        let mut clock = LocalClock::new();
+        clock.align(0, wall(14, 8, 0), TimeSource::Rtc);
+
+        let replayed = clock.align(1_000, wall(12, 0, 0), TimeSource::Retained);
+
+        assert_eq!(replayed.change, Change::IgnoredStale);
+        assert_eq!(clock.now(1_000).unwrap(), wall_s(14, 8, 0, 1));
+    }
+
+    /// A live time still corrects a clock the RTC started, and does not
+    /// announce arming a second time.
+    #[test]
+    fn a_live_time_corrects_an_rtc_start() {
+        let mut clock = LocalClock::new();
+        clock.align(0, wall(14, 8, 0), TimeSource::Rtc);
+
+        let live = clock.align(10_000, wall_s(14, 8, 0, 13), TimeSource::Live);
+
+        assert_eq!(live.change, Change::Adjusted { drift_s: 3 });
+        assert!(!live.armed_now, "already armed by the RTC");
+        assert_eq!(clock.now(10_000).unwrap(), wall_s(14, 8, 0, 13));
+    }
+
+    /// The RTC never overrides a live time: the live one is the source the
+    /// RTC itself is set from.
+    #[test]
+    fn an_rtc_read_after_a_live_time_is_ignored() {
+        let mut clock = LocalClock::new();
+        clock.align(0, wall(14, 8, 0), TimeSource::Live);
+
+        let late = clock.align(1_000, wall(14, 7, 0), TimeSource::Rtc);
+
+        assert_eq!(late.change, Change::IgnoredStale);
+        assert_eq!(clock.now(1_000).unwrap(), wall_s(14, 8, 0, 1));
     }
 
     #[test]
@@ -1736,5 +2164,107 @@ mod tests {
             }
         );
         assert_eq!(scheduler.next_due(wall(14, 19, 1), false), Due::Nothing);
+    }
+
+    // --- the schedule in flash and on the echo topic -------------------------
+
+    fn stored(json: &[u8]) -> Schedule {
+        Schedule::parse(json).unwrap()
+    }
+
+    #[test]
+    fn a_schedule_round_trips_through_flash() {
+        for json in [
+            &br#"[]"#[..],
+            br#"[{"time":"08:00","portions":2},{"time":"19:00","portions":3}]"#,
+            br#"[{"time":"00:00","portions":1},{"time":"23:59","portions":16}]"#,
+        ] {
+            let schedule = stored(json);
+            assert_eq!(Schedule::decode(&schedule.encode()), Ok(schedule));
+        }
+    }
+
+    #[test]
+    fn a_full_schedule_round_trips_through_flash() {
+        let mut json = alloc::string::String::from("[");
+        for i in 0..MAX_SLOTS {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&alloc::format!(
+                r#"{{"time":"{:02}:30","portions":{}}}"#,
+                i * 3,
+                i + 1
+            ));
+        }
+        json.push(']');
+        let schedule = stored(json.as_bytes());
+        assert_eq!(schedule.len(), MAX_SLOTS);
+        assert_eq!(Schedule::decode(&schedule.encode()), Ok(schedule));
+    }
+
+    /// Erased flash is a unit that has never been given a schedule, not a
+    /// corrupt one — the ordinary state of a new unit.
+    #[test]
+    fn erased_flash_is_no_schedule() {
+        assert_eq!(
+            Schedule::decode(&[0xFF; SCHEDULE_RECORD_LEN]),
+            Err(ScheduleRecordError::NotStored)
+        );
+    }
+
+    /// Every single-bit flip is caught, as the credentials record's are.
+    #[test]
+    fn a_damaged_record_is_refused() {
+        let good = stored(br#"[{"time":"08:00","portions":2}]"#).encode();
+        for byte in 0..SCHEDULE_RECORD_LEN {
+            for bit in 0..8 {
+                let mut bad = good;
+                bad[byte] ^= 1 << bit;
+                assert!(
+                    Schedule::decode(&bad).is_err(),
+                    "flip at {byte}.{bit} accepted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_record_cut_short_is_refused() {
+        let good = stored(br#"[{"time":"08:00","portions":2}]"#).encode();
+        assert_eq!(
+            Schedule::decode(&good[..SCHEDULE_RECORD_LEN - 1]),
+            Err(ScheduleRecordError::Corrupt)
+        );
+    }
+
+    #[test]
+    fn the_echo_is_the_json_the_commands_carry() {
+        let schedule = stored(br#"[{"time":"08:00","portions":2},{"time":"19:05","portions":12}]"#);
+        let json = schedule.to_json();
+        assert_eq!(
+            json.as_str(),
+            r#"[{"time":"08:00","portions":2},{"time":"19:05","portions":12}]"#
+        );
+        assert_eq!(Schedule::parse(json.as_bytes()), Ok(schedule));
+        assert_eq!(Schedule::new().to_json().as_str(), "[]");
+    }
+
+    /// The echo buffer holds the largest schedule the firmware accepts.
+    #[test]
+    fn the_largest_schedule_fits_its_echo() {
+        let mut json = alloc::string::String::from("[");
+        for i in 0..MAX_SLOTS {
+            if i > 0 {
+                json.push(',');
+            }
+            json.push_str(&alloc::format!(
+                r#"{{"time":"{:02}:59","portions":255}}"#,
+                23 - i
+            ));
+        }
+        json.push(']');
+        let schedule = stored(json.as_bytes());
+        assert_eq!(Schedule::parse(schedule.to_json().as_bytes()), Ok(schedule));
     }
 }

@@ -11,6 +11,10 @@
 //! | menu or settings | moves the cursor | runs the item | lock |
 //! | editing a number | changes it | saves it, applied at once | lock, discarding it |
 //! | confirming a reset | `Keep` or `Erase` | runs the choice | lock, keeping everything |
+//! | setting the clock | changes the underlined field | next field; on the minute, sets it | lock, discarding it |
+//! | confirming a calibration | `Keep` or `Start` | runs the choice | lock, starting nothing |
+//! | calibrating | nothing | nothing | lock; the run finishes, unsaved |
+//! | a calibration result | nothing | saves it, or back if it failed | lock, discarding it |
 //! | nothing for ten seconds | | | locks again |
 //!
 //! Rules, each a test below:
@@ -31,7 +35,9 @@
 //!   left days ago, which reads as a screen stuck on the wrong thing.
 
 use crate::button::{Button, Event};
+use crate::calibrate::{Failure, Measurement};
 use crate::provisioning::MIN_DETENT_MS;
+use crate::schedule::{Date, Wall};
 
 /// The pages a locked unit steps through, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,10 +81,14 @@ impl Item {
 /// What the settings menu offers, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
+    /// Set the date and time, for a unit with no network to be told it.
+    Clock,
     /// Edit [`Field::PortionScale`].
     PortionScale,
     /// Edit [`Field::Detent`].
     Detent,
+    /// Measure the detent interval by turning the mechanism. See `calibrate.rs`.
+    Calibrate,
     /// Erase the record, after a confirmation.
     Reset,
     /// Back to the main menu.
@@ -86,9 +96,11 @@ pub enum Setting {
 }
 
 impl Setting {
-    pub const ALL: [Setting; 4] = [
+    pub const ALL: [Setting; 6] = [
+        Setting::Clock,
         Setting::PortionScale,
         Setting::Detent,
+        Setting::Calibrate,
         Setting::Reset,
         Setting::Back,
     ];
@@ -145,11 +157,147 @@ impl Calibration {
 /// What the screen is showing, for `display.rs` to lay out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    Locked { page: Page },
-    Unlocked { item: Item },
-    Settings { item: Setting },
-    Editing { field: Field, value: u16 },
-    ConfirmReset { erase: bool },
+    Locked {
+        page: Page,
+    },
+    Unlocked {
+        item: Item,
+    },
+    Settings {
+        item: Setting,
+    },
+    Editing {
+        field: Field,
+        value: u16,
+    },
+    ConfirmReset {
+        erase: bool,
+    },
+    SettingClock(ClockEdit),
+    /// Starting a calibration dispenses food, so it asks first, on `Keep`.
+    ConfirmCalibrate {
+        start: bool,
+    },
+    /// The motor is turning; `clicks` of `calibrate::DETENTS` so far.
+    Calibrating {
+        clicks: u8,
+    },
+    /// What the run measured, or why it cannot be used.
+    Calibrated(Result<Measurement, Failure>),
+}
+
+/// Which part of the date and time the knob is changing. In the order a tap
+/// steps through them, largest first, so the day is chosen knowing its month.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClockField {
+    Year,
+    Month,
+    Day,
+    Hour,
+    Minute,
+}
+
+/// A date and time being set by hand, and which part of it is under the knob.
+///
+/// No seconds: a clock set by hand is set to the minute, and the seconds start
+/// at zero when it is saved — tap on the minute as it turns over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockEdit {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub field: ClockField,
+}
+
+impl ClockEdit {
+    /// The years the knob offers. The floor is roughly when this was built —
+    /// a clock set before it is certainly wrong — and the ceiling is the
+    /// DS3231's, which holds two digits.
+    pub const YEARS: (u16, u16) = (2025, 2099);
+
+    /// Where editing starts: the time now if there is one, else the start of
+    /// the knob's range, which nobody could mistake for a real reading.
+    fn starting_at(now: Option<Wall>) -> Self {
+        let (date, second_of_day) = match now {
+            Some(w) if (Self::YEARS.0..=Self::YEARS.1).contains(&w.date.year) => {
+                (w.date, w.second_of_day)
+            }
+            _ => (
+                Date {
+                    year: Self::YEARS.0,
+                    month: 1,
+                    day: 1,
+                },
+                0,
+            ),
+        };
+        Self {
+            year: date.year,
+            month: date.month,
+            day: date.day,
+            hour: (second_of_day / 3600) as u8,
+            minute: (second_of_day / 60 % 60) as u8,
+            field: ClockField::Year,
+        }
+    }
+
+    /// Turns the field under the knob.
+    ///
+    /// Hours and minutes wrap, the way a clock face does, so 23 → 0 is one
+    /// detent rather than twenty-three; they carry nothing into the next
+    /// field, which is what the knob-per-field model means. The year and the
+    /// month stop at their ends. The day stops at the month's length.
+    fn turn(mut self, steps: i8) -> Self {
+        let steps = steps as i32;
+        let wrap = |v: u8, n: i32| (v as i32 + steps).rem_euclid(n) as u8;
+        match self.field {
+            ClockField::Year => {
+                self.year = (self.year as i32 + steps)
+                    .clamp(Self::YEARS.0 as i32, Self::YEARS.1 as i32)
+                    as u16;
+            }
+            ClockField::Month => self.month = (self.month as i32 + steps).clamp(1, 12) as u8,
+            ClockField::Day => {
+                let last = Date::days_in_month(self.year, self.month) as i32;
+                self.day = (self.day as i32 + steps).clamp(1, last) as u8;
+            }
+            ClockField::Hour => self.hour = wrap(self.hour, 24),
+            ClockField::Minute => self.minute = wrap(self.minute, 60),
+        }
+        // A month or a year with fewer days pulls the day in with it, so the
+        // editor can never hold a date that does not exist.
+        self.day = self
+            .day
+            .min(Date::days_in_month(self.year, self.month))
+            .max(1);
+        self
+    }
+
+    /// The field after this one, or `None` on the minute, where a tap sets it.
+    fn next_field(self) -> Option<ClockField> {
+        match self.field {
+            ClockField::Year => Some(ClockField::Month),
+            ClockField::Month => Some(ClockField::Day),
+            ClockField::Day => Some(ClockField::Hour),
+            ClockField::Hour => Some(ClockField::Minute),
+            ClockField::Minute => None,
+        }
+    }
+
+    /// The time this edit describes, seconds zero.
+    pub fn wall(self) -> Wall {
+        Wall {
+            date: Date {
+                year: self.year,
+                month: self.month,
+                day: self.day,
+            },
+            second_of_day: self.hour as u32 * 3600 + self.minute as u32 * 60,
+            offset_minutes: None,
+        }
+    }
 }
 
 impl Mode {
@@ -185,6 +333,10 @@ pub enum Outcome {
     Save { field: Field, value: u16 },
     /// Erase the record, then restart into setup mode.
     FactoryReset,
+    /// Set the clock to this time, now: the schedule's clock and the RTC.
+    SetClock(Wall),
+    /// Run a calibration: turn `calibrate::DETENTS` detents and time them.
+    StartCalibration,
     /// The page, the cursor or the value moved.
     Moved(Mode),
     /// A locked tap: back to the home page.
@@ -199,6 +351,9 @@ pub struct Menu {
     button: Button,
     mode: Mode,
     calibration: Calibration,
+    /// The time now, if the unit knows it, so the clock editor opens on it.
+    /// Kept current by the caller with [`Menu::set_now`].
+    now: Option<Wall>,
 }
 
 impl Menu {
@@ -207,7 +362,41 @@ impl Menu {
             button: Button::new(),
             mode: Mode::Locked { page: Page::Home },
             calibration,
+            now: None,
         }
+    }
+
+    /// The feeder task counted another click of a calibration run. Keeps the
+    /// menu open — the run outlasts the ten-second window otherwise — and
+    /// returns what to redraw. Ignored if the menu has moved on.
+    pub fn calibration_progress(&mut self, now_ms: u64, clicks: u8) -> Option<Outcome> {
+        if !matches!(self.mode, Mode::Calibrating { .. }) {
+            return None;
+        }
+        self.button.refresh(now_ms);
+        self.mode = Mode::Calibrating { clicks };
+        Some(Outcome::Moved(self.mode))
+    }
+
+    /// The run ended. Shown only if the menu is still waiting for it: a run
+    /// abandoned by a hold finishes on the motor and is not saved.
+    pub fn calibration_finished(
+        &mut self,
+        now_ms: u64,
+        result: Result<Measurement, Failure>,
+    ) -> Option<Outcome> {
+        if !matches!(self.mode, Mode::Calibrating { .. }) {
+            return None;
+        }
+        self.button.refresh(now_ms);
+        self.mode = Mode::Calibrated(result);
+        Some(Outcome::Moved(self.mode))
+    }
+
+    /// What time it is, so the clock editor opens on it. `None` when the unit
+    /// has no trusted time.
+    pub fn set_now(&mut self, now: Option<Wall>) {
+        self.now = now;
     }
 
     pub fn mode(&self) -> Mode {
@@ -288,6 +477,11 @@ impl Menu {
                 }
                 // Clockwise is down the screen, and `Erase` is below `Keep`.
                 Mode::ConfirmReset { .. } => Mode::ConfirmReset { erase: steps > 0 },
+                Mode::SettingClock(edit) => Mode::SettingClock(edit.turn(steps)),
+                // Clockwise is down, and `Start` is below `Keep`.
+                Mode::ConfirmCalibrate { .. } => Mode::ConfirmCalibrate { start: steps > 0 },
+                // Nothing to choose while the motor runs or a result is shown.
+                Mode::Calibrating { .. } | Mode::Calibrated(_) => self.mode,
                 Mode::Locked { .. } => unreachable!("handled above"),
             };
         }
@@ -332,9 +526,47 @@ impl Menu {
             Mode::Unlocked {
                 item: Item::Settings,
             } => Mode::Settings {
-                item: Setting::PortionScale,
+                item: Setting::Clock,
             },
 
+            Mode::Settings {
+                item: Setting::Clock,
+            } => Mode::SettingClock(ClockEdit::starting_at(self.now)),
+            Mode::SettingClock(edit) => match edit.next_field() {
+                Some(field) => Mode::SettingClock(ClockEdit { field, ..edit }),
+                None => {
+                    // Set, and back to the list — unlike a calibration save,
+                    // there is no write to wait on that could fail: the clock
+                    // takes it at once and the RTC is best effort behind it.
+                    self.mode = Mode::Settings {
+                        item: Setting::Clock,
+                    };
+                    return Outcome::SetClock(edit.wall());
+                }
+            },
+            Mode::Settings {
+                item: Setting::Calibrate,
+            } => Mode::ConfirmCalibrate { start: false },
+            Mode::ConfirmCalibrate { start: false } => Mode::Settings {
+                item: Setting::Calibrate,
+            },
+            Mode::ConfirmCalibrate { start: true } => {
+                self.mode = Mode::Calibrating { clicks: 0 };
+                return Outcome::StartCalibration;
+            }
+            // A tap cannot stop the motor mid-run; only waiting does.
+            Mode::Calibrating { .. } => return Outcome::Moved(self.mode),
+            // Saved through the same path as a detent typed in by hand, and
+            // `saved` then returns the list to `Detent`, showing the new value.
+            Mode::Calibrated(Ok(measured)) => {
+                return Outcome::Save {
+                    field: Field::Detent,
+                    value: measured.detent_ms,
+                };
+            }
+            Mode::Calibrated(Err(_)) => Mode::Settings {
+                item: Setting::Calibrate,
+            },
             Mode::Settings {
                 item: Setting::PortionScale,
             } => self.edit(Field::PortionScale),
@@ -665,11 +897,18 @@ mod tests {
             .collect()
     }
 
-    /// Hold, then turn to `Settings` and tap into it.
+    /// Hold, turn to `Settings`, tap into it, and turn to `Portion`.
     fn into_settings(b: &mut Bench) {
         b.hold();
         b.turn(2);
         b.tap();
+        assert_eq!(
+            b.menu.mode(),
+            Mode::Settings {
+                item: Setting::Clock
+            }
+        );
+        b.turn(1);
         assert_eq!(
             b.menu.mode(),
             Mode::Settings {
@@ -817,7 +1056,7 @@ mod tests {
     fn back_returns_to_the_main_menu_on_settings() {
         let mut b = Bench::new();
         into_settings(&mut b);
-        b.turn(3);
+        b.turn(4);
         b.tap();
 
         assert_eq!(
@@ -833,7 +1072,7 @@ mod tests {
     fn a_reset_starts_on_keep_and_keep_erases_nothing() {
         let mut b = Bench::new();
         into_settings(&mut b);
-        b.turn(2);
+        b.turn(3);
         b.tap();
         assert_eq!(b.menu.mode(), Mode::ConfirmReset { erase: false });
 
@@ -851,7 +1090,7 @@ mod tests {
     fn erasing_needs_a_turn_then_a_tap() {
         let mut b = Bench::new();
         into_settings(&mut b);
-        b.turn(2);
+        b.turn(3);
         b.tap();
         b.turn(1);
         assert_eq!(b.menu.mode(), Mode::ConfirmReset { erase: true });
@@ -873,6 +1112,251 @@ mod tests {
 
         assert!(saves(&b).is_empty());
         assert!(!b.out.contains(&Outcome::FactoryReset));
+    }
+
+    // --- the clock --------------------------------------------------------------
+
+    fn clock_edit(b: &Bench) -> ClockEdit {
+        match b.menu.mode() {
+            Mode::SettingClock(edit) => edit,
+            other => panic!("not setting the clock: {other:?}"),
+        }
+    }
+
+    /// Hold, `Settings`, and `Clock` is the first item.
+    fn into_clock(b: &mut Bench) {
+        b.hold();
+        b.turn(2);
+        b.tap();
+        b.tap();
+    }
+
+    fn at(year: u16, month: u8, day: u8, hour: u32, minute: u32, second: u32) -> Wall {
+        Wall {
+            date: Date { year, month, day },
+            second_of_day: hour * 3600 + minute * 60 + second,
+            offset_minutes: None,
+        }
+    }
+
+    #[test]
+    fn the_clock_opens_on_the_time_now() {
+        let mut b = Bench::new();
+        b.menu.set_now(Some(at(2026, 9, 25, 20, 14, 37)));
+        into_clock(&mut b);
+
+        let edit = clock_edit(&b);
+        assert_eq!(
+            (edit.year, edit.month, edit.day, edit.hour, edit.minute),
+            (2026, 9, 25, 20, 14)
+        );
+        assert_eq!(edit.field, ClockField::Year);
+    }
+
+    #[test]
+    fn with_no_time_it_opens_on_the_start_of_its_range() {
+        let mut b = Bench::new();
+        into_clock(&mut b);
+        assert_eq!(clock_edit(&b).wall(), at(2025, 1, 1, 0, 0, 0));
+    }
+
+    /// The whole gesture: a turn and a tap per field, and the last tap sets it.
+    #[test]
+    fn a_tap_per_field_then_the_minute_sets_it() {
+        let mut b = Bench::new();
+        into_clock(&mut b);
+        b.turn(1); // 2026
+        b.tap();
+        b.turn(8); // September
+        b.tap();
+        b.turn(24); // 25th
+        b.tap();
+        b.turn(-4); // 20:00, wrapping back from 00
+        b.tap();
+        b.turn(15);
+        b.tap();
+
+        assert_eq!(
+            b.out.last(),
+            Some(&Outcome::SetClock(at(2026, 9, 25, 20, 15, 0)))
+        );
+        assert_eq!(
+            b.menu.mode(),
+            Mode::Settings {
+                item: Setting::Clock
+            }
+        );
+        assert_eq!(b.feeds(), 0);
+    }
+
+    #[test]
+    fn hours_and_minutes_wrap_and_carry_nothing() {
+        let mut e = ClockEdit::starting_at(Some(at(2026, 9, 25, 23, 59, 0)));
+        e.field = ClockField::Minute;
+        e = e.turn(1);
+        assert_eq!(
+            (e.hour, e.minute),
+            (23, 0),
+            "a minute past 59 is 0, same hour"
+        );
+        e.field = ClockField::Hour;
+        e = e.turn(1);
+        assert_eq!((e.day, e.hour), (25, 0), "an hour past 23 is 0, same day");
+    }
+
+    /// The editor can never hold a date that does not exist.
+    #[test]
+    fn the_day_follows_the_month_and_the_year() {
+        let mut e = ClockEdit::starting_at(Some(at(2028, 1, 31, 12, 0, 0)));
+        e.field = ClockField::Month;
+        e = e.turn(1);
+        assert_eq!((e.month, e.day), (2, 29), "31 January to February 2028");
+        e.field = ClockField::Year;
+        e = e.turn(1);
+        assert_eq!((e.year, e.day), (2029, 28), "not a leap year");
+        e.field = ClockField::Day;
+        e = e.turn(10);
+        assert_eq!(e.day, 28, "the day stops at the month's end");
+    }
+
+    #[test]
+    fn the_year_stays_within_what_the_rtc_can_hold() {
+        let mut e = ClockEdit::starting_at(None);
+        e = e.turn(-10);
+        assert_eq!(e.year, ClockEdit::YEARS.0);
+        e = e.turn(127).turn(127);
+        assert_eq!(e.year, ClockEdit::YEARS.1);
+        assert!(crate::ds3231::encode_time(e.wall()).is_some());
+    }
+
+    /// Leaving half-way sets nothing.
+    #[test]
+    fn a_clock_edit_abandoned_sets_nothing() {
+        let mut b = Bench::new();
+        into_clock(&mut b);
+        b.turn(3);
+        b.tap();
+        b.hold();
+
+        assert!(!b.out.iter().any(|o| matches!(o, Outcome::SetClock(_))));
+        assert_eq!(b.out.last(), Some(&Outcome::Locked));
+    }
+
+    // --- calibration ------------------------------------------------------------
+
+    /// Hold, `Settings`, down to `Calibrate`, tap: the confirmation.
+    fn into_calibrate(b: &mut Bench) {
+        b.hold();
+        b.turn(2);
+        b.tap();
+        b.turn(3);
+        assert_eq!(
+            b.menu.mode(),
+            Mode::Settings {
+                item: Setting::Calibrate
+            }
+        );
+        b.tap();
+    }
+
+    fn measured(detent_ms: u16) -> Result<Measurement, Failure> {
+        Ok(Measurement {
+            detent_ms,
+            fastest_ms: detent_ms as u64 - 20,
+            slowest_ms: detent_ms as u64 - 5,
+        })
+    }
+
+    /// It dispenses food, so the first tap does nothing but go back.
+    #[test]
+    fn calibration_asks_first_and_keep_starts_nothing() {
+        let mut b = Bench::new();
+        into_calibrate(&mut b);
+        assert_eq!(b.menu.mode(), Mode::ConfirmCalibrate { start: false });
+
+        b.tap();
+        assert!(!b.out.contains(&Outcome::StartCalibration));
+        assert_eq!(
+            b.menu.mode(),
+            Mode::Settings {
+                item: Setting::Calibrate
+            }
+        );
+    }
+
+    #[test]
+    fn a_calibration_runs_and_its_result_saves_as_the_detent() {
+        let mut b = Bench::new();
+        into_calibrate(&mut b);
+        b.turn(1);
+        b.tap();
+        assert_eq!(b.out.last(), Some(&Outcome::StartCalibration));
+        assert_eq!(b.menu.mode(), Mode::Calibrating { clicks: 0 });
+
+        // Ten seconds of motor: longer than the window, which must not lapse.
+        for clicks in 1..=5 {
+            b.wait(2_100);
+            b.menu.calibration_progress(b.now, clicks);
+        }
+        assert!(b.menu.is_unlocked(), "the window lapsed mid-run");
+        b.menu.calibration_finished(b.now, measured(2_070));
+        assert_eq!(b.menu.mode(), Mode::Calibrated(measured(2_070)));
+
+        b.tap();
+        assert_eq!(saves(&b), [(Field::Detent, 2_070)]);
+        b.menu.saved(Field::Detent, 2_070);
+        assert_eq!(b.menu.calibration().detent_ms, 2_070);
+    }
+
+    #[test]
+    fn a_failed_run_saves_nothing_and_goes_back() {
+        let mut b = Bench::new();
+        into_calibrate(&mut b);
+        b.turn(1);
+        b.tap();
+        b.menu.calibration_finished(b.now, Err(Failure::Jammed));
+        b.tap();
+
+        assert!(saves(&b).is_empty());
+        assert_eq!(
+            b.menu.mode(),
+            Mode::Settings {
+                item: Setting::Calibrate
+            }
+        );
+    }
+
+    /// Nothing about a running calibration responds to the knob but a hold.
+    #[test]
+    fn turns_and_taps_do_nothing_while_calibrating() {
+        let mut b = Bench::new();
+        into_calibrate(&mut b);
+        b.turn(1);
+        b.tap();
+        b.turn(3);
+        b.tap();
+        assert_eq!(b.menu.mode(), Mode::Calibrating { clicks: 0 });
+        assert_eq!(
+            b.out
+                .iter()
+                .filter(|o| **o == Outcome::StartCalibration)
+                .count(),
+            1,
+            "a second tap started a second run"
+        );
+    }
+
+    /// A hold abandons it: the menu locks, and the result that lands later is
+    /// not shown, and so cannot be saved by a stray tap.
+    #[test]
+    fn a_result_after_a_hold_is_dropped() {
+        let mut b = Bench::new();
+        into_calibrate(&mut b);
+        b.turn(1);
+        b.tap();
+        b.hold();
+        assert_eq!(b.menu.calibration_finished(b.now, measured(2_000)), None);
+        assert!(b.menu.mode().is_locked());
     }
 
     #[test]

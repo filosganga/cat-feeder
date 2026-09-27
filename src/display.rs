@@ -60,8 +60,9 @@
 //! and showing it is the point.
 
 use crate::button::ARM_HOLD_MS;
+use crate::calibrate::{DETENTS, Failure, JAM_MS, Measurement};
 use crate::indicator::Status;
-use crate::menu::{Calibration, Field, Item, Mode, Page, Setting};
+use crate::menu::{Calibration, ClockEdit, ClockField, Field, Item, Mode, Page, Setting};
 use crate::schedule::{Slot, Wall};
 use heapless::String;
 
@@ -181,6 +182,12 @@ pub struct View<'a> {
     /// The calibration in force, which the knob can change without a restart
     /// — so it is carried here as a live value rather than in [`UnitInfo`].
     pub calibration: Calibration,
+    /// The time now, only when it is trusted. A clock the schedule will not
+    /// act on is not printed as if it were right.
+    pub now: Option<Wall>,
+    /// This unit holds no meals: never given a schedule, or given an empty
+    /// one. See [`home`].
+    pub no_meals: bool,
 }
 
 /// How long the panel stays lit after a press.
@@ -257,6 +264,10 @@ pub fn render(view: &View) -> Screen {
         Mode::Settings { item } => settings_screen(view, item),
         Mode::Editing { field, value } => edit_screen(view, field, value),
         Mode::ConfirmReset { erase } => reset_screen(erase),
+        Mode::SettingClock(edit) => clock_screen(edit),
+        Mode::ConfirmCalibrate { start } => confirm_calibrate_screen(start),
+        Mode::Calibrating { clicks } => calibrating_screen(clicks),
+        Mode::Calibrated(result) => calibrated_screen(view, result),
         Mode::Locked { page: Page::Home } => home(view),
         Mode::Locked { page } => info_page(view, page),
     };
@@ -265,8 +276,15 @@ pub fn render(view: &View) -> Screen {
     // throws the pending change away, and the hint says so in those words.
     screen.lines[HINT_ROW] = match view.mode {
         Mode::Locked { .. } => hold_hint(),
-        Mode::Unlocked { .. } | Mode::Settings { .. } => hold_hint_for(ARM_HOLD_MS, "TO LOCK"),
-        Mode::Editing { .. } | Mode::ConfirmReset { .. } => hold_hint_for(ARM_HOLD_MS, "TO CANCEL"),
+        // A hold mid-run locks the menu; the motor finishes its turn.
+        Mode::Unlocked { .. } | Mode::Settings { .. } | Mode::Calibrating { .. } => {
+            hold_hint_for(ARM_HOLD_MS, "TO LOCK")
+        }
+        Mode::Editing { .. }
+        | Mode::ConfirmReset { .. }
+        | Mode::SettingClock(_)
+        | Mode::ConfirmCalibrate { .. }
+        | Mode::Calibrated(_) => hold_hint_for(ARM_HOLD_MS, "TO CANCEL"),
     };
     screen
 }
@@ -299,10 +317,25 @@ fn setup_screen(setup: SetupInfo) -> Screen {
 /// the menu, and its first item changes name.
 fn home(view: &View) -> Screen {
     let mut screen = Screen::default();
-    screen.lines[0] = banner(view.status);
+    // A unit with no meals is online, connected, clock-trusted and dark: the
+    // healthy look of a feeder that will never feed. So it takes the banner
+    // that healthy leaves empty. Below every fault, because each of those is
+    // also a reason no meal comes and is the one to fix first.
+    screen.lines[0] = if view.status == Status::Healthy && view.no_meals {
+        clip("NO MEALS SET")
+    } else {
+        banner(view.status)
+    };
     screen.lines[1] = fed_line(view.last_fed);
     if view.status != Status::Jammed {
         screen.lines[2] = next_line(view);
+    }
+    // The time, so a clock set by hand — or one that has quietly gone wrong —
+    // can be checked at the feeder. Below the meals, because they are what the
+    // screen is for.
+    if let Some(now) = view.now {
+        push(&mut screen.lines[3], "now  ");
+        push_hhmm(&mut screen.lines[3], now.second_of_day / 60);
     }
     screen
 }
@@ -343,10 +376,23 @@ fn settings_screen(view: &View, cursor: Setting) -> Screen {
     let mut screen = Screen::default();
     screen.lines[0] = clip("SETTINGS");
 
-    for (row, item) in Setting::ALL.iter().enumerate() {
+    // Six items and four rows between the title and the hint, so the list
+    // scrolls: the window follows the cursor down and comes back up with it.
+    const VISIBLE: usize = HINT_ROW - 1;
+    let at = Setting::ALL.iter().position(|s| *s == cursor).unwrap_or(0);
+    let first = at.saturating_sub(VISIBLE - 1);
+
+    for (row, item) in Setting::ALL.iter().skip(first).take(VISIBLE).enumerate() {
         let line = &mut screen.lines[1 + row];
         push(line, if *item == cursor { "> " } else { "  " });
         match item {
+            Setting::Clock => {
+                push(line, "Clock   ");
+                match view.now {
+                    Some(now) => push_hhmm(line, now.second_of_day / 60),
+                    None => push(line, "not set"),
+                }
+            }
             Setting::PortionScale => {
                 push(line, "Portion ");
                 push_field(
@@ -359,6 +405,7 @@ fn settings_screen(view: &View, cursor: Setting) -> Screen {
                 push(line, "Detent  ");
                 push_field(line, Field::Detent, view.calibration.detent_ms);
             }
+            Setting::Calibrate => push(line, "Calibrate"),
             Setting::Reset => push(line, "Factory reset"),
             Setting::Back => push(line, "Back"),
         }
@@ -389,8 +436,8 @@ fn reset_screen(erase: bool) -> Screen {
     let mut screen = Screen::default();
     let lines = &mut screen.lines;
     lines[0] = clip("FACTORY RESET");
-    lines[1] = clip("erases Wi-Fi, broker");
-    lines[2] = clip("and calibration");
+    lines[1] = clip("erases Wi-Fi, broker,");
+    lines[2] = clip("calibration and meals");
     push(&mut lines[3], if erase { "  " } else { "> " });
     push(&mut lines[3], "Keep");
     push(&mut lines[4], if erase { "> " } else { "  " });
@@ -398,7 +445,121 @@ fn reset_screen(erase: bool) -> Screen {
     screen
 }
 
-/// `x135%` or `1900ms`, or `?` when the value is not known.
+/// The date and time being set, with `^^` under the part the knob turns.
+fn clock_screen(edit: ClockEdit) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+    lines[0] = clip("SET CLOCK");
+
+    // `2026-09-25  20:14`, and the columns each field occupies in it.
+    push_u32(&mut lines[2], edit.year as u32);
+    push(&mut lines[2], "-");
+    push_two(&mut lines[2], edit.month);
+    push(&mut lines[2], "-");
+    push_two(&mut lines[2], edit.day);
+    push(&mut lines[2], "  ");
+    push_two(&mut lines[2], edit.hour);
+    push(&mut lines[2], ":");
+    push_two(&mut lines[2], edit.minute);
+
+    let (from, width) = match edit.field {
+        ClockField::Year => (0, 4),
+        ClockField::Month => (5, 2),
+        ClockField::Day => (8, 2),
+        ClockField::Hour => (12, 2),
+        ClockField::Minute => (15, 2),
+    };
+    for _ in 0..from {
+        let _ = lines[3].push(' ');
+    }
+    for _ in 0..width {
+        let _ = lines[3].push('^');
+    }
+
+    lines[4] = clip(if edit.field == ClockField::Minute {
+        "TAP TO SET"
+    } else {
+        "TAP: NEXT"
+    });
+    screen
+}
+
+/// The calibration dispenses food, so it says how much before it starts.
+fn confirm_calibrate_screen(start: bool) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+    lines[0] = clip("CALIBRATE");
+    push(&mut lines[1], "turns ");
+    push_u32(&mut lines[1], DETENTS as u32);
+    push(&mut lines[1], " detents and");
+    push(&mut lines[2], "dispenses ");
+    push_u32(&mut lines[2], DETENTS as u32);
+    push(&mut lines[2], " portions");
+    push(&mut lines[3], if start { "  " } else { "> " });
+    push(&mut lines[3], "Keep");
+    push(&mut lines[4], if start { "> " } else { "  " });
+    push(&mut lines[4], "Start");
+    screen
+}
+
+fn calibrating_screen(clicks: u8) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+    lines[0] = clip("CALIBRATING");
+    push(&mut lines[1], "click ");
+    push_u32(&mut lines[1], clicks as u32);
+    push(&mut lines[1], " of ");
+    push_u32(&mut lines[1], DETENTS as u32);
+    screen
+}
+
+/// What a run measured against what is in force, or why it failed, in words.
+fn calibrated_screen(view: &View, result: Result<Measurement, Failure>) -> Screen {
+    let mut screen = Screen::default();
+    let lines = &mut screen.lines;
+    match result {
+        Ok(m) => {
+            lines[0] = clip("CALIBRATED");
+            push(&mut lines[1], "new  ");
+            push_field(&mut lines[1], Field::Detent, m.detent_ms);
+            push(&mut lines[2], "gaps ");
+            push_u32(&mut lines[2], m.fastest_ms as u32);
+            push(&mut lines[2], "-");
+            push_u32(&mut lines[2], m.slowest_ms as u32);
+            push(&mut lines[2], "ms");
+            push(&mut lines[3], "now  ");
+            push_field(&mut lines[3], Field::Detent, view.calibration.detent_ms);
+            lines[4] = clip("TAP TO SAVE");
+        }
+        Err(failure) => {
+            lines[0] = clip("CALIBRATION FAILED");
+            match failure {
+                Failure::Jammed => {
+                    push(&mut lines[1], "no click in ");
+                    push_u32(&mut lines[1], (JAM_MS / 1_000) as u32);
+                    push(&mut lines[1], "s");
+                }
+                Failure::Inconsistent {
+                    fastest_ms,
+                    slowest_ms,
+                } => {
+                    lines[1] = clip("clicks uneven");
+                    push(&mut lines[2], "gaps ");
+                    push_u32(&mut lines[2], fastest_ms as u32);
+                    push(&mut lines[2], "-");
+                    push_u32(&mut lines[2], slowest_ms as u32);
+                    push(&mut lines[2], "ms");
+                }
+                Failure::TooFast { .. } => lines[1] = clip("too fast: bouncing?"),
+                Failure::TooSlow { .. } => lines[1] = clip("too slow: stalling?"),
+            }
+            lines[4] = clip("TAP: BACK");
+        }
+    }
+    screen
+}
+
+/// `x135%` or `1900ms`.
 fn push_field(line: &mut Line, field: Field, value: u16) {
     match field {
         Field::PortionScale => {
@@ -724,6 +885,8 @@ mod tests {
             net: Net::default(),
             unit: Some(UNIT),
             calibration: CAL,
+            now: None,
+            no_meals: false,
         }
     }
 
@@ -984,17 +1147,184 @@ mod tests {
 
     #[test]
     fn the_settings_list_shows_what_each_value_is_now() {
-        let screen = render(&in_mode(Mode::Settings {
-            item: Setting::Detent,
-        }));
+        let screen = render(&View {
+            now: Some(at(20, 14)),
+            ..in_mode(Mode::Settings {
+                item: Setting::Detent,
+            })
+        });
 
         assert_eq!(screen.lines[0], "SETTINGS");
-        assert_eq!(screen.lines[1], "  Portion x100%");
-        assert_eq!(screen.lines[2], "> Detent  1900ms");
-        assert_eq!(screen.lines[3], "  Factory reset");
-        assert_eq!(screen.lines[4], "  Back");
+        assert_eq!(screen.lines[1], "  Clock   20:14");
+        assert_eq!(screen.lines[2], "  Portion x100%");
+        assert_eq!(screen.lines[3], "> Detent  1900ms");
+        assert_eq!(screen.lines[4], "  Calibrate");
         assert_eq!(screen.lines[5], "HOLD 2s TO LOCK");
         assert_fits(&screen);
+    }
+
+    /// Six items, four rows: the window follows the cursor to `Back`, and
+    /// comes back to `Clock` when the cursor does.
+    #[test]
+    fn the_settings_list_scrolls_with_the_cursor() {
+        let back = render(&in_mode(Mode::Settings {
+            item: Setting::Back,
+        }));
+        assert_eq!(back.lines[1], "  Detent  1900ms");
+        assert_eq!(back.lines[4], "> Back");
+
+        let clock = render(&in_mode(Mode::Settings {
+            item: Setting::Clock,
+        }));
+        assert_eq!(clock.lines[1], "> Clock   not set");
+        assert_eq!(clock.lines[4], "  Calibrate");
+    }
+
+    fn at(hour: u32, minute: u32) -> Wall {
+        Wall {
+            second_of_day: hour * 3600 + minute * 60,
+            ..wall(0, 0)
+        }
+    }
+
+    #[test]
+    fn the_clock_screen_underlines_the_field_the_knob_turns() {
+        let edit = |field| ClockEdit {
+            year: 2026,
+            month: 9,
+            day: 5,
+            hour: 7,
+            minute: 3,
+            field,
+        };
+
+        let screen = render(&in_mode(Mode::SettingClock(edit(ClockField::Year))));
+        assert_eq!(screen.lines[0], "SET CLOCK");
+        assert_eq!(screen.lines[2], "2026-09-05  07:03");
+        assert_eq!(screen.lines[3], "^^^^");
+        assert_eq!(screen.lines[4], "TAP: NEXT");
+        assert_eq!(screen.lines[5], "HOLD 2s TO CANCEL");
+        assert_fits(&screen);
+
+        for (field, mark) in [
+            (ClockField::Month, "     ^^"),
+            (ClockField::Day, "        ^^"),
+            (ClockField::Hour, "            ^^"),
+            (ClockField::Minute, "               ^^"),
+        ] {
+            let screen = render(&in_mode(Mode::SettingClock(edit(field))));
+            assert_eq!(screen.lines[3], mark, "{field:?}");
+        }
+
+        let last = render(&in_mode(Mode::SettingClock(edit(ClockField::Minute))));
+        assert_eq!(last.lines[4], "TAP TO SET");
+    }
+
+    /// Blank has to be visible: otherwise it looks exactly like healthy.
+    #[test]
+    fn a_unit_with_no_meals_says_so_where_healthy_says_nothing() {
+        let screen = render(&View {
+            no_meals: true,
+            ..view()
+        });
+        assert_eq!(screen.lines[0], "NO MEALS SET");
+        assert_fits(&screen);
+    }
+
+    /// A fault is the first thing to fix, and no meal comes while it lasts.
+    #[test]
+    fn a_fault_outranks_no_meals() {
+        let screen = render(&View {
+            status: Status::NoBroker,
+            no_meals: true,
+            ..view()
+        });
+        assert_eq!(screen.lines[0], "NO BROKER");
+    }
+
+    // --- calibration ------------------------------------------------------
+
+    #[test]
+    fn calibration_says_what_it_will_dispense_before_it_starts() {
+        let screen = render(&in_mode(Mode::ConfirmCalibrate { start: false }));
+        assert_eq!(screen.lines[0], "CALIBRATE");
+        assert_eq!(screen.lines[1], "turns 5 detents and");
+        assert_eq!(screen.lines[2], "dispenses 5 portions");
+        assert_eq!(screen.lines[3], "> Keep");
+        assert_eq!(screen.lines[4], "  Start");
+        assert_eq!(screen.lines[5], "HOLD 2s TO CANCEL");
+        assert_fits(&screen);
+    }
+
+    #[test]
+    fn a_running_calibration_counts_its_clicks() {
+        let screen = render(&in_mode(Mode::Calibrating { clicks: 3 }));
+        assert_eq!(screen.lines[0], "CALIBRATING");
+        assert_eq!(screen.lines[1], "click 3 of 5");
+        assert_eq!(screen.lines[5], "HOLD 2s TO LOCK");
+    }
+
+    #[test]
+    fn a_result_shows_new_against_now() {
+        let screen = render(&in_mode(Mode::Calibrated(Ok(Measurement {
+            detent_ms: 2_070,
+            fastest_ms: 2_038,
+            slowest_ms: 2_061,
+        }))));
+        assert_eq!(screen.lines[0], "CALIBRATED");
+        assert_eq!(screen.lines[1], "new  2070ms");
+        assert_eq!(screen.lines[2], "gaps 2038-2061ms");
+        assert_eq!(screen.lines[3], "now  1900ms");
+        assert_eq!(screen.lines[4], "TAP TO SAVE");
+        assert_fits(&screen);
+    }
+
+    /// Every failure says why in words, and none of them offers to save.
+    #[test]
+    fn every_failure_says_why_and_fits() {
+        for (failure, line) in [
+            (Failure::Jammed, "no click in 10s"),
+            (
+                Failure::Inconsistent {
+                    fastest_ms: 2_000,
+                    slowest_ms: 4_000,
+                },
+                "clicks uneven",
+            ),
+            (Failure::TooFast { slowest_ms: 50 }, "too fast: bouncing?"),
+            (
+                Failure::TooSlow { slowest_ms: 5_200 },
+                "too slow: stalling?",
+            ),
+        ] {
+            let screen = render(&in_mode(Mode::Calibrated(Err(failure))));
+            assert_eq!(screen.lines[0], "CALIBRATION FAILED");
+            assert_eq!(screen.lines[1], line);
+            assert_eq!(screen.lines[4], "TAP: BACK");
+            assert_fits(&screen);
+        }
+    }
+
+    /// The widest numbers a result can carry still fit.
+    #[test]
+    fn the_widest_calibration_numbers_fit() {
+        let screen = render(&in_mode(Mode::Calibrated(Ok(Measurement {
+            detent_ms: 5_000,
+            fastest_ms: 4_000,
+            slowest_ms: 4_999,
+        }))));
+        assert_eq!(screen.lines[2], "gaps 4000-4999ms");
+        assert_fits(&screen);
+    }
+
+    #[test]
+    fn the_home_page_shows_the_time_only_when_it_is_trusted() {
+        assert_eq!(render(&view()).lines[3], "");
+        let screen = render(&View {
+            now: Some(at(20, 14)),
+            ..view()
+        });
+        assert_eq!(screen.lines[3], "now  20:14");
     }
 
     #[test]
@@ -1022,6 +1352,9 @@ mod tests {
     #[test]
     fn the_reset_confirmation_points_at_its_choice() {
         let keep = render(&in_mode(Mode::ConfirmReset { erase: false }));
+        // Both exactly twenty-one, so a word more would be cut off silently.
+        assert_eq!(keep.lines[1], "erases Wi-Fi, broker,");
+        assert_eq!(keep.lines[2], "calibration and meals");
         assert_eq!(keep.lines[3], "> Keep");
         assert_eq!(keep.lines[4], "  Erase, restart");
         assert_eq!(keep.lines[5], "HOLD 2s TO CANCEL");

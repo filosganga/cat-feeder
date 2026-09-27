@@ -92,8 +92,8 @@
 //! | GPIO4 | encoder `A` (`CLK`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO5 | encoder `B` (`DT`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO8 | WS2812 `DIN` | onboard; also a back pad on the Zero |
-//! | GPIO18 | SSD1306 `SDA` | edge |
-//! | GPIO19 | SSD1306 `SCL` | edge |
+//! | GPIO18 | `SDA`: the panel on `0x3C` and the DS3231 on `0x68` | edge; one bus, see `i2c.rs` |
+//! | GPIO19 | `SCL`: the same two devices | edge |
 //!
 //! Neither switch needs a resistor: both enable the chip's internal pull-up and
 //! read a press as a **falling** edge. Power is `3V3` to the display, `5V` to
@@ -131,7 +131,9 @@
 //! `+`, so a module on 5 V holds two GPIOs at 5 V, and the C6 is not 5 V
 //! tolerant.
 //!
-//! An I²C RTC costs no pin at all — it shares the display's bus.
+//! The DS3231 RTC costs no pin at all — it shares the display's bus. Power it
+//! from `3V3`: the common breakouts charge their coin cell from `VCC`, which
+//! suits the LIR2032 fitted here at 3.3 V and overcharges it at 5 V.
 //!
 //! "No alternate function" was the rule that originally picked GPIO10 and
 //! GPIO11 on the dev kit. It does not really apply on the C6, where peripheral

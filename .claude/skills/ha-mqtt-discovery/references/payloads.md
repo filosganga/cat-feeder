@@ -90,8 +90,9 @@ Topic: `homeassistant/switch/feeder_<id>/paused/config`, retained.
 ```
 
 `"retain": true` makes Home Assistant publish the command with the retain flag,
-so a unit that reboots comes back paused. Nothing is stored in flash, so the
-broker is the only thing that remembers.
+so a unit that reboots comes back paused. The paused flag is not stored in
+flash — unlike the schedule — so the broker is the only thing that remembers
+it.
 
 Unlike the number entity this replaces, the switch is **not** optimistic. The
 device echoes `paused` in its state payload, so the switch flips only once the
@@ -141,8 +142,12 @@ reaches the template engine as a Python `True` and renders as the string
 Published retained to `feeder/<id>/state` on every transition:
 
 ```json
-{"feeding": false, "jammed": false, "paused": false, "last_fed": "2026-09-14T08:00:00+02:00"}
+{"feeding": false, "jammed": false, "paused": false, "meals": 2, "last_fed": "2026-09-14T08:00:00+02:00"}
 ```
+
+`meals` is how many slots the unit holds. `0` is a unit that is online and
+healthy and will never feed — a new or factory-reset one that has not been sent
+a schedule — so it is worth watching for.
 
 `paused` must be published from the flag the device is actually acting on, not
 echoed back from the command as it arrives. Echoing makes the switch look
@@ -157,8 +162,12 @@ counter is worse than no entity.
 
 ## Home Assistant side
 
-Home Assistant owns the clock and the schedule. Both are retained, published to
-topics with no `<id>`, so all three feeders read the same thing.
+Home Assistant publishes the time, retained, to a topic with no `<id>`, so all
+three feeders read the same thing. Each unit also keeps its own time in a
+DS3231, and a set one arms the schedule at boot without Home Assistant; the
+live time is what keeps it corrected, and what arms a unit whose RTC was never
+set. The schedule belongs to the units, in flash — Home Assistant only sends
+it.
 
 ```yaml
 # publish every minute, on restart, and whenever a feeder asks
@@ -178,8 +187,8 @@ actions:
 ```
 
 **The `feeder/time/request` trigger belongs on this automation, not a second
-one.** A feeder arms its schedule only on a *live* time and asks for one as the
-last step of connecting; without this trigger it waits for the next minute
+one.** A feeder whose RTC is not set arms its schedule only on a *live* time,
+and every feeder asks for one as the last step of connecting; without this trigger it waits for the next minute
 boundary instead, which is up to a minute of every boot and every reconnect
 spent not feeding. Two automations publishing the same topic is how they drift,
 so it goes here. `mode: single` is fine — three feeders rebooting together send
@@ -202,13 +211,23 @@ it, with no timezone rules on the device.
 accepts that, a quoted string, a trailing `Z`, `+HHMM`, and no offset at all.
 
 ```yaml
-# publish once, and whenever the schedule changes
-- service: mqtt.publish
+# script.cat_feeder_send_schedule — run by hand, whenever the meals change
+- action: mqtt.publish
   data:
-    topic: feeder/schedule
-    retain: true
+    topic: feeder/all/schedule
+    retain: false
     payload: '[{"time":"08:00","portions":2},{"time":"19:00","portions":2}]'
 ```
+
+**Never retained.** A retained schedule command would hand meals to every unit
+that subscribes later; the firmware refuses one replayed at subscribe time
+(`mqtt: ignored a retained schedule command; publish it without retain`). A unit
+already subscribed *does* act on a retained publish, because the broker forwards
+it live with the retain flag cleared — so the rule is never to publish one
+retained, not to rely on the refusal. `feeder/<id>/schedule` does the same
+for one unit. Each unit logs `schedule: N slots, stored` (or `unchanged`) and
+echoes what it holds on `feeder/<id>/schedule/state`, retained, which is where to
+check the result.
 
 Feeding all three at once is a single publish to `feeder/all/feed`.
 

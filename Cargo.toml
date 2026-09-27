@@ -139,7 +139,13 @@ rust-mqtt = { version = "0.5.1", default-features = false, features = [
   "v5",
 ] }
 embassy-futures = "0.1.2"
-embassy-sync = "0.7"
+embassy-sync = "0.8"
+# The panel and the RTC share one I²C bus through its `I2cDevice`. Already in
+# the build through esp-hal; 0.6 is built on embassy-sync 0.8, which is why that
+# line says 0.8 — the bus's `Mutex` has to be the one this crate names.
+embassy-embedded-hal = "0.6"
+# The trait `oled.rs` and `rtc.rs` call through the shared-bus handle.
+embedded-hal-async = "1.0"
 
 [build-dependencies]
 toml = "1"

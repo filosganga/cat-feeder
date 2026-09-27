@@ -87,8 +87,8 @@ to be a switch. See *Per-unit mechanical timing* for where the number goes.
 
 **Measure what one click actually dispenses** while it is open — by weight, or
 by counting clicks into a measuring spoon — and compare it with the other two.
-`feeder/schedule` is one retained topic shared by all three, so `portions: 2`
-reaches every unit identically, and a mechanism that dispenses a different
+`feeder/all/schedule` sends the same `portions: 2` to every unit, so it
+reaches each one identically, and a mechanism that dispenses a different
 amount per click needs a per-unit scale. That is built: see *Per-unit portion
 size*. What is needed from the bench is the ratio.
 
@@ -380,11 +380,14 @@ loop {
 
 ## Architecture — decided, do not re-litigate
 
-- **No local RTC, no NTP, no flash persistence.** The broker is a bulletin
-  board: Home Assistant publishes (retained) the current time and the feeding
-  schedule; each ESP keeps them in RAM and advances a local tick counter,
-  re-aligned on every `time` message. Offline → keep running on the last
-  received schedule/time. Power-cycled and no broker → wait, never guess.
+- **The unit owns its clock and its schedule** — superseded 2026-09-25; this
+  line used to read *no local RTC, no NTP, no flash persistence*. The clock is a
+  DS3231 on a coin cell, corrected by every live `feeder/time` and settable on
+  the knob; no NTP. The schedule is in flash, given by an explicit command
+  (`feeder/<id>/schedule` or `feeder/all/schedule`) and never inherited
+  from a retained topic, so a new unit starts blank. Offline → keep feeding on
+  what it holds. Power-cycled with no broker → feed, if the RTC kept time and a
+  schedule is stored; otherwise wait, never guess. See *A second version*.
 - **No batteries, no sleep modes, no USB detection** in v1.
 - **Wi-Fi + MQTT credentials come from flash and nowhere else.** They are not
   compiled into the binary: `dev/provision.sh` writes a record over USB, or the
@@ -400,7 +403,10 @@ loop {
   minutes, so a `time` jump forward is never mistaken for a slot falling due.
   The marker is keyed on time of day rather than slot index, because Home
   Assistant can republish a schedule with a slot inserted or removed and an
-  index would then point at a different meal.
+  index would then point at a different meal. **Only a later date re-arms the
+  day's slots**; a clock that goes *back* across midnight keeps the marker's
+  time of day, so a date set wrong on the knob and then corrected cannot serve
+  a meal twice. `a_date_corrected_backwards_does_not_serve_a_meal_again`.
 
 ## Provisioning
 
@@ -465,9 +471,10 @@ has a `NVS` symbol but it is a 15-word RAM array in its ESP-IDF shim, not the
 partition. No custom partition table is needed, and `espflash` rewrites only the
 app partition, so configuration survives a reflash.
 
-This does **not** contradict *no flash persistence* above. That rule is about
-schedule and time state, which stay the broker's job. Credentials are the one
-thing the broker cannot tell a unit, because they are how it reaches the broker.
+Credentials are the one thing the broker cannot tell a unit, because they are
+how it reaches the broker. The schedule now lives in the same partition, in a
+sector of its own at nvs+0x1000 (magic `FDS1`) — see the architecture bullet
+*The unit owns its clock and its schedule*. Only `paused` is still broker state.
 
 A record carries a magic and a CRC-32 so that erased flash (`0xFF` everywhere)
 and an interrupted write both read as *unconfigured* rather than as garbage
@@ -723,8 +730,8 @@ portions x133%`.
 
 **Built**, in the same record as the timing above.
 
-`feeder/schedule` is one retained topic shared by all three units, so a slot
-saying `portions: 2` reaches every feeder as the same request. The feeders are
+`feeder/all/schedule` sends the same schedule to every unit, so a slot saying
+`portions: 2` reaches every feeder as the same request. The feeders are
 not all the same model, and a click on one mechanism need not dispense the same
 amount of food as a click on another. Without a per-unit scale one feeder
 over- or under-feeds forever, and **nothing in the system can see it** — Home
@@ -796,12 +803,23 @@ steps) — then `Factory reset` and `Back`.
   progress. Wi-Fi and broker edits, when they exist, will still need one: the
   network stack is built once at boot.
 - **A tap on an unchanged value just goes back**, with no flash write.
-- **Factory reset is the boot gesture's erase, from the menu**, behind a
-  `Keep`/`Erase` choice that starts on `Keep`. It lands in setup mode by the
-  same path.
+- **Factory reset erases more than the boot gesture does**, behind a
+  `Keep`/`Erase` choice that starts on `Keep`. `Store::erase_all` takes the
+  credentials, the calibration *and the meals* — the panel says `erases Wi-Fi,
+  broker,` / `calibration and meals` — whereas the button held through
+  power-on erases only the credentials record and keeps the schedule. Both land
+  in setup mode by the same path.
+- **`Clock` sets the date and time by hand** — year, month, day, hour,
+  minute, a tap between each, the tap on the minute sets it with seconds at
+  zero. It goes in as `TimeSource::Manual`, which arms and overrides like a
+  live time, and to the RTC; Home Assistant's next live time still has the last
+  word. The home page shows `now HH:MM` while the clock is trusted, so the
+  result can be checked at the feeder. Settings is five items against four
+  rows, so its list scrolls.
 - **Wi-Fi, broker and schedule are not editable here yet.** Wi-Fi and broker
-  wait on a decision about text entry; the schedule waits on *A second
-  version* — who owns it. Clockwise moves down the menu and forward through the pages, and both
+  wait on a decision about text entry. Who owns the schedule is decided and
+  built — the unit, in flash — but it still arrives only over MQTT; a knob
+  editor for it is not written. Clockwise moves down the menu and forward through the pages, and both
 lists stop at their ends rather than wrapping, so turning left until it stops
 always lands on `Feed`.
 
@@ -888,10 +906,12 @@ feeder/<id>/availability   online | offline        (retained, LWT = offline)
 feeder/<id>/feed           <portions:u8>           cmd, manual feed
 feeder/all/feed            <portions:u8>           cmd, all units at once
 feeder/<id>/paused         ON | OFF                retained, pause the schedule; from HA or from the unit's menu
-feeder/schedule            [{"time":"08:00","portions":2}, ...]   retained, from HA
+feeder/<id>/schedule       [{"time":"08:00","portions":2}, ...]   cmd, NOT retained, this unit's meals
+feeder/all/schedule        [{"time":"08:00","portions":2}, ...]   cmd, NOT retained, every unit's meals
+feeder/<id>/schedule/state [{"time":"08:00","portions":2}, ...]   retained, what the unit holds
 feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
 feeder/time/request        <id>                    cmd to HA, NOT retained
-feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"last_fed":"..."}
+feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"meals":n,"last_fed":"..."}
 ```
 
 Three different limits apply, and they are easy to confuse because two of them
@@ -967,8 +987,8 @@ to each unit's topic.
   never replays a slot and never catches one up, same rule as a `time` jump.
 - Paused is not offline. The unit stays `online` and keeps re-aligning its
   clock, so resuming is instant.
-- Retained because there is no flash: a unit that reboots while paused must
-  come back paused.
+- Retained because `paused` is not in flash — unlike the schedule, it is still
+  broker state: a unit that reboots while paused must come back paused.
 
 **Home Assistant finds the units rather than being told them.** Pausing is the
 only command with no broadcast topic, so it is one publish per unit and
@@ -1110,8 +1130,11 @@ the Home Assistant container, this machine's LAN address from the ESP32 — whic
 `cfg.toml` says `mqtt_host = "auto"` and `dev/provision.sh` resolves it when it
 builds the record. That address is a DHCP lease and moves; a unit provisioned
 before a move sits flashing red twice, which is correct for "no broker" and
-looks exactly like a broker that is down. `down -v` is the only way to test a cold boot, since every piece of
-persistent state in this design lives in the broker's retained messages.
+looks exactly like a broker that is down. `down -v` wipes every retained
+message, but it is **no longer a cold boot**: the schedule is in the unit's
+flash and the time is in its RTC, and both survive it. A true cold start is the
+menu's Factory reset, which erases the meals with the credentials, plus pulling
+the DS3231's coin cell so its oscillator-stop flag comes back set.
 
 ## Code organisation
 
@@ -1137,6 +1160,10 @@ src/
                   pages, menu, setup — and when the panel is lit
   oled.rs         the SSD1306 itself, over async I2C. Text in, pixels out
   mqtt.rs         connection, LWT, discovery, subscriptions, state publishing
+  ds3231.rs       pure logic: the DS3231's registers — time, OSF, EOSC,
+                  temperature
+  rtc.rs          the DS3231 over the shared I2C bus
+  i2c.rs          the one I2C bus, shared by the panel and the RTC
   wiring.rs       the Bus static's types: FeedChannel, FeederStatus, LastFed,
                   Connectivity
   provisioning.rs pure logic: the flash record, the setup network's identity —
@@ -1154,14 +1181,18 @@ examples/mkrecord.rs
                   host-only: builds a provisioning record for dev/provision.sh
 
 homeassistant/packages/cat_feeder.yaml
-                  the other half of the system: publishes time and schedule,
-                  the pause helper, the feed-all script. Tracked here and used
+                  the other half of the system: publishes the time, the
+                  send-the-schedule script, the pause helper, the feed-all
+                  script. Tracked here and used
                   unchanged on any instance; install per dev/README.md
 ```
 
 Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
 `feeder` (owns the motor), `schedule` (owns the clock, ticks once a second and
-re-aligns), `indicator` (owns the LED). They communicate through the one
+re-aligns), `rtc` (owns the DS3231: logs it at boot, arms the clock from it,
+keeps it set from live times), `encoder` (reads the knob's `A`/`B`), `ui`
+(owns the knob's click, the menu and the store's writes from it), `display`
+(owns the panel), `indicator` (owns the LED). They communicate through the one
 `wiring::Bus` static, which names every shared handle and documents who writes
 each one.
 
@@ -1226,7 +1257,7 @@ each one.
    binary_sensor), subscriptions, manual and broadcast `feed`, `paused`, and a
    state payload carrying the feeder's real flags
 5. ✅ `schedule` + `time` handling, local clock, double-feed guard. Pure logic
-   in `schedule.rs` with 32 host tests, and every rule verified on hardware by
+   in `schedule.rs`, host-tested, and every rule verified on hardware by
    driving `feeder/time` from the broker
 6. ✅ Board feature: `board-devkit` (default) / `board-zero`, selecting the pin
    map, the board name and `esp-println`'s interface (`uart` vs `jtag-serial`).
@@ -1241,8 +1272,9 @@ each one.
    right order, both GPIO2 and GPIO3 read correctly, and the outside button's
    whole gesture chain works — hold to arm, LED cyan, tap to feed. Two units
    still to build.
-7. ✅ Home Assistant: automations publishing time (every minute) + schedule,
-   the pause helper and a feed-all script, in
+7. ✅ Home Assistant: an automation publishing time (every minute), a script
+   sending the schedule to `feeder/all/schedule` when run by hand, the pause
+   helper and a feed-all script, in
    `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
    feed end to end
 8. Retire the old PCBs. Per feeder: remove the original LCD/RTC/button board,
@@ -1280,6 +1312,24 @@ So the clock separates *having* a time from *trusting* one:
   one, and applying it would drag the clock back to whatever the broker holds.
 - Trust never lapses. A unit that has been told the time keeps free-running if
   Home Assistant disappears, which is the documented offline behaviour.
+- **A set RTC is a rung of its own, and it arms** — decided 2026-09-25. At boot,
+  a DS3231 whose oscillator-stop flag is clear hands its time over as
+  `TimeSource::Rtc`, which earns trust like a live time: the schedule arms about
+  a second after power-on without waiting for Home Assistant. It never
+  *overrides* a trusted clock — once a live time has arrived, an RTC read is as
+  stale as a retained one — and the RTC is rewritten from live times, not the
+  other way round. An RTC with the flag set counts for nothing, which keeps
+  *power-cycled and no broker → wait, never guess* intact at the bottom rung.
+  Verified with Home Assistant stopped: `clock: RTC time …, schedule armed` at
+  1.4 s. With the schedule now in flash as well, it **feeds with no broker at
+  all**: a set RTC and a stored schedule are everything a scheduled meal needs.
+- **The baseline waits for a schedule.** An RTC could trust the clock before
+  any schedule was loaded — it comes from flash at boot, or from a command for
+  a blank unit — and a first look spent on no slots left
+  the real schedule to the lateness limit — a reboot at 19:01 would have served
+  the 19:00 meal again. `Scheduler` now takes its baseline only once a schedule,
+  even an empty one, has arrived. `the_baseline_waits_for_a_schedule_to_arrive`
+  pins it; seen on hardware as `slot 19:00 already past at startup`.
 
 MQTT supplies the distinction: the subscription leaves `retain_as_published`
 off, so the broker clears the retain flag on everything it forwards live and
@@ -1301,7 +1351,10 @@ reading: when nobody answers the request, which is the case this whole
 distinction exists for.
 
 The consequence to know about: a unit that reboots while Home Assistant is down
-but the broker is up will **not feed at all** until Home Assistant returns.
+will **not feed at all** until Home Assistant returns *if its RTC cannot be
+trusted* — oscillator-stop flag set, coin cell flat or never fitted — or if it
+has no schedule stored. A unit with a set RTC and a stored schedule arms at
+boot and feeds regardless.
 That is deliberate, and the same rule as *power-cycled and no broker → wait,
 never guess*. Home Assistant cannot be told — it is the thing that is down — so
 this used to be visible only on a serial console. It is now **three red flashes
@@ -1574,10 +1627,12 @@ complete, or should reset the DHCP socket when it is.
 
     - **Mosquitto** with `listener 1883`, `allow_anonymous false`, a user for
       the feeders, and — the one easiest to omit — `persistence true`. Without
-      persistence every retained message is lost on a broker restart. Most come
-      straight back, because the package republishes the time each minute and
-      the schedule on start, but `feeder/<id>/paused` does not, and a paused
-      feeder silently resuming is the one state change nothing alarms about.
+      persistence every retained message is lost on a broker restart. The time
+      comes straight back, because the package republishes it each minute, and
+      the schedule is in each unit's flash rather than the broker's; but
+      `feeder/<id>/paused` is still broker state and does not come back, and a
+      paused feeder silently resuming is the one state change nothing alarms
+      about.
     - **Home Assistant onboarded, with the right timezone.** Onboarding is what
       sets it, and an instance left on UTC publishes a payload that is entirely
       valid with every meal moved by the offset — the silent hour-shift under
@@ -1598,8 +1653,10 @@ complete, or should reset the DHCP socket when it is.
     the system that publishes `feeder/time` every minute. A feeder pointed at a
     broker where nobody publishes it takes the *retained* time, starts its clock
     on it, and never arms the schedule — see *A retained `time` is not a trusted
-    one*. The unit sits `online`, flashing red ×3, and does not feed. That is
-    exactly correct behaviour and indistinguishable from a bug.
+    one*. A unit whose RTC was never set — or whose coin cell went flat — sits
+    `online`, flashing red ×3, and does not feed. That is exactly correct
+    behaviour and indistinguishable from a bug. (A unit with a set RTC arms from
+    it, but still wants live times to stay corrected.)
 
     It is checkable with no feeder involved at all, which is why the ordering
     costs nothing:
@@ -1617,7 +1674,17 @@ complete, or should reset the DHCP socket when it is.
     Then **repoint the feeders, which is a re-provision and not a rebuild**:
     `mqtt_host`, `mqtt_user` and `mqtt_password` all live in each unit's flash
     record, so it is one `./dev/provision.sh --host <broker> --user <name>
-    --password-file <path>` per unit and no compile.
+    --password-file <path>` per unit and no compile. `provision.sh` erases only
+    the credentials sector, so a unit keeps any meals it already holds.
+
+    **Then give each unit its meals — the package alone no longer does it.** A
+    unit owns its schedule, and a new or factory-reset one starts blank
+    (`NO MEALS SET` on the panel, `"meals":0` in its state). Once
+    `feeder/<id>/availability` reads `online`, run
+    `script.cat_feeder_send_schedule` from Home Assistant, which publishes the
+    package's `meals` to `feeder/all/schedule`, not retained. Check that
+    `feeder/<id>/schedule/state` echoes it and that the state payload's `"meals"` is
+    above zero; until both are true the unit is healthy and will never feed.
 
     Give that broker's machine a **DHCP reservation** first. There is no
     resolver in the firmware — `mqtt.rs` parses `mqtt_host` with
@@ -1625,10 +1692,47 @@ complete, or should reset the DHCP socket when it is.
     air with no way back but re-provisioning each one.
 
     ⚠️ **A unit points at one broker.** Keeping the dev stack is fine; moving a
-    feeder back and forth is not. Every piece of persistent state in this design
-    is a retained message, so a unit returned to the dev broker picks up
-    whatever *that* one last held — quite possibly a schedule from last week,
-    which is indistinguishable from a current one.
+    feeder back and forth is not. The schedule travels with the unit now, in
+    flash, but `paused` is still a retained message, so a unit returned to the
+    dev broker picks up whatever *that* one last held — quite possibly a pause
+    from last week, which is indistinguishable from a current one.
+
+### What is left
+
+Everything not yet built or not yet seen, in one place, as of 2026-09-27.
+Anything absent from this list is done and verified on the Zero; each row
+points at the section with the detail.
+
+**Software**
+
+| Item | State | Where |
+|---|---|---|
+| Schedule editor on the knob | not built — the schedule arrives only as an MQTT command | *Version 1.5: the knob* |
+| The unit's own HA entities: 8 `time` + 8 `number` slots over discovery (v2 point 4) | not built. Once it exists the package's send-the-schedule script becomes optional | *A second version*, point 4 |
+| Admin page in station mode, authenticated with the derived password (v2 point 5) | not built; the HTTP, form and 3-connection plumbing exists in setup mode only | *A second version*, point 5 |
+| `configuration_url` in the discovery `device` block | not built; only useful once the admin page exists | point 5 |
+| Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
+| Subsets of feeders by HA label | Home Assistant side only; no firmware change | point 6 |
+| Optional "copy this feeder's schedule to those" blueprint | not written; only sensible after point 4 | *What Home Assistant is left doing* |
+
+**Seen only in host tests, not yet on the panel**
+
+| Item | How to see it |
+|---|---|
+| The setup-mode screen (SSID, password, address) | hold the button through power-on, `./dev/capture.sh --seconds 40` |
+| The `WI-FI`, `BROKER` and `DEVICE` info pages | turn the knob while locked |
+
+**Hardware and deployment**
+
+| Item | Waiting for |
+|---|---|
+| Detent interval measured with a **full** hopper | a full hopper; then set it on the knob's `Detent` |
+| The third feeder opened: switch confirmed, interval and portion ratio measured | opening it |
+| Units two and three: soldered, flashed, provisioned, sent their meals | soldering |
+| Motor direction checked on a real mechanism before bolting anything | each unit, before step 8 |
+| The printed enclosure, then retiring the old PCBs (step 8) | CAD |
+| Deploying to the Pi (step 11): package installed, units repointed, **meals sent** | the package on the Pi |
+| LED palette tuned in a real kitchen; an external WS2812 on GPIO8 | a unit in its place |
 
 ### What is waiting on what
 
@@ -1637,7 +1741,7 @@ complete, or should reset the DHCP socket when it is.
 | 3, the detent interval | **nothing — the bridge is wired and driving**; it needs the motor on a real mechanism |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
 | 8, retiring the PCBs | 3, the third feeder being opened, **and an enclosure designed and printed** |
-| 11, deploying | an always-on Home Assistant with the package installed; the checklist in step 11 is the whole of it |
+| 11, deploying | an always-on Home Assistant with the package installed, then the schedule sent to each unit; the checklist in step 11 is the whole of it |
 | a display | **nothing** — a 0.96" 128×64 SSD1315 is on the bench, working, and is the production part |
 | the enclosure | v1.5 being settled, since the panel and any knob are most of what it holds |
 
@@ -1868,6 +1972,24 @@ this should look there rather than in `LocalClock::align`'s trusted branch.
 
 #### Which means an RTC, and it costs no pins
 
+✅ **Bring-up done and verified on the Zero, 2026-09-25.** `ds3231.rs` decodes
+the registers (pure, host-tested), `rtc.rs` moves them, and `i2c.rs` shares
+GPIO18/19 between the panel and the RTC through `embassy-embedded-hal`'s
+`I2cDevice` — which moved this crate to `embassy-sync` 0.8, the version that
+crate is built on. `rtc_task` logs what the chip holds at boot, and writes it
+from a **live** `feeder/time` only when `OSF` is set or it is more than 2 s out.
+
+Seen on hardware: a factory-fresh module read `2000-01-01`, `OSF` set, 26 °C;
+it was set on the first live time; then, after a minute with **everything**
+unplugged, it booted reading the right time to the second with `OSF` clear,
+and was not rewritten. The cell is a **LIR2032**, which the module's charging
+circuit is meant for — so no resistor to lift, but keep the module on `3V3`,
+because that circuit charges from `VCC` and 5 V overcharges a LIR2032.
+
+✅ **The trust ladder is settled**: a set RTC arms the schedule. See *A retained
+`time` is not a trusted one*, which carries the rule and the double-feed guard
+it needed.
+
 The C6 has no battery-backed clock. Its low-power timer runs from the chip's own
 supply, and a feeder takes 5 V from the original USB port, so a power cut takes
 the time with it. A knob-set clock that dies at the next outage answers the
@@ -2012,12 +2134,30 @@ correct behaviour and indistinguishable from a fault. Every comparable product �
 PetLibro, SureFeed, Aqara, Shelly, Tasmota, an ESPHome device — answers it the
 same way: **the device owns its configuration and the app is a control surface**.
 
+✅ **Points 1, 2, 6 and 7 are built** (2026-09-25), and verified on the Zero
+against the dev broker: a schedule command is stored in its own flash sector
+(`FDS1`, `store.rs`) and put in force; an identical one is not rewritten; a
+reboot brings it back from flash; a *retained* command replayed at subscribe
+time is refused, which is what stops a new unit inheriting meals; the unit
+echoes what it holds on `feeder/<id>/schedule/state`, and `"meals"` in the state
+payload and `NO MEALS SET` on the panel make blank visible. The package's
+schedule automation became a script, *send the schedule to every feeder*,
+publishing `feeder/all/schedule` — no longer on every Home Assistant start.
+Point 3 is done by the RTC and the knob. Still open: 4 (the unit's own HA
+entities) and 5 (the admin page). Subsets by label, in point 6, are still
+Home Assistant's business and unbuilt.
+
+⚠️ A **retained** publish to a command topic *is* acted on by a unit already
+subscribed, because the broker forwards it live with the retain flag cleared.
+Only the replay to a later subscriber is refused. So the rule stays: never
+publish these retained.
+
 **1. The unit owns its schedule, and a new unit starts blank.** Being given a
 schedule is an explicit act, not something a unit inherits by connecting. The
-present design has the opposite property — `feeder/schedule` is one shared
-retained topic, so a unit that joins is immediately feeding meals nobody chose
-for it. That is a hazard *today*: a board on the bench pointed at the house
-broker will start turning. A blank unit fails toward not feeding, which is the
+design before it had the opposite property — `feeder/schedule` was one shared
+retained topic, so a unit that joined was immediately feeding meals nobody chose
+for it, and a board on the bench pointed at the house broker would start
+turning. A blank unit fails toward not feeding, which is the
 direction this project chooses everywhere else — *a missed meal is preferable to
 a double one*, and *power-cycled and no broker → wait, never guess*.
 
@@ -2030,9 +2170,9 @@ section exists to remove.
 **2. Which forces flash persistence.** If the schedule lives only in retained
 per-unit topics, the broker is the unit's memory, and a wiped broker — `down -v`,
 a migration to another host, a Mosquitto without `persistence true` — silently
-blanks every feeder with nothing left to republish it. Today that recovers by
-itself because Home Assistant republishes on restart; with Home Assistant out of
-the loop, nothing does. So the schedule goes in the record in `nvs`, beside the
+blanks every feeder with nothing left to republish it. Under the old shared topic
+that recovered by itself because Home Assistant republished on restart; with
+Home Assistant out of the loop, nothing does. So the schedule goes in the record in `nvs`, beside the
 credentials and the per-unit timings that are already there. Device-owned
 schedules and flash persistence are the same decision.
 
@@ -2160,12 +2300,14 @@ and they still feed. The present package is the opposite, which is why shipping 
 blueprint was the wrong idea. Blueprints cannot define helpers or bundle three
 automations, so as long as Home Assistant owns the schedule, the package stays.
 
-**Until then, today's design stands**, and the near-term answer to *how does a
-person change the feeding times* is `input_datetime` and `input_number` helpers
-defined by the package — eight slots, so the UI cannot express a schedule the
-firmware would reject — with `meals` templated from them instead of being a YAML
-literal. That is an afternoon's work in one file and no firmware change, and it
-is worth doing only if schedule editing has to be user-facing before v2.
+**Superseded in part.** This used to say the old design stood until v2 and
+offered `input_datetime` and `input_number` helpers as the near-term editor,
+needing no firmware change. The firmware half of v2 has since landed (points 1,
+2, 6 and 7 above), so there is no old design left to extend. Today a person
+changes the feeding times by editing `meals` in the package and running
+*send the schedule to every feeder*; helpers templating `meals` would still
+make that user-facing without YAML, and are still one file's work, but they
+now feed the script rather than a retained topic.
 
 Pausing already finds its units rather than being told them — see *Pause stops
 the schedule, not the feeder*. That one was cheap enough to do immediately, and

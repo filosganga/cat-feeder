@@ -345,9 +345,11 @@ INFO (12170) - mqtt: feeder/schedule received, 61 bytes, not handled yet (+4 ms)
 INFO (12207) - mqtt: feeder/time received, 27 bytes, not handled yet    (+37 ms)
 ```
 
-That capture predates two things and is kept for the ordering alone: the
-schedule and time topics are handled now, and `mqtt: asked for the time` follows
-`mqtt: subscribed` — see the Zero capture below for what a current one looks
+That capture predates three things and is kept for the ordering alone: the
+time topic is handled now, `feeder/schedule` is no longer subscribed at all —
+the unit takes `feeder/<id>/schedule` and `feeder/all/schedule`, and echoes
+what it holds on `feeder/<id>/schedule/state` right after subscribing — and `mqtt:
+asked for the time` follows `mqtt: subscribed` — see the Zero capture below for what a current one looks
 like.
 
 The order is the contract: discovery, then `online`, then the subscriptions,
@@ -490,17 +492,34 @@ Failure signatures:
 
 Status: observed on the dev kit.
 
-**Drive the clock from the broker.** The firmware trusts `feeder/time`
-completely and keeps no RTC, so publishing times by hand walks it through a
-whole day in seconds. Waiting for real mealtimes to test a schedule is a way to
-test it roughly twice a day.
+**Drive the clock from the broker.** A live `feeder/time` overrides whatever
+the unit's clock holds, so publishing times by hand walks it through a whole
+day in seconds. Waiting for real mealtimes to test a schedule is a way to test
+it roughly twice a day.
 
 ```sh
 pub() { docker compose exec -T mosquitto \
   mosquitto_pub -h localhost -u feeder -P feeder-dev "$@"; }
 
-pub -r -t 'feeder/schedule' -m '[{"time":"08:00","portions":1},{"time":"12:00","portions":2}]'
+pub -t 'feeder/99177c/schedule' -m '[{"time":"08:00","portions":1},{"time":"12:00","portions":2}]'
 pub -r -t 'feeder/time' -m '2026-09-15T09:00:00+02:00'
+```
+
+The schedule goes to the unit's own command topic, **not retained** — a
+retained one replayed at subscribe time is refused (`mqtt: ignored a retained
+schedule command; publish it without retain`) — and is stored in flash, so it
+outlives this test. Send `[]` afterwards if the unit should not keep it.
+
+⚠️ **Every fake time lands in the DS3231.** The unit is already subscribed, so
+the broker forwards each `pub -r` live with the retain flag cleared, and
+`rtc_task` writes any live time more than 2 s from the chip's into the RTC with
+the oscillator-stop flag clear. The next boot with Home Assistant down then arms
+the schedule from whatever time the walk ended on, and feeds by it. So the last
+step of this test is not optional: publish the real time **live, not
+retained**, and confirm the console prints `rtc: set to …`:
+
+```sh
+pub -t 'feeder/time' -m "$(date +%Y-%m-%dT%H:%M:%S%z)"   # +HHMM is accepted
 ```
 
 Then step the clock with further retained publishes to `feeder/time`. The whole
@@ -516,7 +535,7 @@ subscribed is forwarded with the retain flag cleared, so the third line reads
 INFO - clock: no trusted time yet, schedule holding  # before the broker is up
 INFO - mqtt: subscribed
 INFO - clock: started, 2026-09-15T09:00:00+02:00
-INFO - schedule: 2 slots
+INFO - schedule: 2 slots, stored                     # today's wording
 INFO - schedule: slot 08:00 already past at startup  # baseline: no feed
 
 INFO - clock: aligned, drift=10784s                  # step to 11:59:55
@@ -557,20 +576,25 @@ well under a second and prints a single line:
 ```
 INFO (12110) - mqtt: asked for the time
 INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed (+625 ms)
-INFO (12737) - schedule: 2 slots
 ```
+
+That is a unit whose RTC is not set. One whose DS3231 is running has already
+printed `clock: RTC time …, schedule armed` about 1.4 s after power-on, long
+before Wi-Fi, and the live answer then only corrects it — silently, unless it
+is 2 s or more out. The schedule comes from flash at boot, as `schedule: N
+slots from flash` (or `none stored; this unit will not feed until given one`),
+not after the clock.
 
 The retained time the broker replays at subscribe usually leaves no line at all,
 because the answer overtakes it inside the schedule task's one-second tick and
 `Bus::time` is a `Signal` that keeps only the newest value. Nothing is lost —
 the live one is the one worth having.
 
-**Against a broker nobody is publishing to, the old sequence is what you see**,
-and it is easy to mistake for a fault:
+**Against a broker nobody is publishing to, a unit with no trusted RTC shows
+the old sequence**, and it is easy to mistake for a fault:
 
 ```
 INFO (14578) - clock: started, 2026-09-15T21:45:00+02:00 (retained; waiting for a live time)
-INFO (14587) - schedule: 2 slots
 INFO (34593) - clock: live time 2026-09-15T21:46:00+02:00, schedule armed   (+20006 ms)
 INFO (34600) - schedule: slot 19:00 already past at startup
 ```
@@ -600,7 +624,7 @@ time of the last **scheduled** feed with the offset as published, and is the
 quickest confirmation the whole path ran:
 
 ```
-{"feeding":false,"jammed":true,"paused":false,"last_fed":"2026-09-16T08:00:02+02:00"}
+{"feeding":false,"jammed":true,"paused":false,"meals":2,"last_fed":"2026-09-16T08:00:02+02:00"}
 ```
 
 A manual feed while paused must still work — the check most likely to be built
@@ -618,19 +642,29 @@ INFO - feed: start, portions=1
 
 Offline behaviour: stop the broker and confirm the unit keeps feeding on the
 last schedule it received, with no `clock: aligned` lines, since the local clock
-free-runs. Power-cycle with the broker still down and confirm it waits rather
-than guessing a time:
+free-runs. Power-cycle with the broker still down: a unit whose RTC is set arms
+from it and feeds from the schedule in flash, with no network at all:
+
+```
+INFO - rtc: DS3231 holds 2026-09-25T19:03:12, running since last set, 26.00 C
+INFO - schedule: 2 slots from flash
+INFO - clock: RTC time 2026-09-25T19:03:12, schedule armed
+```
+
+Only a unit whose RTC has the oscillator-stop flag set (`oscillator stopped
+since last set: not trusted` — coin cell flat, pulled, or never fitted) waits
+rather than guessing a time:
 
 ```
 INFO - clock: no trusted time yet, schedule holding
 ```
 
 Finally, power-cycle while paused. The unit must come back paused from the
-retained topic alone, since nothing is stored in flash. One that comes back
+retained topic alone, since `paused` is not stored in flash. One that comes back
 running has a retain flag missing on the command, or is publishing its first
 state payload before the retained flag arrives.
 
-Most of this logic is host-testable and 32 tests cover it. Use the console to
+Most of this logic is host-testable, and `schedule.rs`'s host tests cover it. Use the console to
 verify the wiring between the pure logic and the tasks, not the logic itself.
 
 ## Step 6 — the Zero boards
@@ -670,13 +704,15 @@ ids.
 Status: observed on one unit. The three-unit check below still needs the Zeros.
 
 Home Assistant's half lives in `homeassistant/packages/cat_feeder.yaml`;
-`dev/README.md` covers installing it. Once it is running, the console shows the
-schedule arriving from Home Assistant rather than from a hand publish, and slots
-firing at their real times:
+`dev/README.md` covers installing it. Once it is running, run
+`script.cat_feeder_send_schedule` — nothing sends the schedule by itself any
+more — and the console shows it arriving from Home Assistant rather than from a
+hand publish (`, unchanged` instead of `, stored` if the unit already held it),
+and slots firing at their real times:
 
 ```
 INFO - clock: live time 2026-09-15T19:56:00+02:00, schedule armed
-INFO - schedule: 2 slots
+INFO - schedule: 2 slots, stored
 INFO - schedule: slot 19:56 due, feeding 3
 ```
 
@@ -949,7 +985,9 @@ INFO (59607) - clock: live time 2026-09-16T09:15:00+02:00, schedule armed (+4600
 INFO (59623) - led: Healthy                                               (+8 ms)
 ```
 
-A normal boot passes through all four in that order, because the ladder reports
+A normal boot of a unit with no trusted RTC passes through all four in that
+order (one whose DS3231 is set is trusted before Wi-Fi is up, and never shows
+`NoTime`), because the ladder reports
 the first thing to fix and the unit fixes them in sequence. Each `led:` line
 lands 8–15 ms after the event that caused it, which is the 25 ms indicator tick.
 

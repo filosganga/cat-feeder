@@ -10,7 +10,14 @@
 //!   feeder    --status-> mqtt            (feeding, jammed)
 //!   mqtt      --paused-> schedule
 //!   mqtt      --time---> schedule
-//!   mqtt      --schedule schedule
+//!   rtc       --time---> schedule     (at boot, if the DS3231 kept time)
+//!   ui        --time---> schedule     (set by hand on the knob)
+//!   mqtt      --rtc_time rtc          (live times, to keep the DS3231 set)
+//!   ui        --rtc_time rtc          (a hand-set time, likewise)
+//!   mqtt      --schedule schedule     (a command; stored, then in force)
+//!   schedule  --held---> mqtt, display (what the unit holds; the echo, meals)
+//!   schedule  --changed> mqtt         (republish the echo)
+//!   schedule  --now----> display, ui  (the trusted time)
 //!   schedule  --last_fed mqtt, display
 //!   schedule  --next---> display      (the upcoming slot)
 //!   ui        --pressed> display      (wakes the panel)
@@ -20,7 +27,7 @@
 //!   main      --ip-----> display
 //! ```
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_sync::blocking_mutex::Mutex;
@@ -28,6 +35,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
+use crate::calibrate::{Failure, Measurement};
 use crate::indicator::Health;
 use crate::menu::{Calibration, Mode};
 use crate::schedule::{Schedule, Slot, TimeSource, Wall};
@@ -316,6 +324,39 @@ impl<T: Copy> Shared<T> {
     }
 }
 
+/// The schedule the unit holds, or `None` if it has never been given one.
+///
+/// `Schedule` is not `Copy`, so this is a lock around a `RefCell` rather than
+/// a [`Shared`]. Read by cloning: a schedule is a few dozen bytes.
+pub struct HeldSchedule(Mutex<CriticalSectionRawMutex, RefCell<Option<Schedule>>>);
+
+impl Default for HeldSchedule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HeldSchedule {
+    pub const fn new() -> Self {
+        Self(Mutex::new(RefCell::new(None)))
+    }
+
+    pub fn set(&self, schedule: Schedule) {
+        self.0.lock(|cell| *cell.borrow_mut() = Some(schedule));
+    }
+
+    pub fn get(&self) -> Option<Schedule> {
+        self.0.lock(|cell| cell.borrow().clone())
+    }
+
+    /// How many meals a day, `0` when there is no schedule at all — the two
+    /// are the same thing to anyone asking whether this unit will feed.
+    pub fn meals(&self) -> usize {
+        self.0
+            .lock(|cell| cell.borrow().as_ref().map_or(0, Schedule::len))
+    }
+}
+
 /// Everything the tasks share.
 pub struct Bus {
     /// Portion requests. Written by `mqtt` and `schedule`, drained by `feeder`.
@@ -328,14 +369,29 @@ pub struct Bus {
     /// on every reconnect, but until it arrives the last value this unit acted
     /// on is a better answer than `false`.
     pub paused: AtomicBool,
-    /// Latest `feeder/time`, `mqtt` to `schedule`.
+    /// The latest time for the schedule's clock: `feeder/time` from `mqtt`,
+    /// the DS3231 from `rtc` at boot, or a hand-set time from `ui`. Each
+    /// carries its [`TimeSource`](crate::schedule::TimeSource), which decides
+    /// how far it is trusted.
     ///
     /// A [`Signal`] rather than a channel because only the newest matters: an
-    /// old time message is worse than none, and both topics are retained, so
-    /// missing one costs nothing.
+    /// old time is worse than none, and `feeder/time` is republished every
+    /// minute, so missing one costs nothing.
     pub time: Signal<CriticalSectionRawMutex, TimeSync>,
-    /// Latest `feeder/schedule`, `mqtt` to `schedule`.
+    /// Latest *live* `feeder/time`, `mqtt` to `rtc`, which sets the DS3231
+    /// from it. Live only: a retained time can be any age, and writing one
+    /// into the RTC would launder a stale time into one that looks set.
+    pub rtc_time: Signal<CriticalSectionRawMutex, TimeSync>,
+    /// A schedule command just received, `mqtt` to `schedule`, which stores
+    /// it in flash and puts it in force.
     pub schedule: Signal<CriticalSectionRawMutex, Schedule>,
+    /// The schedule this unit holds. Written by `schedule` — from flash at
+    /// boot, then on every command it stores — and read by `mqtt` for the
+    /// retained echo and the state payload's `meals`, and by `display`.
+    pub held: HeldSchedule,
+    /// The held schedule changed: `schedule` to `mqtt`, which republishes the
+    /// retained `feeder/<id>/schedule/state` echo.
+    pub schedule_changed: Signal<CriticalSectionRawMutex, ()>,
     /// Written by `schedule`, read by `mqtt`.
     pub last_fed: LastFed,
     /// Written by `schedule`, read by `display`.
@@ -367,6 +423,16 @@ pub struct Bus {
     /// by `ui` when the knob saves a new figure; read by `feeder`, which
     /// applies it at its next idle moment, and by `display`.
     pub calibration: Shared<Calibration>,
+    /// Start a calibration run: `ui` to `feeder`, which runs it only when idle.
+    pub calibrate: Signal<CriticalSectionRawMutex, ()>,
+    /// Clicks counted so far in a calibration run: `feeder` to `ui`.
+    pub calibration_clicks: Signal<CriticalSectionRawMutex, u8>,
+    /// How a calibration run ended: `feeder` to `ui`.
+    pub calibration_result: Signal<CriticalSectionRawMutex, Result<Measurement, Failure>>,
+    /// The time now, only while the clock is trusted. Written by `schedule`
+    /// each tick, read by `display` for the home page and by `ui` so the
+    /// knob's clock editor opens on it.
+    pub now: Shared<Option<Wall>>,
     /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
     pub net: Connectivity,
     /// This unit is in setup mode, serving its own network.
@@ -395,7 +461,10 @@ impl Bus {
             status: FeederStatus::new(),
             paused: AtomicBool::new(false),
             time: Signal::new(),
+            rtc_time: Signal::new(),
             schedule: Signal::new(),
+            held: HeldSchedule::new(),
+            schedule_changed: Signal::new(),
             last_fed: LastFed::new(),
             next: NextSlot::new(),
             last_press: LastPress::new(),
@@ -405,6 +474,10 @@ impl Bus {
             redraw: Signal::new(),
             pause_request: Signal::new(),
             ip: Shared::new(None),
+            now: Shared::new(None),
+            calibrate: Signal::new(),
+            calibration_clicks: Signal::new(),
+            calibration_result: Signal::new(),
             calibration: Shared::new(Calibration {
                 portion_scale_pct: crate::portions::SCALE_UNCHANGED,
                 detent_ms: crate::provisioning::DEFAULT_DETENT_MS,

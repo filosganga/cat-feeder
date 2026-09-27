@@ -1,10 +1,12 @@
 # Home Assistant's half of the cat-feeder contract.
 #
-# The feeders have no RTC, no NTP and no flash. Everything they know arrives
-# from the broker as a retained message, and this file is what publishes it.
-# If Home Assistant stops, the feeders keep free-running on the last time and
-# schedule they heard; if a feeder reboots while Home Assistant is down, it
-# waits rather than guessing.
+# Each feeder owns its schedule and keeps it in flash, and keeps its clock on
+# a battery-backed RTC. This file publishes the time every minute, which is
+# what corrects that clock, and gives the feeders their meals when you run
+# "Cat feeder: send the schedule" — a command, never retained, because being
+# given a schedule is a deliberate act: a feeder that joins the broker is not
+# handed meals nobody chose for it. If Home Assistant stops, the feeders keep
+# feeding on what they hold.
 #
 # Install: see "Home Assistant automations" in dev/README.md. The same file goes
 # to the local Docker stack and to any deployed instance, unchanged — nothing in
@@ -12,7 +14,7 @@
 #
 # ---------------------------------------------------------------------------
 # NO DEVICE ID APPEARS IN THIS FILE, and adding a feeder needs no edit here.
-# Time and schedule are shared retained topics; feed is a broadcast; and pause,
+# Time is a shared retained topic; feed and schedule are broadcasts; and pause,
 # the one command with no broadcast topic, finds its units in the device
 # registry by the `model` that MQTT discovery published. See the `units`
 # variable in "Cat feeder: pause the schedule when away".
@@ -65,6 +67,34 @@ script:
           retain: false
           payload: "{{ portions | int(1) }}"
 
+  # Gives every feeder these meals. Each stores them in flash and echoes what
+  # it holds on feeder/<id>/schedule/state, so the result can be checked per unit.
+  #
+  # Edit `meals` and run it. Up to 8 slots; a longer list is rejected by the
+  # firmware whole rather than truncated, and each unit keeps what it had.
+  #
+  # Deliberately a script and not an automation on Home Assistant's start: that
+  # would re-send these meals over any a feeder was given some other way, at
+  # every restart. One feeder alone gets its own with
+  # feeder/<id>/schedule, which this package does not need to know about.
+  #
+  # Not retained, and the firmware refuses a retained one: a retained schedule
+  # would be handed to every unit that subscribes later.
+  cat_feeder_send_schedule:
+    alias: "Cat feeder: send the schedule to every feeder"
+    icon: mdi:calendar-clock
+    mode: single
+    variables:
+      meals: >-
+        [{"time":"08:00","portions":2},
+         {"time":"19:00","portions":2}]
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: feeder/all/schedule
+          retain: false
+          payload: "{{ meals | from_json | to_json }}"
+
 automation:
   - id: cat_feeder_publish_time
     alias: "Cat feeder: publish the time"
@@ -107,41 +137,6 @@ automation:
           topic: feeder/time
           retain: true
           payload: "{{ now().isoformat() }}"
-
-  - id: cat_feeder_publish_schedule
-    alias: "Cat feeder: publish the schedule"
-    description: >-
-      Retained, so a rebooting feeder gets its meals back from the broker
-      rather than from flash. Republished on restart because it costs nothing
-      and covers a broker that was wiped.
-
-      Edit `meals` below to change feeding times, then reload automations. Up
-      to 8 slots; a longer list is rejected by the firmware whole rather than
-      truncated, and the unit keeps running the schedule it already had.
-
-      Editing YAML is the wrong answer for anyone who did not build this, and
-      there are two better ones, both written up in CLAUDE.md under "A second
-      version: the unit owns its clock and its schedule": near term, eight
-      input_datetime/input_number helpers defined by this package, with `meals`
-      templated from them so the times are set in the interface; properly, the
-      unit publishing its own slot entities over discovery, which needs no
-      package at all. Neither is built.
-    mode: single
-    variables:
-      meals: >-
-        [{"time":"08:00","portions":2},
-         {"time":"19:00","portions":2}]
-    triggers:
-      - trigger: homeassistant
-        event: start
-      - trigger: event
-        event_type: cat_feeder_republish_schedule
-    actions:
-      - action: mqtt.publish
-        data:
-          topic: feeder/schedule
-          retain: true
-          payload: "{{ meals | from_json | to_json }}"
 
   - id: cat_feeder_pause_when_away
     alias: "Cat feeder: pause the schedule when away"

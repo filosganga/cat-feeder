@@ -7,9 +7,13 @@
 //! 2. The three retained discovery configs.
 //! 3. `online`, retained.
 //! 4. Subscribe to the command topics.
-//! 5. Ask for the time — after the subscriptions, or the answer arrives before
+//! 5. The retained `feeder/<id>/schedule/state` echo: what this unit holds, since the
+//!    broker's copy may predate a reboot or a factory reset. A pause changed on
+//!    the knob while offline goes out *before* step 4, so the replay that
+//!    follows carries it back.
+//! 6. Ask for the time — after the subscriptions, or the answer arrives before
 //!    anything is listening for it.
-//! 6. The first state — but only after the retained `paused` has had a chance
+//! 7. The first state — but only after the retained `paused` has had a chance
 //!    to arrive, or Home Assistant briefly shows a paused feeder as running.
 //!
 //! Discovery is retained, so Home Assistant re-reads it after a restart on its
@@ -20,7 +24,7 @@ use core::net::Ipv4Addr;
 use core::num::NonZero;
 use core::str::FromStr as _;
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either4, select4};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
@@ -83,7 +87,12 @@ const PAYLOAD_OFFLINE: &str = "offline";
 /// Broadcast feed. No discovery entity: Home Assistant automations publish here
 /// directly, and it is how three feeders feed at the same instant.
 const TOPIC_ALL_FEED: &str = "feeder/all/feed";
-const TOPIC_SCHEDULE: &str = "feeder/schedule";
+/// Broadcast schedule: every unit stores it and puts it in force. A command,
+/// **never retained** — see `on_schedule` — and the only way three feeders are
+/// told to eat the same meals. There is deliberately no shared retained
+/// schedule any more: a unit that joins is not handed meals nobody chose for
+/// it, and starts blank.
+const TOPIC_ALL_SCHEDULE: &str = "feeder/all/schedule";
 const TOPIC_TIME: &str = "feeder/time";
 
 /// Asks Home Assistant to publish `feeder/time` now. Carries this unit's id,
@@ -108,6 +117,10 @@ struct Topics {
     state: String<TOPIC_LEN>,
     feed: String<TOPIC_LEN>,
     paused: String<TOPIC_LEN>,
+    /// `feeder/<id>/schedule`: a schedule for this unit alone.
+    schedule_cmd: String<TOPIC_LEN>,
+    /// `feeder/<id>/schedule/state`: retained, what this unit holds.
+    schedule_state: String<TOPIC_LEN>,
 }
 
 impl Topics {
@@ -126,11 +139,19 @@ impl Topics {
         let mut paused = String::new();
         let _ = write!(paused, "feeder/{id}/paused");
 
+        let mut schedule_cmd = String::new();
+        let _ = write!(schedule_cmd, "feeder/{id}/schedule");
+
+        let mut schedule_state = String::new();
+        let _ = write!(schedule_state, "feeder/{id}/schedule/state");
+
         Self {
             availability,
             state,
             feed,
             paused,
+            schedule_cmd,
+            schedule_state,
         }
     }
 }
@@ -141,6 +162,9 @@ pub struct State {
     pub feeding: bool,
     pub jammed: bool,
     pub paused: bool,
+    /// Meals a day in the schedule this unit holds, `0` for none. The one
+    /// number that says a healthy-looking unit will never feed.
+    pub meals: usize,
     /// The time and the portion count. Only the time reaches MQTT; the
     /// count is for the display, which reads the same slot.
     pub last_fed: Option<(Wall, u8)>,
@@ -152,6 +176,7 @@ impl State {
             feeding: bus.status.feeding(),
             jammed: bus.status.jammed(),
             paused: bus.is_paused(),
+            meals: bus.held.meals(),
             last_fed: bus.last_fed.get(),
         }
     }
@@ -163,8 +188,8 @@ impl State {
         let mut json = String::new();
         let _ = write!(
             json,
-            r#"{{"feeding":{},"jammed":{},"paused":{},"last_fed":"#,
-            self.feeding, self.jammed, self.paused
+            r#"{{"feeding":{},"jammed":{},"paused":{},"meals":{},"last_fed":"#,
+            self.feeding, self.jammed, self.paused, self.meals
         );
 
         match self.last_fed {
@@ -311,12 +336,18 @@ async fn session(
         topics.feed.as_str(),
         TOPIC_ALL_FEED,
         topics.paused.as_str(),
-        TOPIC_SCHEDULE,
+        topics.schedule_cmd.as_str(),
+        TOPIC_ALL_SCHEDULE,
         TOPIC_TIME,
     ] {
         subscribe(&mut client, filter).await?;
     }
     info!("mqtt: subscribed");
+
+    // What this unit holds, for Home Assistant and anyone else to read — on
+    // every connect, because the broker's copy may be from before a reboot or
+    // a factory reset.
+    publish_schedule(&mut client, topics, bus).await?;
 
     // Home Assistant publishes the time once a minute and only a *live* one
     // arms the schedule, so a unit that connects just after a tick waits up to
@@ -347,15 +378,16 @@ async fn session(
         //
         // `Signal::wait` is cancel-safe as well: it only takes the value when
         // it resolves, so losing the race to a header leaves it pending.
-        let next = select3(
+        let next = select4(
             client.poll_header(),
             Timer::at(next_state),
             bus.pause_request.wait(),
+            bus.schedule_changed.wait(),
         )
         .await;
 
         match next {
-            Either3::First(header) => {
+            Either4::First(header) => {
                 let header = header.map_err(|e| warn!("mqtt: poll failed: {e:?}"))?;
                 let event = client
                     .poll_body(header)
@@ -383,14 +415,20 @@ async fn session(
                 }
             }
 
-            Either3::Third(paused) => {
+            Either4::Fourth(()) => {
+                publish_schedule(&mut client, topics, bus).await?;
+                // `meals` in the state payload changed too.
+                next_state = Instant::now();
+            }
+
+            Either4::Third(paused) => {
                 // The broker echoes it straight back on the subscription, and
                 // that echo is what `on_message` acts on and what brings the
                 // state payload forward.
                 publish_paused(&mut client, topics, paused).await?;
             }
 
-            Either3::Second(()) => {
+            Either4::Second(()) => {
                 next_state = Instant::now() + STATE_INTERVAL;
 
                 let payload = State::read(bus).to_json();
@@ -414,6 +452,17 @@ async fn publish_paused<N: Transport>(
     publish(client, &topics.paused, payload.as_bytes(), true).await?;
     info!("mqtt: published paused = {payload}, from the menu");
     Ok(())
+}
+
+/// Publishes what this unit holds, retained, on `feeder/<id>/schedule/state`. `[]`
+/// for a unit with no schedule: an empty list and no list feed the same.
+async fn publish_schedule<N: Transport>(
+    client: &mut FeederClient<'_, N>,
+    topics: &Topics,
+    bus: &'static Bus,
+) -> Result<(), ()> {
+    let json = bus.held.get().unwrap_or_default().to_json();
+    publish(client, &topics.schedule_state, json.as_bytes(), true).await
 }
 
 /// Acts on one incoming publication.
@@ -455,8 +504,8 @@ fn on_message(
     } else if topic_name == TOPIC_TIME {
         on_time(payload, retained, bus);
         false
-    } else if topic_name == TOPIC_SCHEDULE {
-        on_schedule(payload, bus);
+    } else if topic_name == topics.schedule_cmd.as_str() || topic_name == TOPIC_ALL_SCHEDULE {
+        on_schedule(payload, retained, bus);
         false
     } else {
         warn!("mqtt: unexpected topic {topic_name}");
@@ -483,21 +532,44 @@ fn on_time(payload: &[u8], retained: bool, bus: &'static Bus) {
     };
 
     match parse_time(payload) {
-        Ok(wall) => bus.time.signal(TimeSync {
-            monotonic_ms,
-            wall,
-            source,
-        }),
+        Ok(wall) => {
+            let sync = TimeSync {
+                monotonic_ms,
+                wall,
+                source,
+            };
+            if source == TimeSource::Live {
+                bus.rtc_time.signal(sync);
+            }
+            bus.time.signal(sync);
+        }
         Err(e) => warn!("mqtt: time payload rejected: {e:?}"),
     }
 }
 
-/// Hands the schedule to the schedule task.
+/// Hands a schedule command to the schedule task, which stores it.
 ///
 /// A rejected payload leaves the previous schedule in place. That is
 /// deliberate: a unit running yesterday's schedule feeds the cats, and a unit
 /// with no schedule does not.
-fn on_schedule(payload: &[u8], bus: &'static Bus) {
+///
+/// **A retained command is refused.** These are commands, and a retained one
+/// would be handed to every unit that subscribes later — which is exactly the
+/// inheritance the unit owning its schedule exists to end: a board on the
+/// bench pointed at the house broker would start feeding meals nobody chose
+/// for it. So the retain flag, which the broker sets only on a replay, means
+/// "not addressed to you now", and is ignored with a line saying so.
+fn on_schedule(payload: &[u8], retained: bool, bus: &'static Bus) {
+    // An empty payload is how a retained message is deleted from the broker,
+    // and a unit subscribed at the time receives the deletion too. It is
+    // nobody's command, so it is not reported as a malformed one.
+    if payload.is_empty() {
+        return;
+    }
+    if retained {
+        warn!("mqtt: ignored a retained schedule command; publish it without retain");
+        return;
+    }
     match Schedule::parse(payload) {
         Ok(schedule) => bus.schedule.signal(schedule),
         Err(e) => warn!("mqtt: schedule payload rejected: {e:?}, keeping the last one"),

@@ -114,13 +114,14 @@ devices on their own once they publish their config.
 ## Home Assistant automations
 
 Discovery gives you the three entities. It does **not** give you the schedule:
-the feeders have no clock of their own, so until something publishes
-`feeder/time` they wait forever and never feed. That half lives in
+a new unit starts with no meals and will not feed until it is sent some, and a
+unit whose RTC was never set waits for a live `feeder/time` before it trusts
+its clock. That half lives in
 [`homeassistant/packages/cat_feeder.yaml`](../homeassistant/packages/cat_feeder.yaml),
 which is tracked in this repo and goes to any instance unchanged.
 
 It is a Home Assistant *package*, so one file carries the automations, the
-schedule helper and the feed-all script together. Install it by copying it in
+schedule helper, the send-the-schedule script and the feed-all script together. Install it by copying it in
 and enabling packages:
 
 ```sh
@@ -138,12 +139,19 @@ Then restart Home Assistant — `docker compose restart homeassistant` — and
 confirm the broker starts filling up, which takes at most a minute:
 
 ```sh
-./dev/watch.sh 'feeder/time' 'feeder/schedule'
+./dev/watch.sh 'feeder/time' 'feeder/+/schedule/state'
 ```
 
 ```
 feeder/time 2026-09-15T19:51:00.489888+02:00
-feeder/schedule [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
+```
+
+`feeder/<id>/schedule/state` stays silent until the schedule is sent: run
+*Cat feeder: send the schedule to every feeder* (`script.cat_feeder_send_schedule`)
+from Home Assistant, and each connected unit stores it and echoes what it holds:
+
+```
+feeder/99177c/schedule/state [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
 ```
 
 ### The same thing on a deployed Home Assistant
@@ -173,10 +181,12 @@ takes credentials if its feeder user differs from the dev stack's:
 
 ```sh
 ./dev/watch.sh --host <broker> --user <name> --password-file <path> \
-  'feeder/time' 'feeder/schedule'
+  'feeder/time' 'feeder/+/schedule/state'
 ```
 
-A line a minute on `feeder/time` says that half is done. Silence means Home
+A line a minute on `feeder/time` says that half is done; `feeder/+/schedule/state`
+lines appear only once a unit is connected and the send-the-schedule script has
+been run. Silence means Home
 Assistant is up but the package is not loaded. It doubles as a credential test,
 so a wrong password fails here rather than silently inside a feeder.
 
@@ -199,25 +209,26 @@ rather than of the broker:
   deployment that uses host networking — a common choice, because Bluetooth and
   mDNS need it — has to be told `localhost` instead.
 - **A bind-mounted Mosquitto data directory** still needs `persistence true` in
-  its config, or retained messages are lost on every broker restart. Most come
-  straight back, because the package republishes the time each minute and the
-  schedule on restart — but `feeder/<id>/paused` does not, and a paused feeder
-  silently resuming is the one state change in this system that nothing alarms
-  about.
+  its config, or retained messages are lost on every broker restart. The time
+  comes straight back, because the package republishes it each minute, and the
+  schedule lives in each unit's flash rather than the broker's — but
+  `feeder/<id>/paused` is still broker state and does not come back, and a
+  paused feeder silently resuming is the one state change in this system that
+  nothing alarms about.
 
-⚠️ **Do not point one feeder at two brokers.** Every piece of persistent state
-in this design is a retained message, so a unit moved back to the dev stack
-picks up whatever *that* broker last held — quite possibly a schedule from last week,
-which is indistinguishable from a current one. Each unit points at one broker,
+⚠️ **Do not point one feeder at two brokers.** The schedule travels with the
+unit, in flash, but `paused` is still a retained message, so a unit moved back
+to the dev stack picks up whatever *that* broker last held — quite possibly a
+pause from last week, which is indistinguishable from a current one. Each unit points at one broker,
 and changing it is a `./dev/provision.sh` run rather than something that can
 happen by accident.
 
 What the package sets up:
 
-| Automation | When | Publishes |
+| Automation or script | When | Publishes |
 |---|---|---|
 | publish the time | every minute, on restart, and on `feeder/time/request` | `feeder/time`, retained |
-| publish the schedule | on restart, or the `cat_feeder_republish_schedule` event | `feeder/schedule`, retained |
+| `script.cat_feeder_send_schedule` | run by hand, never on restart | `feeder/all/schedule`, **not** retained |
 | pause when away | `schedule.cat_feeder_active` changes | `feeder/<id>/paused` per unit, retained |
 
 Plus `script.cat_feeder_feed_all`, which publishes one `feeder/all/feed` so all
@@ -248,9 +259,12 @@ breaks without it — see *Asking for the time instead of waiting for it* in
 CLAUDE.md — but a unit repointed at a Home Assistant that has not got the
 package gets the slow path back.
 
-To change feeding times, edit `meals` in the package, copy it in again, and
-restart. Verified end to end: a slot published this way fired at exactly its
-time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
+To change feeding times, edit `meals` in the package, copy it in again,
+restart or reload it, **then run `script.cat_feeder_send_schedule`** — nothing
+sends the schedule by itself any more. Each unit logs `schedule: N slots,
+stored` (or `unchanged`, if it already held that one) and echoes it on
+`feeder/<id>/schedule/state`. Verified end to end, when the schedule was still a
+shared retained topic: a slot published this way fired at exactly its time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
 
 ## Everyday commands
 
@@ -275,16 +289,19 @@ docker compose exec mosquitto mosquitto_pub -h localhost -u feeder -P feeder-dev
 
 ## Wiping retained state
 
-The firmware stores nothing in flash. The broker holds the schedule, the time,
-the paused flag and every discovery config, so a stale retained message looks
-exactly like a firmware bug.
+The broker holds the time, the paused flag, each unit's schedule echo and every
+discovery config, so a stale retained message looks exactly like a firmware bug.
+The schedule itself is not among them: each unit keeps it in flash.
 
 ```sh
 docker compose down -v && docker compose up -d
 ```
 
-That is also the only honest way to test a cold boot: a feeder that has never
-been told the time must wait rather than guess.
+That is **no longer a cold boot**, because a unit keeps its meals in flash and
+its time in the DS3231, and `down -v` touches neither. A true cold start is the
+menu's `Settings` → `Factory reset`, which erases the meals with the
+credentials, plus pulling the RTC's coin cell so it comes back untrusted — a
+feeder that has never been told the time must still wait rather than guess.
 
 To drop a single retained topic, publish an empty message to it:
 

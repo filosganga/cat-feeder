@@ -92,6 +92,22 @@ else
 fi
 echo
 
+# Armed is not the same as feeding: a unit with no meals arms its clock just the
+# same, then sits healthy and dark, never turning. The last word on what it
+# holds is the last schedule line — from flash at boot, or from a command since.
+echo "=== does it hold any meals?"
+last_schedule=$(grep -aE 'schedule: (none stored|stored record is unreadable|[0-9]+ slots(,| from flash))' "$LOG" | tail -1 || true)
+if [ -z "$last_schedule" ]; then
+  echo "    unknown: no schedule line in this log"
+elif echo "$last_schedule" | grep -qE 'none stored|unreadable| 0 slots'; then
+  echo "    NO. This unit holds no meals, so it was never going to feed."
+  echo "    Run script.cat_feeder_send_schedule in Home Assistant."
+  echo "$last_schedule" | sed 's/^/    /'
+else
+  echo "$last_schedule" | sed 's/^/    /'
+fi
+echo
+
 # Sub-2s drift is not logged at all, so anything here is worth a look. Steady
 # growth in one direction is crystal drift; isolated large values are the
 # broker or Home Assistant hiccuping.

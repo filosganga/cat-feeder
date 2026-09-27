@@ -264,7 +264,7 @@ fn take_str<const N: usize>(body: &[u8], at: &mut usize) -> Result<String<N>, De
 ///
 /// No lookup table: this runs twice per boot at most, and 1 KB of table is
 /// worth more than the microseconds it would save.
-fn crc32(bytes: &[u8]) -> u32 {
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
     for &byte in bytes {
         crc ^= byte as u32;

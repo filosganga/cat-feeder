@@ -8,14 +8,18 @@
 #![deny(clippy::large_stack_frames)]
 
 use cat_feeder::button::{BOOT_RESET_HOLD_MS, held_at_boot};
+use cat_feeder::calibrate::{Failure as CalibrationFailure, Measurement, Run as CalibrationRun};
 use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
 use cat_feeder::display::{self, Fed, Net, Screen, SetupInfo, UnitInfo, View};
+use cat_feeder::ds3231::Reading as RtcReading;
 use cat_feeder::encoder::Decoder;
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder, Timings};
+use cat_feeder::i2c::Bus as I2cBus;
 use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
 use cat_feeder::menu::{
-    Calibration, Field, Item, Menu, Mode as MenuMode, Outcome as MenuOutcome, Page, Setting,
+    Calibration, ClockEdit, Field, Item, Menu, Mode as MenuMode, Outcome as MenuOutcome, Page,
+    Setting,
 };
 use cat_feeder::motor::{Drv8833, MotorDriver};
 use cat_feeder::oled::Oled;
@@ -23,15 +27,20 @@ use cat_feeder::portions::{Added, MAX_CLICKS};
 use cat_feeder::provisioning::{
     AP_PASSWORD_LEN, AP_SSID_LEN, DecodeError, Record, ap_password, ap_ssid,
 };
-use cat_feeder::schedule::{Alignment, Change, Due, LocalClock, Scheduler, Skipped, Wall};
-use cat_feeder::store::{Store, StoreError};
+use cat_feeder::rtc::Rtc;
+use cat_feeder::schedule::{
+    Alignment, Change, Due, LocalClock, Schedule, ScheduleRecordError, Scheduler, Skipped,
+    TimeSource, Wall, seconds_between,
+};
+use cat_feeder::store::{SharedStore, Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
-use cat_feeder::wiring::{Bus, now_ms};
+use cat_feeder::wiring::{Bus, TimeSync, now_ms};
 use cat_feeder::{
     button_pin, display_scl_pin, display_sda_pin, encoder_a_pin, encoder_b_pin, led_pin,
     motor_in1_pin, motor_in2_pin, motor_sleep_pin, mqtt, switch_pin,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
+use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, Either3, select, select3};
 use embassy_net::{Runner, StackResources};
@@ -174,18 +183,29 @@ async fn main(spawner: Spawner) -> ! {
     // the whole life of the future. Passing it by value put `display_task` at
     // 1268 bytes against the crate's 1024 budget. A buffer that lives forever
     // belongs in a static; the task carries a pointer.
-    let oled: Option<&'static mut Oled<'static>> = match Oled::new(
+    //
+    // The bus is built here and shared: the RTC is on the same two wires, and
+    // gets its own handle further down. See `i2c.rs`.
+    let i2c_bus: Option<&'static I2cBus> = match cat_feeder::i2c::bus(
         peripherals.I2C0,
         display_sda_pin!(peripherals),
         display_scl_pin!(peripherals),
-    )
-    .await
-    {
-        Ok(oled) => Some(mk_static!(Oled<'static>, oled)),
+    ) {
+        Ok(bus) => Some(mk_static!(I2cBus, bus)),
         Err(e) => {
-            warn!("oled: no panel ({e:?}), showing the screen on the console only");
+            warn!("i2c: bus would not configure ({e:?}); no panel, no RTC");
             None
         }
+    };
+    let oled: Option<&'static mut Oled<'static>> = match i2c_bus {
+        Some(bus) => match Oled::new(I2cDevice::new(bus)).await {
+            Ok(oled) => Some(mk_static!(Oled<'static>, oled)),
+            Err(e) => {
+                warn!("oled: no panel ({e:?}), showing the screen on the console only");
+                None
+            }
+        },
+        None => None,
     };
 
     // No usable record means setup mode, and setup mode never returns. It is
@@ -240,7 +260,13 @@ async fn main(spawner: Spawner) -> ! {
     // The store goes to the ui task, which is the only writer a configured unit
     // has: the knob's settings save through it, and the factory reset erases
     // through it.
-    let store = mk_static!(Store, store);
+    //
+    // Shared behind a lock, because the schedule task writes through it too:
+    // a schedule command is stored before it is put in force. The meals are
+    // read here, once, before either task can write.
+    let mut store = store;
+    let meals = load_schedule(&mut store);
+    let store = mk_static!(SharedStore, SharedStore::new(store));
     let calibration = Calibration {
         portion_scale_pct: cfg.portion_scale_pct,
         detent_ms: cfg.detent_ms,
@@ -259,7 +285,10 @@ async fn main(spawner: Spawner) -> ! {
         motor_sleep_pin!(peripherals),
     );
     spawner.spawn(feeder_task(motor, cfg).expect("failed to create feeder task"));
-    spawner.spawn(schedule_task().expect("failed to create schedule task"));
+    spawner.spawn(schedule_task(store, meals).expect("failed to create schedule task"));
+    if let Some(bus) = i2c_bus {
+        spawner.spawn(rtc_task(Rtc::new(I2cDevice::new(bus))).expect("failed to create rtc task"));
+    }
     // `None` for setup: a configured unit has no setup network to describe.
     // What it has instead is a configuration, which the info pages show.
     let unit = UnitInfo {
@@ -498,77 +527,39 @@ async fn reset_held_at_boot(button: &Switch<'static>) -> bool {
 /// is a fixed deadline rather than a fresh 20 ms after every wake, so a knob
 /// spun fast cannot starve the click of samples.
 #[embassy_executor::task]
-async fn ui_task(button: Switch<'static>, store: &'static mut Store, calibration: Calibration) {
+async fn ui_task(button: Switch<'static>, store: &'static SharedStore, calibration: Calibration) {
     const TICK: Duration = Duration::from_millis(20);
-    /// Consecutive equal samples before a level is believed: 40 ms.
-    const STABLE: u8 = 2;
 
     let mut menu = Menu::new(calibration);
-    let mut settled = button.is_pressed();
-    let mut candidate = settled;
-    let mut stable: u8 = 0;
+    menu.set_now(BUS.now.get());
+    let mut click = Click::new(button.is_pressed());
     let mut next_tick = Instant::now() + TICK;
 
     // The level, not just the pin, exactly as `switch_task` reports it. A
     // button stuck at ground is indistinguishable from a working one until the
     // console says which it is, and the boot-gesture line only appears when the
     // pin already reads pressed — so a fault looks like silence.
-    info!(
-        "button: watching {}, currently {}",
-        cat_feeder::board::BUTTON_PIN,
-        if settled { "pressed" } else { "released" }
-    );
+    log_button_level(click.settled);
 
+    // Only the waiting lives in this frame. Everything an input means is
+    // decided in `ui_input`, out of line, so the menu's outcomes and their
+    // temporaries are never held across an `.await` — an async task's frame
+    // lasts as long as the task, and this one kept outgrowing its budget.
     loop {
-        let outcome = match select(Timer::at(next_tick), TURNS.receive()).await {
+        let input = match select(Timer::at(next_tick), TURNS.receive()).await {
             Either::First(()) => {
                 next_tick += TICK;
-                let now = now_ms();
-
-                let level = button.is_pressed();
-                if level == candidate {
-                    stable = stable.saturating_add(1);
-                } else {
-                    candidate = level;
-                    stable = 1;
-                }
-
-                let mut outcome = None;
-                if candidate != settled && stable >= STABLE {
-                    settled = candidate;
-
-                    // Any press wakes the screen, whatever the menu makes of
-                    // it. Deliberately on the press rather than the release,
-                    // so the panel is already lit by the time a finger lifts.
-                    if settled {
-                        BUS.last_press.set(now);
-                    }
-                    outcome = menu.on_change(now, settled);
-                }
-
-                // Time-driven: a hold unlocks while still held, and the window
-                // lapses with nothing touched. Neither is an edge.
-                outcome.or_else(|| menu.poll(now))
+                UiInput::Tick(button.is_pressed())
             }
-            Either::Second(steps) => {
-                let now = now_ms();
-                // Whether the panel was lit *before* this turn, which decides
-                // whether the turn steps a page or only wakes the screen.
-                let awake = display::awake(Status::of(BUS.health()), now, BUS.last_press.get());
-                BUS.last_press.set(now);
-                menu.on_turn(now, steps, awake)
-            }
+            Either::Second(steps) => UiInput::Turn(steps),
         };
 
-        BUS.button_armed
-            .store(menu.is_unlocked(), Ordering::Relaxed);
-
-        if let Some(outcome) = outcome {
-            if let MenuOutcome::Save { field, value } = outcome {
-                apply_save(&mut menu, store, field, value);
-            } else if on_menu(outcome, store) {
-                // Only the factory reset restarts. Long enough for the
-                // console line to leave the USB buffer first.
+        // Only the two outcomes that write flash come back, because only they
+        // need the store's lock, which is an `.await`.
+        if let Some(outcome) = ui_input(&mut menu, &mut click, input) {
+            if with_store(&mut menu, &mut *store.lock().await, outcome) {
+                // Only the factory reset restarts. Long enough for the console
+                // line to leave the USB buffer.
                 Timer::after(Duration::from_millis(250)).await;
                 esp_hal::system::software_reset();
             }
@@ -578,15 +569,123 @@ async fn ui_task(button: Switch<'static>, store: &'static mut Store, calibration
     }
 }
 
-/// Carries out what the menu decided, and says so. True means restart now.
+/// What woke the ui task.
+enum UiInput {
+    /// The 20 ms tick, with the click's level sampled on it.
+    Tick(bool),
+    /// The knob moved this many detents.
+    Turn(i8),
+}
+
+/// The click's debounce: consecutive equal samples before a level is believed.
+struct Click {
+    settled: bool,
+    candidate: bool,
+    stable: u8,
+}
+
+impl Click {
+    /// 40 ms at the 20 ms tick.
+    const STABLE: u8 = 2;
+
+    fn new(level: bool) -> Self {
+        Self {
+            settled: level,
+            candidate: level,
+            stable: 0,
+        }
+    }
+
+    /// A fresh sample. Returns the new settled level when it changes.
+    fn sample(&mut self, level: bool) -> Option<bool> {
+        if level == self.candidate {
+            self.stable = self.stable.saturating_add(1);
+        } else {
+            self.candidate = level;
+            self.stable = 1;
+        }
+        if self.candidate != self.settled && self.stable >= Self::STABLE {
+            self.settled = self.candidate;
+            return Some(self.settled);
+        }
+        None
+    }
+}
+
+/// Everything one input means, carried out. Returns an outcome only if it
+/// needs the store — see `ui_task`.
+#[inline(never)]
+fn ui_input(menu: &mut Menu, click: &mut Click, input: UiInput) -> Option<MenuOutcome> {
+    let now = now_ms();
+    let outcome = match input {
+        UiInput::Tick(level) => {
+            let mut outcome = None;
+            if let Some(pressed) = click.sample(level) {
+                // Any press wakes the screen, whatever the menu makes of it.
+                // Deliberately on the press rather than the release, so the
+                // panel is already lit by the time a finger lifts.
+                if pressed {
+                    BUS.last_press.set(now);
+                }
+                outcome = menu.on_change(now, pressed);
+            }
+            // Time-driven: a hold unlocks while still held, and the window
+            // lapses with nothing touched. Neither is an edge.
+            outcome.or_else(|| menu.poll(now))
+        }
+        UiInput::Turn(steps) => {
+            // Whether the panel was lit *before* this turn, which decides
+            // whether the turn steps a page or only wakes the screen.
+            let awake = display::awake(Status::of(BUS.health()), now, BUS.last_press.get());
+            BUS.last_press.set(now);
+            menu.on_turn(now, steps, awake)
+        }
+    };
+    // A calibration run reports from the feeder task; picked up on the next
+    // tick, which at 20 ms is far finer than a detent.
+    let outcome = outcome.or_else(|| calibration_news(menu));
+
+    BUS.button_armed
+        .store(menu.is_unlocked(), Ordering::Relaxed);
+    // For the next input: the clock editor opens on the time now.
+    menu.set_now(BUS.now.get());
+
+    let outcome = outcome?;
+    if matches!(
+        outcome,
+        MenuOutcome::Save { .. } | MenuOutcome::FactoryReset
+    ) {
+        return Some(outcome);
+    }
+    on_menu(outcome);
+    BUS.mode.set(menu.mode());
+    BUS.redraw.signal(());
+    None
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_button_level(pressed: bool) {
+    info!(
+        "button: watching {}, currently {}",
+        cat_feeder::board::BUTTON_PIN,
+        if pressed { "pressed" } else { "released" }
+    );
+}
+
+/// Carries out what the menu decided, and says so.
 ///
 /// See [`log_start`] for why this is a separate, never-inlined function.
 #[inline(never)]
-fn on_menu(outcome: MenuOutcome, store: &mut Store) -> bool {
+fn on_menu(outcome: MenuOutcome) {
     match outcome {
-        // Handled by `apply_save` before this is reached.
-        MenuOutcome::Save { .. } => {}
-        MenuOutcome::FactoryReset => return factory_reset(store),
+        // Both need the store, and are handled in `ui_task` with its lock.
+        MenuOutcome::Save { .. } | MenuOutcome::FactoryReset => {}
+        MenuOutcome::SetClock(wall) => set_clock(wall),
+        MenuOutcome::StartCalibration => {
+            BUS.calibrate.signal(());
+            info!("menu: calibration started");
+        }
         MenuOutcome::Unlocked => info!("menu: unlocked, turn to choose, tap to run"),
         // The two ways back to locked, named apart on purpose: one is a
         // decision and the other is ten seconds passing, and a console that
@@ -602,7 +701,25 @@ fn on_menu(outcome: MenuOutcome, store: &mut Store) -> bool {
         },
         MenuOutcome::TogglePause => toggle_pause(),
     }
-    false
+}
+
+/// The knob set the time: to the schedule's clock, and to the RTC behind it.
+///
+/// Both through the paths a live `feeder/time` takes, stamped now, so there is
+/// no second way for a time to enter the unit. `Manual` behaves as `Live` does
+/// — it arms and it overrides — and the RTC task writes it because it differs
+/// from what the chip holds. Home Assistant's next live time, if there is one,
+/// still has the last word.
+#[inline(never)]
+fn set_clock(wall: Wall) {
+    let sync = TimeSync {
+        monotonic_ms: now_ms(),
+        wall,
+        source: TimeSource::Manual,
+    };
+    BUS.time.signal(sync);
+    BUS.rtc_time.signal(sync);
+    info!("menu: clock set by hand to {wall}");
 }
 
 /// Applied locally at once, so the schedule stops now and the menu's label
@@ -619,13 +736,28 @@ fn toggle_pause() {
     );
 }
 
-/// The same erase the boot gesture does, so the unit comes back up in setup
-/// mode by the one path that already exists. True means restart now.
+/// The menu outcomes that write flash. True means restart now.
+#[inline(never)]
+fn with_store(menu: &mut Menu, store: &mut Store, outcome: MenuOutcome) -> bool {
+    match outcome {
+        MenuOutcome::Save { field, value } => {
+            apply_save(menu, store, field, value);
+            false
+        }
+        MenuOutcome::FactoryReset => factory_reset(store),
+        _ => false,
+    }
+}
+
+/// Everything the unit was told: credentials, calibration and meals. It comes
+/// back up in setup mode by the one path that already exists. Wider than the
+/// boot gesture's erase, which keeps the meals — see `store.rs`. True means
+/// restart now.
 #[inline(never)]
 fn factory_reset(store: &mut Store) -> bool {
-    match store.erase() {
+    match store.erase_all() {
         Ok(()) => {
-            warn!("menu: configuration erased, restarting into setup");
+            warn!("menu: configuration and meals erased, restarting into setup");
             true
         }
         Err(e) => {
@@ -700,8 +832,10 @@ fn log_moved(mode: MenuMode) {
         MenuMode::Settings { item } => (
             "settings, cursor on",
             match item {
+                Setting::Clock => "clock",
                 Setting::PortionScale => "portion",
                 Setting::Detent => "detent",
+                Setting::Calibrate => "calibrate",
                 Setting::Reset => "reset",
                 Setting::Back => "back",
             },
@@ -715,8 +849,43 @@ fn log_moved(mode: MenuMode) {
             return;
         }
         MenuMode::ConfirmReset { erase } => ("reset?", if erase { "erase" } else { "keep" }),
+        MenuMode::SettingClock(edit) => return log_clock_edit(edit),
+        MenuMode::ConfirmCalibrate { start } => {
+            ("calibrate?", if start { "start" } else { "keep" })
+        }
+        MenuMode::Calibrating { clicks } => return log_calibrating(clicks),
+        // `calibrate:` already logged what the run measured.
+        MenuMode::Calibrated(_) => ("calibration", "shown"),
     };
     info!("menu: {what} {name}");
+}
+
+/// Out of [`log_moved`], whose frame the formatting would otherwise push over
+/// the stack budget.
+#[inline(never)]
+fn log_clock_edit(edit: ClockEdit) {
+    info!(
+        "menu: clock {:04}-{:02}-{:02} {:02}:{:02}, on the {:?}",
+        edit.year, edit.month, edit.day, edit.hour, edit.minute, edit.field
+    );
+}
+
+/// See [`log_clock_edit`].
+#[inline(never)]
+fn log_calibrating(clicks: u8) {
+    info!("menu: calibrating, click {clicks}");
+}
+
+/// Progress or the end of a calibration run, handed to the menu.
+#[inline(never)]
+fn calibration_news(menu: &mut Menu) -> Option<MenuOutcome> {
+    let now = now_ms();
+    if let Some(result) = BUS.calibration_result.try_take() {
+        return menu.calibration_finished(now, result);
+    }
+    BUS.calibration_clicks
+        .try_take()
+        .and_then(|clicks| menu.calibration_progress(now, clicks))
 }
 
 /// Turns of the knob, from the task sampling it to the one that decides.
@@ -927,13 +1096,22 @@ async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
                 // it means the hub was turned by hand — possible, but it takes
                 // real effort against the gear reduction — or that the switch
                 // is noisy. Either is worth seeing.
-                let portions = match select(BUS.feed.receive(), CLICKS.receive()).await {
-                    Either::First(portions) => portions,
-                    Either::Second(()) => {
-                        info!("feed: click while idle, nothing was feeding");
-                        continue;
-                    }
-                };
+                let portions =
+                    match select3(BUS.feed.receive(), CLICKS.receive(), BUS.calibrate.wait()).await
+                    {
+                        Either3::First(portions) => portions,
+                        Either3::Second(()) => {
+                            info!("feed: click while idle, nothing was feeding");
+                            continue;
+                        }
+                        // Only ever started from idle, so a run never shares the
+                        // motor with a meal. Feed requests arriving meanwhile wait
+                        // in the queue and run after it.
+                        Either3::Third(()) => {
+                            calibrate(&mut motor, feeder.is_jammed()).await;
+                            continue;
+                        }
+                    };
 
                 // Before the request, so a meal asked for after the knob saved a
                 // new scale is counted at it. Idle here, so it always applies.
@@ -1019,6 +1197,55 @@ fn log_calibration(timings: Timings, portion_scale_pct: u16) {
     );
 }
 
+/// One calibration run: turn, time the clicks, brake, report.
+///
+/// Deliberately outside `feeder::Feeder`, and without its rules. The minimum
+/// click spacing and the jam budget are both derived from the detent interval
+/// this run is measuring, so a badly wrong current figure could reject real
+/// clicks or call a slow mechanism jammed. Only the 30 ms debounce, which is
+/// the switch task's, and a fixed generous jam limit apply. See `calibrate.rs`.
+///
+/// Nothing here is a meal: no `last_fed`, and the schedule never hears of it.
+/// The state payload does show `feeding`, because the motor is turning.
+async fn calibrate(motor: &mut Drv8833<'static>, jammed: bool) {
+    let mut run = CalibrationRun::new();
+    BUS.status.set(true, jammed);
+    motor.run_forward();
+
+    while !run.done() {
+        match select(
+            CLICKS.receive(),
+            Timer::after_millis(cat_feeder::calibrate::JAM_MS),
+        )
+        .await
+        {
+            Either::First(()) => {
+                let clicks = run.on_click(now_ms());
+                BUS.calibration_clicks.signal(clicks as u8);
+            }
+            Either::Second(()) => break,
+        }
+    }
+
+    motor.brake();
+    BUS.status.set(false, jammed);
+    let result = run.result();
+    log_calibration_run(result);
+    BUS.calibration_result.signal(result);
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_calibration_run(result: Result<Measurement, CalibrationFailure>) {
+    match result {
+        Ok(m) => info!(
+            "calibrate: detent {} ms (gaps {}-{} ms)",
+            m.detent_ms, m.fastest_ms, m.slowest_ms
+        ),
+        Err(e) => warn!("calibrate: failed, {e:?}"),
+    }
+}
+
 /// Kept out of `feeder_task` and never inlined.
 ///
 /// Every `info!` site contributes its formatting temporaries to the enclosing
@@ -1042,32 +1269,42 @@ fn log_start(portions: u8, switch_pressed: bool) {
 /// This task applies whatever `mqtt` last heard from the broker, asks once a
 /// second whether anything is due, and forwards the answer to the feeder.
 #[embassy_executor::task]
-async fn schedule_task() {
+async fn schedule_task(store: &'static SharedStore, meals: Option<Schedule>) {
     let mut clock = LocalClock::new();
     let mut scheduler = Scheduler::new();
     let mut waiting_logged = false;
 
+    // What flash held at boot. `None` leaves the scheduler without a schedule
+    // at all, which is what a new unit is: it never feeds, and the panel and
+    // the state payload say so, until it is given one.
+    if let Some(schedule) = meals {
+        BUS.held.set(schedule.clone());
+        scheduler.set_schedule(schedule);
+    }
+
     loop {
         if let Some(sync) = BUS.time.try_take() {
             let alignment = clock.align(sync.monotonic_ms, sync.wall, sync.source);
-            log_alignment(alignment, sync.wall);
+            log_alignment(alignment, sync.wall, sync.source);
         }
 
         if let Some(schedule) = BUS.schedule.try_take() {
-            info!("schedule: {} slots", schedule.len());
-            scheduler.set_schedule(schedule);
+            accept_schedule(&mut scheduler, store, schedule).await;
         }
 
-        // Armed means a *live* time has arrived, not merely that the clock is
-        // running. A unit holding on a retained time will not feed, and this is
-        // the only thing that says so outside the serial console.
+        // Armed means the clock is trusted — a live time, a DS3231 that kept
+        // time, or one set by hand — not merely that it is running. A unit
+        // holding on a retained time will not feed, and this is the only thing
+        // that says so outside the serial console.
         BUS.net.set_armed(clock.is_trusted());
 
-        // No trustworthy time means no schedule. A unit power-cycled while the
-        // broker was down waits to be told; so does one handed only a retained
-        // time, which may be whatever Home Assistant published before it
-        // stopped. Both wait; neither guesses.
-        match clock.now(now_ms()).filter(|_| clock.is_trusted()) {
+        // No trustworthy time means no schedule. A unit power-cycled with no
+        // broker and an RTC that lost its time waits to be told; so does one
+        // handed only a retained time, which may be whatever Home Assistant
+        // published before it stopped. Both wait; neither guesses.
+        let trusted_now = clock.now(now_ms()).filter(|_| clock.is_trusted());
+        BUS.now.set(trusted_now);
+        match trusted_now {
             None => {
                 if !waiting_logged {
                     info!("clock: no trusted time yet, schedule holding");
@@ -1078,6 +1315,61 @@ async fn schedule_task() {
         }
 
         Timer::after(SCHEDULE_TICK).await;
+    }
+}
+
+/// A schedule command: store it, then put it in force, then echo it.
+///
+/// Flash first, so what the unit acts on is what it would come back up with.
+/// A failed write still puts it in force — the command is the latest word on
+/// what the cats should eat, and following it in RAM beats ignoring it — but
+/// says loudly that a reboot would lose it.
+///
+/// An unchanged schedule is not rewritten: the same broadcast sent twice, or
+/// to every unit when only one needed it, costs no flash erase.
+async fn accept_schedule(
+    scheduler: &mut Scheduler,
+    store: &'static SharedStore,
+    schedule: Schedule,
+) {
+    if BUS.held.get().as_ref() == Some(&schedule) {
+        info!("schedule: {} slots, unchanged", schedule.len());
+        return;
+    }
+    let stored = store.lock().await.save_schedule(&schedule);
+    log_schedule_stored(schedule.len(), stored);
+    BUS.held.set(schedule.clone());
+    scheduler.set_schedule(schedule);
+    BUS.schedule_changed.signal(());
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_schedule_stored(slots: usize, stored: Result<(), StoreError>) {
+    match stored {
+        Ok(()) => info!("schedule: {slots} slots, stored"),
+        Err(e) => {
+            warn!("schedule: {slots} slots in force, but not stored ({e:?}); a reboot loses them")
+        }
+    }
+}
+
+/// The schedule in flash at boot, and a line saying what it was.
+#[inline(never)]
+fn load_schedule(store: &mut Store) -> Option<Schedule> {
+    match store.load_schedule() {
+        Ok(schedule) => {
+            info!("schedule: {} slots from flash", schedule.len());
+            Some(schedule)
+        }
+        Err(ScheduleRecordError::NotStored) => {
+            info!("schedule: none stored; this unit will not feed until given one");
+            None
+        }
+        Err(ScheduleRecordError::Corrupt) => {
+            warn!("schedule: stored record is unreadable; not feeding until given a new one");
+            None
+        }
     }
 }
 
@@ -1181,10 +1473,27 @@ fn redraw(
     setup: Option<SetupInfo<'static>>,
     unit: Option<UnitInfo<'static>>,
 ) -> bool {
+    let screen = current_screen(setup, unit);
+
+    // Only on a change, exactly as the LED does. A screen logged every second
+    // would bury every other line on the console, and the interesting thing
+    // about a screen is when it changes anyway.
+    if shown.as_ref() == Some(&screen) {
+        return false;
+    }
+    log_screen(&screen);
+    *shown = Some(screen);
+    true
+}
+
+/// The screen as things stand, built in its own frame so the `View` it is
+/// rendered from never shares one with the screen being compared.
+#[inline(never)]
+fn current_screen(setup: Option<SetupInfo<'static>>, unit: Option<UnitInfo<'static>>) -> Screen {
     // One snapshot, read for several fields: sampling `BUS.health()` again
     // could straddle a change and render a screen no single instant produced.
     let health = BUS.health();
-    let screen = display::render(&View {
+    display::render(&View {
         status: Status::of(health),
         // Constant for the life of setup mode, so this renders the same screen
         // every tick and pushes none of it after the first.
@@ -1203,17 +1512,9 @@ fn redraw(
         },
         unit,
         calibration: BUS.calibration.get(),
-    });
-
-    // Only on a change, exactly as the LED does. A screen logged every second
-    // would bury every other line on the console, and the interesting thing
-    // about a screen is when it changes anyway.
-    if shown.as_ref() == Some(&screen) {
-        return false;
-    }
-    log_screen(&screen);
-    *shown = Some(screen);
-    true
+        now: BUS.now.get(),
+        no_meals: BUS.held.meals() == 0,
+    })
 }
 
 /// How often the screen is rebuilt.
@@ -1251,9 +1552,9 @@ const SCHEDULE_TICK: Duration = Duration::from_secs(1);
 /// broken: an automation publishing `utcnow()` instead of `now()` would still
 /// look like a valid time while moving every meal by the offset.
 #[inline(never)]
-fn log_alignment(alignment: Alignment, wall: Wall) {
+fn log_alignment(alignment: Alignment, wall: Wall, source: TimeSource) {
     if alignment.armed_now {
-        info!("clock: live time {wall}, schedule armed");
+        log_armed(wall, source);
         return;
     }
 
@@ -1262,13 +1563,29 @@ fn log_alignment(alignment: Alignment, wall: Wall) {
         // Worth a line of its own. Until a live message lands, this unit is
         // running but will not feed on schedule, and nothing else says so.
         Change::Started => info!("clock: started, {wall} (retained; waiting for a live time)"),
-        Change::IgnoredStale => info!("clock: ignored a retained time, still on the live one"),
+        // Retained, or an RTC read after a live time: either way the clock is
+        // already trusted and stays where it is.
+        Change::IgnoredStale => info!("clock: ignored a stale time, keeping the trusted one"),
         // Home Assistant republishes every minute, so a second or two of drift
         // is the normal state of affairs and not worth a line each time. The
         // first alignment after boot is usually larger: it is the age of the
         // retained message the unit started from, not the crystal.
         Change::Adjusted { drift_s } if drift_s.abs() < 2 => {}
         Change::Adjusted { drift_s } => info!("clock: aligned, drift={drift_s}s"),
+    }
+}
+
+/// Which source first armed the schedule, named apart, because "armed from the
+/// RTC" and "armed from Home Assistant" mean different things about the house:
+/// the first is a unit feeding without anybody publishing the time.
+///
+/// Out of [`log_alignment`] to keep both frames inside the stack budget.
+#[inline(never)]
+fn log_armed(wall: Wall, source: TimeSource) {
+    match source {
+        TimeSource::Rtc => info!("clock: RTC time {wall}, schedule armed"),
+        TimeSource::Manual => info!("clock: set by hand to {wall}, schedule armed"),
+        _ => info!("clock: live time {wall}, schedule armed"),
     }
 }
 
@@ -1363,6 +1680,104 @@ fn dhcp_config() -> embassy_net::DhcpConfig {
     let mut config = embassy_net::DhcpConfig::default();
     config.retry_config.discover_timeout = smoltcp::time::Duration::from_secs(2);
     config
+}
+
+/// Reports what the DS3231 holds, and keeps it set from live `feeder/time`.
+///
+/// At boot, a trustworthy reading — oscillator never stopped since it was set
+/// — goes to the schedule task as a [`TimeSource::Rtc`] time, which arms the
+/// schedule without waiting for Home Assistant. A reading with `OSF` set is
+/// reported and otherwise ignored.
+///
+/// Writes only when `ds3231::needs_set` says so — not trustworthy, or more
+/// than its tolerance out — so a healthy clock is read once a minute and
+/// written once. Live times only — see `Bus::rtc_time`.
+#[embassy_executor::task]
+async fn rtc_task(mut rtc: Rtc<'static>) {
+    match rtc.read().await {
+        Ok(reading) => {
+            log_rtc_reading(reading);
+            // A clock that never stopped since a live time set it arms the
+            // schedule, so a reboot with Home Assistant down still feeds. The
+            // reading is stamped now, as `mqtt.rs` stamps a message on
+            // arrival. See `TimeSource::Rtc`.
+            if let Some(wall) = reading.trustworthy() {
+                BUS.time.signal(TimeSync {
+                    monotonic_ms: now_ms(),
+                    wall,
+                    source: TimeSource::Rtc,
+                });
+            }
+        }
+        Err(e) => {
+            log_rtc_error("nothing answered; running without one", e);
+            return;
+        }
+    }
+
+    let mut clock = LocalClock::new();
+    loop {
+        let sync = BUS.rtc_time.wait().await;
+        clock.align(sync.monotonic_ms, sync.wall, TimeSource::Live);
+        let Some(now) = clock.now(now_ms()) else {
+            continue;
+        };
+
+        let reading = match rtc.read().await {
+            Ok(reading) => reading,
+            Err(e) => {
+                log_rtc_error("read failed", e);
+                continue;
+            }
+        };
+
+        if !cat_feeder::ds3231::needs_set(&reading, now) {
+            continue;
+        }
+        let drift = reading.trustworthy().map(|held| seconds_between(now, held));
+
+        match rtc.set(now).await {
+            Ok(()) => log_rtc_set(now, drift),
+            Err(e) => log_rtc_error("could not set it", e),
+        }
+    }
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_rtc_reading(reading: RtcReading) {
+    let t = reading.temperature_q;
+    let temp_whole = t.div_euclid(4);
+    let temp_frac = t.rem_euclid(4) * 25;
+    match reading.wall {
+        Some(wall) => info!(
+            "rtc: DS3231 holds {wall}, {}, {temp_whole}.{temp_frac:02} C",
+            if reading.stopped {
+                "oscillator stopped since last set: not trusted"
+            } else {
+                "running since last set"
+            }
+        ),
+        None => warn!("rtc: DS3231 registers are not a date, {temp_whole}.{temp_frac:02} C"),
+    }
+    if reading.stops_on_battery {
+        warn!("rtc: EOSC is set, so it will stop on the coin cell; cleared on the next set");
+    }
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_rtc_error(what: &str, e: cat_feeder::rtc::Error) {
+    warn!("rtc: {what} ({e:?})");
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_rtc_set(now: Wall, drift: Option<i64>) {
+    match drift {
+        None => info!("rtc: set to {now}, it had no trustworthy time"),
+        Some(d) => info!("rtc: set to {now}, it was {d}s out"),
+    }
 }
 
 /// Keeps the station associated, retrying forever. Losing Wi-Fi is normal.

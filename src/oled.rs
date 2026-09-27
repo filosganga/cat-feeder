@@ -34,11 +34,10 @@ use embedded_graphics::mono_font::ascii::FONT_6X10;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::text::{Baseline, Text};
-use esp_hal::gpio::interconnect::{PeripheralInput, PeripheralOutput};
-use esp_hal::i2c::master::{Config, I2c};
-use esp_hal::time::Rate;
-use esp_hal::{Async, peripherals};
+use embedded_hal_async::i2c::I2c as _;
 use log::{info, warn};
+
+use crate::i2c::Device;
 // The async half of the crate, which `maybe-async-cfg` generates as a parallel
 // set of `*Async` items: the blocking names are kept (`sync(keep_self)`) and the
 // async ones are suffixed. The concrete sizes are the exception -- `size.rs:76`
@@ -50,11 +49,6 @@ use ssd1306::{I2CDisplayInterface, Ssd1306Async};
 
 /// The two addresses an SSD1306 can be strapped to. Probed in this order.
 pub const ADDRESSES: [u8; 2] = [0x3C, 0x3D];
-
-/// 400 kHz. The panel handles it, and it is four times less time on the wire
-/// than the 100 kHz default — which matters because every millisecond here is a
-/// millisecond the I²C peripheral is busy.
-const BUS_HZ: u32 = 400;
 
 /// Row height of `FONT_6X10`. Six of them fill a 128×64 panel with 4 px over.
 const LINE_H: i32 = 10;
@@ -71,13 +65,11 @@ type PanelSize = DisplaySize128x64;
 const PANEL: PanelSize = DisplaySize128x64;
 
 type Panel<'d> =
-    Ssd1306Async<I2CInterface<I2c<'d, Async>>, PanelSize, BufferedGraphicsModeAsync<PanelSize>>;
+    Ssd1306Async<I2CInterface<Device<'d>>, PanelSize, BufferedGraphicsModeAsync<PanelSize>>;
 
 /// Why a panel could not be brought up.
 #[derive(Debug)]
 pub enum Error {
-    /// The I²C peripheral itself would not configure.
-    Bus(esp_hal::i2c::master::ConfigError),
     /// Nothing ACKed on either address. Usually no panel wired, the two lines
     /// swapped, or a module whose I²C jumpers were never closed.
     NotFound,
@@ -90,25 +82,12 @@ pub struct Oled<'d> {
     style: MonoTextStyle<'static, BinaryColor>,
 }
 
-impl Oled<'static> {
+impl<'d> Oled<'d> {
     /// Brings up the panel, probing both addresses.
     ///
-    /// Takes the pins rather than a built bus, so the whole I²C setup lives
-    /// here and `main.rs` stays wiring.
-    pub async fn new(
-        i2c: peripherals::I2C0<'static>,
-        sda: impl PeripheralInput<'static> + PeripheralOutput<'static>,
-        scl: impl PeripheralInput<'static> + PeripheralOutput<'static>,
-    ) -> Result<Self, Error> {
-        let mut bus = I2c::new(
-            i2c,
-            Config::default().with_frequency(Rate::from_khz(BUS_HZ)),
-        )
-        .map_err(Error::Bus)?
-        .with_sda(sda)
-        .with_scl(scl)
-        .into_async();
-
+    /// Takes a handle on the shared bus rather than the bus, because the RTC
+    /// is on the same two wires. See `i2c.rs`.
+    pub async fn new(mut bus: Device<'d>) -> Result<Self, Error> {
         let address = probe(&mut bus).await.ok_or(Error::NotFound)?;
         info!("oled: found a panel at {address:#04x}");
 
@@ -201,12 +180,12 @@ impl Oled<'static> {
 /// A one-byte write of `0x00` — the SSD1306's command prefix, and a no-op the
 /// panel is happy to receive. What is being tested is the address phase, not
 /// the payload: a device that is not there never ACKs and the write errors.
-async fn probe(bus: &mut I2c<'static, Async>) -> Option<u8> {
-    // esp-hal's *inherent* async method (src/i2c/master/mod.rs:987), not the
-    // embedded-hal-async trait. The inherent blocking `write` would otherwise
-    // win name resolution and quietly stall the executor for the probe.
+async fn probe(bus: &mut Device<'_>) -> Option<u8> {
+    // The embedded-hal-async trait's `write`, through the shared-bus handle —
+    // which is async all the way down, unlike the raw peripheral, whose
+    // inherent blocking `write` used to win name resolution here.
     for address in ADDRESSES {
-        if bus.write_async(address, &[0x00]).await.is_ok() {
+        if bus.write(address, &[0x00]).await.is_ok() {
             return Some(address);
         }
     }
