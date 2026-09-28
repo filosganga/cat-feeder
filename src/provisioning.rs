@@ -762,7 +762,13 @@ viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐱</text></svg>\">";
 /// page that outgrew this would reach the phone truncated mid-tag with a
 /// `Content-Length` agreeing with the truncation — a blank form and nothing on
 /// the console.
-pub const PAGE_LEN: usize = 8192;
+///
+/// 12 KB rather than the setup form's 8: the admin page shares the buffer —
+/// see `http::slots` — and carries the timezone script inline, and
+/// `admin::tests::the_widest_possible_page_still_fits` holds it to 90% of
+/// this. Three connections make that 36 KB of static RAM, reserved on every
+/// boot whichever server runs.
+pub const PAGE_LEN: usize = 12 * 1024;
 
 /// The page, with whatever was last typed still in the boxes.
 ///

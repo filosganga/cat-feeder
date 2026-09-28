@@ -6,8 +6,8 @@
 use embedded_hal_async::i2c::I2c as _;
 
 use crate::ds3231::{
-    self, ADDRESS, CONTROL_REG, REGISTERS, Reading, TIME_REG, cleared_status, encode_time,
-    running_control,
+    self, ADDRESS, CONTROL_REG, OFFSET_REG, REGISTERS, Reading, TIME_REG, cleared_status,
+    encode_offset, encode_time, running_control,
 };
 use crate::i2c::Device;
 use crate::schedule::Wall;
@@ -39,8 +39,8 @@ impl<'d> Rtc<'d> {
         Ok(ds3231::decode(&regs))
     }
 
-    /// Sets the time, and clears `OSF` and `EOSC` so the chip both admits to
-    /// being set and keeps running on its coin cell.
+    /// Sets the time and the offset it is in, and clears `OSF` and `EOSC` so
+    /// the chip both admits to being set and keeps running on its coin cell.
     ///
     /// Time first, flags second: clearing `OSF` is the claim that the time is
     /// good, so it must not land before the time does.
@@ -52,6 +52,12 @@ impl<'d> Rtc<'d> {
         write[1..].copy_from_slice(&time);
         self.bus
             .write(ADDRESS, &write)
+            .await
+            .map_err(|_| Error::Bus)?;
+
+        let [a, b, c] = encode_offset(wall.offset_minutes);
+        self.bus
+            .write(ADDRESS, &[OFFSET_REG, a, b, c])
             .await
             .map_err(|_| Error::Bus)?;
 

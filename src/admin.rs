@@ -53,6 +53,7 @@ use crate::provisioning::{
 use crate::schedule::{
     Date, EditError, MAX_SLOTS, Schedule, Slot, SlotChange, SlotEdit, Wall, parse_slot_time,
 };
+use crate::tz::{Offset, Zone, ZoneError};
 
 // ---------------------------------------------------------------------------
 // Who may
@@ -325,6 +326,39 @@ pub fn clock_from_form(body: &str) -> Result<Wall, &'static str> {
     })
 }
 
+/// What `POST /clock` asks for: a time, a timezone, or both. Either may be
+/// absent — the time box empty, or a browser without the script that fills
+/// the timezone list — and an absent one is left as it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockForm {
+    pub at: Option<Wall>,
+    pub zone: Option<Zone>,
+}
+
+pub fn clock_form(body: &str) -> Result<ClockForm, &'static str> {
+    let present = |name| {
+        field::<64>(body, name)
+            .ok()
+            .flatten()
+            .filter(|v| !v.trim().is_empty())
+    };
+    let at = match present("at") {
+        Some(_) => Some(clock_from_form(body)?),
+        None => None,
+    };
+    let zone = match present("zone") {
+        None => None,
+        Some(name) => {
+            let rule = present("rule").ok_or("That timezone came with no rule.")?;
+            Some(Zone::new(&name, &rule).map_err(|e| match e {
+                ZoneError::BadName | ZoneError::TooLong => "That is not a timezone name.",
+                ZoneError::BadRule(_) => "The timezone rule is not one this feeder can follow.",
+            })?)
+        }
+    };
+    Ok(ClockForm { at, zone })
+}
+
 /// The calibration `POST /calibration` asks for, on top of `current`: either
 /// figure may be absent, which keeps it. Held to the knob's own ranges and
 /// steps, so the page cannot store anything the knob could not.
@@ -378,6 +412,8 @@ pub struct Status<'a> {
     pub calibration: Calibration,
     /// The latest calibration run, whoever started it.
     pub progress: Progress,
+    /// The timezone followed when nobody publishes the time.
+    pub zone: Option<&'a Zone>,
 }
 
 /// The network as it is configured, less its two passwords.
@@ -457,7 +493,7 @@ pub fn render_page(
     render_status(page, status, schedule);
     render_feed(page);
     render_schedule(page, schedule);
-    render_clock(page, status.now);
+    render_clock(page, status.zone);
     render_calibration(page, status.calibration, status.progress);
     render_network(page, network, submitted);
     let _ = page.push_str("</body></html>");
@@ -468,12 +504,24 @@ fn render_status(page: &mut String<PAGE_LEN>, status: &Status, schedule: Option<
     match status.now {
         Some(now) => {
             let _ = write!(page, "{}", Clock(now));
+            if let Some(offset) = now.offset_minutes {
+                let _ = write!(page, " {}", Offset(offset));
+            }
         }
         None => {
             let _ = page.push_str("not set — the schedule is holding");
         }
     }
     let meals = schedule.map_or(0, Schedule::meals);
+    let _ = page.push_str("</dd><dt>Timezone</dt><dd>");
+    match status.zone {
+        Some(zone) => {
+            let _ = write!(page, "{}", Escaped(&zone.name));
+        }
+        None => {
+            let _ = page.push_str("not set — no summer time of its own");
+        }
+    }
     let _ = write!(page, "</dd><dt>Meals</dt><dd>{meals} a day");
     if status.paused {
         let _ = page.push_str(", <b>paused</b>");
@@ -560,31 +608,46 @@ const THIS_DEVICE: &str = "var d=new Date(),p=function(n){return(n<10?'0':'')+n}
 this.form.at.value=d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+'T'+\
 p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());this.form.submit()";
 
-fn render_clock(page: &mut String<PAGE_LEN>, now: Option<Wall>) {
-    let _ = page.push_str(
-        "<h2>Clock</h2><form method=post action=/clock>\
-         <input type=datetime-local step=1 name=at",
-    );
-    if let Some(now) = now {
-        let d = now.date;
-        let s = now.second_of_day;
-        let _ = write!(
-            page,
-            " value={:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            d.year,
-            d.month,
-            d.day,
-            s / 3600,
-            s / 60 % 60,
-            s % 60
-        );
-    }
+/// The timezone list and its rule, worked out in the browser from the tz
+/// data it carries — see `tz.rs` for why the unit never does this itself.
+///
+/// For each zone: scan this year a day at a time for a change of offset,
+/// narrow each change to the minute, and write the two changes as a POSIX
+/// rule, `<+01>-1<+02>,M3.5.0,M10.5.0/3`. A zone with no change is one offset;
+/// one with more than two a year — Ramadan in Morocco — is written as the
+/// offset now, and Home Assistant's live time corrects it when there is one.
+/// Checked in node against every zone a browser lists: all 418 parse in
+/// `tz::Rule::parse` and agree with the browser at 24 instants of the year.
+const RULE_JS: &str = r#"function rule(z){var F=new Intl.DateTimeFormat('en-US',{timeZone:z,hourCycle:'h23',year:'numeric',month:'numeric',day:'numeric',hour:'numeric',minute:'numeric'});function off(t){var g={};F.formatToParts(t).forEach(function(p){g[p.type]=+p.value});return Math.round((Date.UTC(g.year,g.month-1,g.day,g.hour%24,g.minute)-t)/6e4)}function two(n){return(n<10?'0':'')+n}function hm(m){var a=Math.abs(m);return(m<0?'-':'')+Math.floor(a/60)+(a%60?':'+two(a%60):'')}function nm(m){var a=Math.abs(m);return'<'+(m<0?'-':'+')+two(Math.floor(a/60))+(a%60?two(a%60):'')+'>'}function at(t,o){var d=new Date(t+o*6e4),y=d.getUTCFullYear(),mo=d.getUTCMonth(),dd=d.getUTCDate(),n=new Date(Date.UTC(y,mo+1,0)).getUTCDate(),w=dd+7>n?5:Math.ceil(dd/7),m=d.getUTCHours()*60+d.getUTCMinutes();return',M'+(mo+1)+'.'+w+'.'+d.getUTCDay()+(m==120?'':'/'+hm(m))}var D=864e5,y=new Date().getFullYear(),t=Date.UTC(y,0,1),e=Date.UTC(y+1,0,1),o=off(t),c=[];for(;t<e;t+=D){var n=off(t+D);if(n!=o){var a=t,b=t+D;while(b-a>6e4){var m=a+Math.floor((b-a)/12e4)*6e4;if(off(m)==o)a=m;else b=m}c.push([b,o,n]);o=n}}if(c.length!=2)return nm(o)+hm(-o);var lo=Math.min(c[0][1],c[0][2]),hi=Math.max(c[0][1],c[0][2]),s=c[0][2]==hi?c[0]:c[1],f=c[0][2]==hi?c[1]:c[0];return nm(lo)+hm(-lo)+nm(hi)+(hi-lo==60?'':hm(-hi))+at(s[0],s[1])+at(f[0],f[1])}"#;
+
+/// Fills the list, preselects the stored zone or else the browser's own, and
+/// keeps the rule box following the choice. When the browser's rule for the
+/// stored zone differs from the stored one — the law changed — it says so,
+/// and *Set* saves the browser's.
+const ZONE_JS: &str = r#"(function(){var f=document.getElementById('clk'),s=f.zone,r=f.rule,h=document.getElementById('tzh'),cur=s.dataset.cur,me=Intl.DateTimeFormat().resolvedOptions().timeZone,w=cur||me,zs=Intl.supportedValuesOf?Intl.supportedValuesOf('timeZone'):[me];
+if(zs.indexOf(w)<0)zs=zs.concat(w);
+zs.forEach(function(z){s.add(new Option(z,z,false,z==w))});
+function fill(){var v=rule(s.value);h.textContent=!cur?"No timezone yet: Set saves "+s.value+".":s.value==cur&&r.value!=v?"This browser has a newer rule for this zone: Set saves it.":"";r.value=v}
+s.onchange=fill;fill()})();"#;
+
+fn render_clock(page: &mut String<PAGE_LEN>, zone: Option<&Zone>) {
+    let (name, rule) = zone.map_or(("", ""), |z| (z.name.as_str(), z.rule.as_str()));
     let _ = write!(
         page,
-        "> <button type=submit>Set</button> \
-         <button type=button onclick=\"{THIS_DEVICE}\">Use this device's time</button></form>\
-         <p class=hint>Local time, as on the kitchen wall. Home Assistant's time, \
-         when it arrives, still has the last word.</p>"
+        "<h2>Clock</h2><form id=clk method=post action=/clock>\
+         <input type=datetime-local step=1 name=at> \
+         <button type=button onclick=\"{THIS_DEVICE}\">Use this device's time</button>\
+         <label for=zone>Timezone</label><select class=wide id=zone name=zone data-cur=\"{}\"></select>\
+         <p class=hint id=tzh></p>\
+         <details><summary>Advanced</summary><label for=rule>Rule, POSIX <code>TZ</code> format</label>\
+         <input class=wide id=rule name=rule autocapitalize=off autocorrect=off spellcheck=false value=\"{}\"></details>\
+         <button type=submit>Set</button></form>\
+         <p class=hint>Leave the time empty to change only the timezone. Local time, as \
+         on the kitchen wall. The timezone moves the clock for summer time when \
+         nobody tells it the time; Home Assistant's time, when it arrives, still \
+         has the last word.</p><script>{RULE_JS}{ZONE_JS}</script>",
+        Escaped(name),
+        Escaped(rule)
     );
 }
 
@@ -1154,10 +1217,78 @@ mod tests {
         assert!(form.contains("margin:0 auto") && form.contains(FAVICON));
     }
 
+    /// Empty, so saving only a timezone never winds the clock back to the
+    /// moment the page was drawn.
     #[test]
-    fn the_clock_box_opens_on_the_time_now() {
+    fn the_clock_box_starts_empty() {
         let page = render(None, "", None);
-        assert!(page.contains("name=at value=2026-09-28T07:05:00>"));
+        assert!(page.contains("<input type=datetime-local step=1 name=at>"));
+    }
+
+    const ROME: &str = "<+01>-1<+02>,M3.5.0,M10.5.0/3";
+
+    #[test]
+    fn the_clock_form_takes_a_time_a_zone_or_both() {
+        let both = clock_form(&std::format!(
+            "at=2026-09-28T08%3A05&zone=Europe%2FRome&rule={}",
+            ROME.replace('<', "%3C")
+                .replace('>', "%3E")
+                .replace('+', "%2B")
+                .replace(',', "%2C")
+                .replace('/', "%2F")
+        ))
+        .unwrap();
+        assert_eq!(both.at.map(|w| w.second_of_day), Some(8 * 3600 + 5 * 60));
+        assert_eq!(
+            both.zone.as_ref().map(|z| z.name.as_str()),
+            Some("Europe/Rome")
+        );
+        assert_eq!(both.zone.as_ref().map(|z| z.rule.as_str()), Some(ROME));
+
+        let zone_only = clock_form("at=&zone=Asia%2FTokyo&rule=%3C%2B09%3E-9").unwrap();
+        assert_eq!(zone_only.at, None);
+        assert!(zone_only.zone.is_some());
+
+        // No script, so no list: the zone is left alone.
+        let time_only = clock_form("at=2026-09-28T08%3A05").unwrap();
+        assert_eq!(time_only.zone, None);
+    }
+
+    #[test]
+    fn a_zone_it_cannot_follow_is_refused() {
+        assert!(clock_form("zone=Europe%2FRome").is_err());
+        assert!(clock_form("zone=Europe%2FRome&rule=nonsense").is_err());
+        assert!(clock_form("zone=%3Cscript%3E&rule=%3C%2B09%3E-9").is_err());
+    }
+
+    #[test]
+    fn the_page_shows_the_zone_and_preselects_it() {
+        let zone = Zone::new("Europe/Rome", ROME).unwrap();
+        let mut page = String::new();
+        let with_zone = Status {
+            zone: Some(&zone),
+            now: Some(Wall {
+                offset_minutes: Some(120),
+                ..at(7, 5)
+            }),
+            ..status()
+        };
+        render_page(&mut page, &with_zone, None, &network(), "", None);
+        assert!(page.contains("<dt>Timezone</dt><dd>Europe/Rome</dd>"));
+        assert!(page.contains("2026-09-28 07:05 +02:00"));
+        assert!(page.contains("data-cur=\"Europe/Rome\""));
+        assert!(page.contains("value=\"&lt;+01&gt;-1&lt;+02&gt;,M3.5.0,M10.5.0/3\""));
+
+        let page = render(None, "", None);
+        assert!(page.contains("not set — no summer time of its own"));
+        assert!(page.contains("data-cur=\"\""));
+    }
+
+    /// The script is inline, so nothing in it may end the element early.
+    #[test]
+    fn the_script_cannot_close_itself() {
+        assert!(!RULE_JS.contains("</"));
+        assert!(!ZONE_JS.contains("</"));
     }
 
     // ---- the page ----
@@ -1191,6 +1322,7 @@ mod tests {
                 detent_ms: 2_140,
             },
             progress: Progress::None,
+            zone: None,
         }
     }
 
@@ -1302,6 +1434,13 @@ mod tests {
                 .unwrap();
         }
         let amp = "&".repeat(64);
+        // The longest IANA name, and a rule of the longest shape a browser
+        // derives, whose brackets escape to four bytes each.
+        let zone = Zone::new(
+            "America/Argentina/ComodRivadavia",
+            "<+1245>-12:45<+1345>,M9.5.0/2:45,M4.1.0/3:45",
+        )
+        .unwrap();
         let wide = Network {
             wifi_ssid: &amp[..32],
             mqtt_host: &amp,
@@ -1318,6 +1457,7 @@ mod tests {
                 fastest_ms: u64::MAX,
                 slowest_ms: u64::MAX,
             })),
+            zone: Some(&zone),
             ..status()
         };
         let mut page = String::new();

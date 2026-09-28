@@ -19,19 +19,20 @@
 //! and leaves this one alone, which is what makes `cargo run` bearable once a
 //! unit is set up: it keeps its credentials across every rebuild.
 //!
-//! ## Two records, two sectors
+//! ## Three records, three sectors
 //!
 //! | Offset in `nvs` | Record | Written by |
 //! |---|---|---|
 //! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the knob's settings |
-//! | `0x1000` | the schedule, `FDS1` | a `feeder/<id>/schedule` or `feeder/all/schedule` command |
+//! | `0x1000` | the schedule, `FDS1` | a schedule command, a `Meal n` entity, the admin page |
+//! | `0x2000` | the timezone, `FDZ1` | the admin page |
 //!
 //! A sector each, so writing one never rewrites the other, and neither format
 //! has to change for the other. It also means `provision.sh`, which erases
 //! only the first sector before writing, keeps a unit's meals across a
 //! re-provision — as does the boot-button reset, which is for re-entering
 //! Wi-Fi details, not for forgetting the cats' schedule. The menu's factory
-//! reset erases both.
+//! reset erases all three.
 
 use embedded_storage::{ReadStorage, Storage};
 use esp_bootloader_esp_idf::partitions::{
@@ -42,6 +43,10 @@ use esp_storage::FlashStorage;
 
 use crate::provisioning::{DecodeError, MAX_RECORD_LEN, Record};
 use crate::schedule::{SCHEDULE_RECORD_LEN, Schedule, ScheduleRecordError};
+use crate::tz::{ZONE_RECORD_LEN, Zone, ZoneRecordError};
+
+/// Where the timezone record starts: the sector after the schedule's.
+const ZONE_OFFSET: u32 = 0x2000;
 
 /// Where the schedule record starts, from the start of the partition. One
 /// flash sector after the credentials.
@@ -172,15 +177,35 @@ impl Store {
             .map_err(|_| StoreError::Flash)
     }
 
-    /// Throws away both records: credentials, calibration and meals. The
-    /// menu's factory reset.
+    /// The stored timezone, or why there isn't one.
+    #[inline(never)]
+    pub fn load_zone(&mut self) -> Result<Zone, ZoneRecordError> {
+        let mut buffer = [0u8; ZONE_RECORD_LEN];
+        self.flash
+            .read(self.offset + ZONE_OFFSET, &mut buffer)
+            .map_err(|_| ZoneRecordError::Corrupt)?;
+        Zone::decode(&buffer)
+    }
+
+    /// Writes the timezone, or erases it for `None`.
+    #[inline(never)]
+    pub fn save_zone(&mut self, zone: Option<&Zone>) -> Result<(), StoreError> {
+        let bytes = zone.map_or([0xFFu8; ZONE_RECORD_LEN], Zone::encode);
+        self.flash
+            .write(self.offset + ZONE_OFFSET, &bytes)
+            .map_err(|_| StoreError::Flash)
+    }
+
+    /// Throws away every record: credentials, calibration, meals and the
+    /// timezone. The menu's factory reset.
     #[inline(never)]
     pub fn erase_all(&mut self) -> Result<(), StoreError> {
         self.erase()?;
         let blank = [0xFFu8; SCHEDULE_RECORD_LEN];
         self.flash
             .write(self.offset + SCHEDULE_OFFSET, &blank)
-            .map_err(|_| StoreError::Flash)
+            .map_err(|_| StoreError::Flash)?;
+        self.save_zone(None)
     }
 
     /// Throws the credentials record away, so the next boot goes to setup.

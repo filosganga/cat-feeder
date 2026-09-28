@@ -38,6 +38,7 @@ pub mod portions;
 pub mod provisioning;
 pub mod schedule;
 pub mod sha256;
+pub mod tz;
 
 // Hardware. Only built for the board.
 #[cfg(target_os = "none")]

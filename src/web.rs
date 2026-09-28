@@ -33,13 +33,14 @@ use log::{info, warn};
 
 use crate::admin::{
     CHALLENGE, Network, Notice, ScheduleFormError, Status, authorized, calibration_from_form,
-    clock_from_form, feed_from_form, network_from_form, render_page, render_restarting,
-    same_origin, schedule_from_form,
+    clock_form, feed_from_form, network_from_form, render_page, render_restarting, same_origin,
+    schedule_from_form,
 };
 use crate::http;
 use crate::provisioning::{Head, Method, PAGE_LEN};
 use crate::schedule::ScheduleCommand;
 use crate::store::SharedStore;
+use crate::tz::Zone;
 use crate::wiring::Bus;
 
 /// What the page needs that is fixed for the life of the process.
@@ -192,11 +193,23 @@ async fn handle(
             false
         }
         (Method::Post, "/clock") => {
-            let notice = match clock_from_form(body) {
-                Ok(wall) => {
-                    bus.set_clock_by_hand(wall);
-                    info!("web: clock set by hand to {wall}");
-                    Notice::Done("Clock set.")
+            let notice = match clock_form(body) {
+                Ok(form) => {
+                    let zone_saved = match form.zone {
+                        Some(zone) => save_zone(zone, store, bus).await,
+                        None => Ok(false),
+                    };
+                    if let Some(wall) = form.at {
+                        bus.set_clock_by_hand(wall);
+                        info!("web: clock set by hand to {wall}");
+                    }
+                    match (zone_saved, form.at.is_some()) {
+                        (Err(message), _) => Notice::Problem(message),
+                        (Ok(true), true) => Notice::Done("Clock and timezone set."),
+                        (Ok(true), false) => Notice::Done("Timezone set."),
+                        (Ok(false), true) => Notice::Done("Clock set."),
+                        (Ok(false), false) => Notice::Done("Nothing changed."),
+                    }
                 }
                 Err(message) => Notice::Problem(message),
             };
@@ -258,6 +271,7 @@ fn show(
     submitted: &str,
     notice: Option<Notice>,
 ) {
+    let zone = bus.zone.get();
     let status = Status {
         id: unit.id,
         version: unit.version,
@@ -268,6 +282,7 @@ fn show(
         last_fed: bus.last_fed.get(),
         calibration: bus.calibration.get(),
         progress: bus.calibration_progress.get(),
+        zone: zone.as_ref(),
     };
     let held = bus.held.get();
     render_page(
@@ -324,6 +339,32 @@ fn schedule_message(e: ScheduleFormError) -> &'static str {
         }
         ScheduleFormError::BadTime(_) => "A meal's time is not a time of day.",
         ScheduleFormError::BadPortions(_) => "A meal's portions are out of range.",
+    }
+}
+
+/// Stores a timezone and puts it in force. `Ok(true)` if it changed.
+///
+/// Flash first, then `Bus::zone`, which the schedule task reads every tick:
+/// with no live time from Home Assistant, the clock moves into the zone's
+/// offset within a second, and the RTC follows.
+async fn save_zone(
+    zone: Zone,
+    store: &'static SharedStore,
+    bus: &'static Bus,
+) -> Result<bool, &'static str> {
+    if bus.zone.get().as_ref() == Some(&zone) {
+        return Ok(false);
+    }
+    match store.lock().await.save_zone(Some(&zone)) {
+        Ok(()) => {
+            info!("web: timezone {} ({})", zone.name, zone.rule);
+            bus.zone.set(Some(zone));
+            Ok(true)
+        }
+        Err(e) => {
+            warn!("web: timezone not saved ({e:?})");
+            Err("Saving the timezone to flash failed; nothing changed.")
+        }
     }
 }
 

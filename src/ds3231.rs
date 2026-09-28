@@ -11,6 +11,7 @@
 //! | Register | Holds |
 //! |---|---|
 //! | `0x00`–`0x06` | seconds, minutes, hours, weekday, date, month, year — BCD |
+//! | `0x0B`–`0x0D` | alarm 2, unused as an alarm: **the offset the time is in** — see below |
 //! | `0x0E` | control. Bit 7, `EOSC`, set means the oscillator **stops on battery** |
 //! | `0x0F` | status. Bit 7, `OSF`, set means the oscillator **has stopped** at some point |
 //! | `0x11`–`0x12` | temperature, °C, in quarter degrees |
@@ -33,6 +34,18 @@
 //! The chip holds **local wall-clock time**, the same frame `feeder/time` and
 //! the schedule slots use, so nothing converts. The year register is two
 //! digits and the century bit is ignored and written clear: 2000–2099.
+//!
+//! ## And the offset it is in
+//!
+//! Local time alone is ambiguous across a summer-time change: a unit switched
+//! off in October in summer time and on in November would read its summer
+//! reading as winter time and feed an hour late. So the offset the time was
+//! written in goes in alarm 2's three registers, which this firmware never
+//! uses as an alarm and which the coin cell keeps like the time: the offset
+//! in quarter hours, its complement, and a marker. A chip that has never been
+//! written that way — or one reset — reads as *no offset*, which is today's
+//! meaning, local time as is. Alarm 2's interrupt is kept off (`A2IE`, control
+//! bit 1) on every write; its flag may set on a match and nothing reads it.
 
 use crate::schedule::{Date, Wall, seconds_between};
 
@@ -49,6 +62,11 @@ pub const STATUS_REG: u8 = 0x0F;
 
 const OSF: u8 = 0x80;
 const EOSC: u8 = 0x80;
+const A2IE: u8 = 0x02;
+
+/// Alarm 2's registers, holding the offset.
+pub const OFFSET_REG: u8 = 0x0B;
+const OFFSET_MARK: u8 = 0xC5;
 
 /// What the chip says, decoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,17 +102,27 @@ pub const TOLERANCE_S: i64 = 2;
 /// Whether the chip should be rewritten to `now`: it cannot be trusted, holds
 /// no date at all, or is more than [`TOLERANCE_S`] out — in either direction,
 /// and across any span of dates.
+///
+/// Also when `now` knows its offset and the chip holds a different one, or
+/// none: the same reading in the wrong frame is an hour out after a restart.
 pub fn needs_set(reading: &Reading, now: Wall) -> bool {
     match reading.trustworthy() {
         None => true,
-        Some(held) => seconds_between(now, held).abs() > TOLERANCE_S,
+        Some(held) => {
+            seconds_between(now, held).abs() > TOLERANCE_S
+                || (now.offset_minutes.is_some() && now.offset_minutes != held.offset_minutes)
+        }
     }
 }
 
 /// Decodes a burst read of registers `0x00..=0x12`.
 pub fn decode(regs: &[u8; REGISTERS]) -> Reading {
+    let offset_minutes = decode_offset(&regs[OFFSET_REG as usize..OFFSET_REG as usize + 3]);
     Reading {
-        wall: decode_time(&regs[0..7]),
+        wall: decode_time(&regs[0..7]).map(|wall| Wall {
+            offset_minutes,
+            ..wall
+        }),
         stopped: regs[STATUS_REG as usize] & OSF != 0,
         stops_on_battery: regs[CONTROL_REG as usize] & EOSC != 0,
         temperature_q: ((regs[0x11] as i8 as i16) << 2) | (regs[0x12] >> 6) as i16,
@@ -178,7 +206,24 @@ pub fn cleared_status(status: u8) -> u8 {
 /// The control byte to write after setting the time: `EOSC` cleared, so the
 /// oscillator keeps running on the coin cell.
 pub fn running_control(control: u8) -> u8 {
-    control & !EOSC
+    control & !EOSC & !A2IE
+}
+
+/// Alarm 2's three registers holding `offset`, or cleared for none. An offset
+/// that is not whole quarter hours, or past ±14 h, is stored as none rather
+/// than rounded: no zone has one, and a rounded offset would be a wrong time.
+pub fn encode_offset(offset_minutes: Option<i16>) -> [u8; 3] {
+    match offset_minutes.filter(|o| o % 15 == 0 && o.abs() <= 14 * 60) {
+        Some(o) => {
+            let q = (o / 15) as i8 as u8;
+            [q, !q, OFFSET_MARK]
+        }
+        None => [0; 3],
+    }
+}
+
+fn decode_offset(r: &[u8]) -> Option<i16> {
+    (r[2] == OFFSET_MARK && r[1] == !r[0]).then(|| (r[0] as i8 as i16) * 15)
 }
 
 /// 1 = Monday … 7 = Sunday. The chip only increments this register and never
@@ -381,6 +426,71 @@ mod tests {
             2,
             "Tuesday"
         );
+    }
+
+    #[test]
+    fn the_offset_round_trips_through_alarm_two() {
+        for offset in [
+            Some(0),
+            Some(60),
+            Some(120),
+            Some(-300),
+            Some(330),
+            Some(345),
+            Some(840),
+            Some(-720),
+            None,
+        ] {
+            let mut r = regs([0x00, 0x00, 0x08, 0x02, 0x28, 0x09, 0x26], 0, 0, (0, 0));
+            r[OFFSET_REG as usize..OFFSET_REG as usize + 3].copy_from_slice(&encode_offset(offset));
+            assert_eq!(
+                decode(&r).wall.unwrap().offset_minutes,
+                offset,
+                "{offset:?}"
+            );
+        }
+        assert_eq!(encode_offset(Some(7)), [0; 3]);
+        assert_eq!(encode_offset(Some(15 * 60)), [0; 3]);
+    }
+
+    /// A chip never written with an offset — every unit before this — reads
+    /// as none: plain local time, as it always was.
+    #[test]
+    fn alarm_registers_left_as_they_were_mean_no_offset() {
+        for junk in [
+            [0x00, 0x00, 0x00],
+            [0x80, 0x80, 0x80],
+            [0x04, 0xFB, 0x00],
+            [0x04, 0x00, OFFSET_MARK],
+        ] {
+            let mut r = regs([0x00, 0x00, 0x08, 0x02, 0x28, 0x09, 0x26], 0, 0, (0, 0));
+            r[OFFSET_REG as usize..OFFSET_REG as usize + 3].copy_from_slice(&junk);
+            assert_eq!(decode(&r).wall.unwrap().offset_minutes, None, "{junk:?}");
+        }
+    }
+
+    #[test]
+    fn a_chip_in_the_wrong_offset_is_rewritten() {
+        let at = |offset| Wall {
+            offset_minutes: offset,
+            ..wall(2026, 10, 25, 2, 30, 0)
+        };
+        assert!(needs_set(
+            &reading(Some(at(Some(120))), false),
+            at(Some(60))
+        ));
+        assert!(needs_set(&reading(Some(at(None)), false), at(Some(60))));
+        assert!(!needs_set(
+            &reading(Some(at(Some(60))), false),
+            at(Some(60))
+        ));
+        // A time with no offset to give says nothing about the chip's.
+        assert!(!needs_set(&reading(Some(at(Some(60))), false), at(None)));
+    }
+
+    #[test]
+    fn writing_keeps_alarm_two_quiet() {
+        assert_eq!(running_control(0b1000_0110), 0b0000_0100);
     }
 
     fn reading(held: Option<Wall>, stopped: bool) -> Reading {

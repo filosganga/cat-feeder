@@ -474,7 +474,8 @@ app partition, so configuration survives a reflash.
 Credentials are the one thing the broker cannot tell a unit, because they are
 how it reaches the broker. The schedule now lives in the same partition, in a
 sector of its own at nvs+0x1000 (magic `FDS1`) — see the architecture bullet
-*The unit owns its clock and its schedule*. Only `paused` is still broker state.
+*The unit owns its clock and its schedule*. The timezone has the sector after
+it, at nvs+0x2000 (`FDZ1`). Only `paused` is still broker state.
 
 A record carries a magic and a CRC-32 so that erased flash (`0xFF` everywhere)
 and an interrupted write both read as *unconfigured* rather than as garbage
@@ -941,13 +942,17 @@ only matters when producers outrun the feeder task.
 publishes. Wrapping double quotes and fractional seconds are tolerated too, so
 a hand-published JSON string also works.
 
-The **offset is recorded but never applied**, and that is a decision rather than
-an oversight. Home Assistant publishes its own local time and the feeders live
-in the same house, so the wall-clock fields already arrive in the frame the
-schedule is written in: `08:00` in a slot means 08:00 on the kitchen wall.
-There is nothing to convert to, and no timezone rules are needed on the device.
-Daylight saving then costs nothing — in October Home Assistant simply starts
-sending `+01:00` and the wall-clock fields shift with it.
+The **offset is kept, never converted away**. Home Assistant publishes its own
+local time and the feeders live in the same house, so the wall-clock fields
+already arrive in the frame the schedule is written in: `08:00` in a slot means
+08:00 on the kitchen wall. While Home Assistant publishes, daylight saving
+costs nothing — in October it simply starts sending `+01:00` and the wall-clock
+fields shift with it — and its offset outranks the unit's own timezone, below.
+
+**A unit can keep summer time on its own**, for when nobody publishes the time
+— built 2026-09-28, see *Timezone* under *A second version*. That is the one
+place an offset is *applied*: moving the clock an hour at the change, and
+only after ten minutes with no live time.
 
 The assumption this rests on is **the broker and the feeders share a
 timezone**. The one realistic way to break it is publishing `utcnow()` instead
@@ -1164,6 +1169,8 @@ src/
   led.rs          the WS2812 itself, over RMT. Colours in, bits out
   discovery.rs    pure logic: the Home Assistant entities and their retained
                   discovery configs, JSON-checked on the host
+  tz.rs           pure logic: a timezone's POSIX rule, the offset at an
+                  instant, and the stored zone
   display.rs      pure logic: the six lines the screen shows — home, info
                   pages, menu, setup — and when the panel is lit
   oled.rs         the SSD1306 itself, over async I2C. Text in, pixels out
@@ -1723,7 +1730,7 @@ points at the section with the detail.
 | Item | State | Where |
 |---|---|---|
 | Schedule editor on the knob | not built — the schedule arrives only as an MQTT command | *Version 1.5: the knob* |
-| The admin page from a real browser and from Home Assistant's *Visit device* link | built and driven with `curl` only; the login prompt, the time pickers, *Use this device's time*, a phone layout, **Feed** and **Run calibration** turning the motor are unseen | *A second version*, point 5 |
+| The admin page in a phone browser | used from a desktop browser (calibration run, page layout); still unseen: *Feed now* turning the motor, *Use this device's time*, the timezone list, and a phone layout | *A second version*, point 5 |
 | Changing a `Meal n` entity from Home Assistant's own UI | built; driven with the payloads HA's platforms send, not from its UI | point 4 |
 | Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
 | Subsets of feeders by HA label | Home Assistant side only; no firmware change | point 6 |
@@ -1888,13 +1895,9 @@ that the cats are already conditioned to it dies with that discovery: a recorded
 clip is not cheaply reproducible, the conditioning breaks either way, and cats
 relearn a food cue in days. Not worth the parts.
 
-Also later: a configured feeder timezone (`Europe/Rome`) so the unit can apply
-the offset itself and work out DST, instead of assuming it shares a timezone
-with the broker. Worth doing only if the broker ever publishes UTC, or moves to
-a different zone from the feeders. It means carrying timezone rules on the
-device, which is precisely the weight the current design avoids, so it is a
-deliberate trade rather than an obvious improvement. The offset is already
-parsed and kept in `Wall::offset_minutes`, so the input is there when needed.
+A configured feeder timezone (`Europe/Rome`) — **built**, 2026-09-28, and not
+the way this note first imagined: no tz database on the device. See
+*Timezone* under *A second version*.
 
 ### Version 1.5: the knob
 
@@ -1953,8 +1956,8 @@ second input device usually does. A knob-set clock is set in local wall-clock
 time, the schedule slots are already local wall-clock time, so nothing converts
 and no timezone rules go on the device. DST is someone turning a knob twice a
 year, exactly like every oven in the house. `feeder/time` stays as a convenience
-for units that have a network, and the *configured feeder timezone* note stays
-what it is: worth doing only if the broker ever publishes UTC.
+for units that have a network. (Since 2026-09-28 a unit given a timezone on its
+admin page does even that itself — see *Timezone* under *A second version*.)
 
 **The trust ladder gains a rung and keeps its floor.** Today there are three
 states, not two — see *A retained `time` is not a trusted one*: a **live**
@@ -2431,6 +2434,52 @@ entities, or all three at once by editing `meals` in the package and running
 Pausing already finds its units rather than being told them — see *Pause stops
 the schedule, not the feeder*. That one was cheap enough to do immediately, and
 it is what any of these futures wants anyway.
+
+### Timezone: the unit keeps summer time itself
+
+✅ **Built 2026-09-28**, so a feeder with no Home Assistant — or one whose Home
+Assistant has stopped — still moves its clock at the summer-time change.
+**Home Assistant's live time stays the authority whenever it is there**; the
+unit's own zone takes over only after ten minutes without one
+(`HA_WINS_MS` in `main.rs`).
+
+**The unit stores a name and a rule, and never turns one into the other.**
+`Europe/Rome` is for people; `<+01>-1<+02>,M3.5.0,M10.5.0/3`, the POSIX `TZ`
+format, is for the clock. The admin page derives the rule **in the browser**,
+from the tz data every browser ships and keeps current, and sends both. So a
+country changing its law needs the page opened and *Set* pressed again — the
+page says when the browser's rule differs from the stored one — and never a
+firmware update. A table of zones compiled into the firmware was the
+alternative, rejected because the table would go stale and only a reflash
+refreshes it. The knob does not choose zones.
+
+| Piece | Where |
+|---|---|
+| parsing a rule, the offset at an instant, which offset a local reading is in, following a change | `tz.rs`, pure |
+| the stored zone, `FDZ1`, its own sector at nvs+0x2000 | `tz::Zone`, `store.rs` |
+| following it each tick, and telling the RTC | `follow_zone` in `main.rs` |
+| the list, the rule, *Advanced* | `admin.rs`'s `RULE_JS` and `ZONE_JS`, inline |
+
+**The DS3231 now keeps the offset its time is in**, in alarm 2's registers,
+which this firmware never uses as an alarm (`ds3231.rs` has the layout). Local
+time alone is ambiguous across a change: a unit off from October to November
+would otherwise read its summer reading as winter time and feed an hour out.
+A chip written before this reads as *no offset* — local time as it always
+was — and is given one on the next write.
+
+**The rule derivation was checked, not just written.** Run in node against
+every zone a browser lists: all 418 rules parse in `tz::Rule::parse` and agree
+with the browser's own offsets at 24 instants of the year. Two zones are right
+for the current year only, because their law is not the kind POSIX rules can
+say: Santiago's (the Sunday after the first Saturday) and Casablanca's (around
+Ramadan). Home Assistant's live time corrects both, where there is one.
+
+Verified on the Zero with Home Assistant stopped: the zone saved; a running
+clock with no offset given `+02:00` and written to the RTC; a hand-set
+`2026-03-29T01:59:30` given `+01:00`, then **at 01:00 UTC exactly**
+`clock: Europe/Rome changed to 2026-03-29T03:00:00+02:00` and the RTC
+rewritten an hour forward; a reboot reading `03:00:52+02:00` back from the
+DS3231 with the zone loaded from flash.
 
 ### The screen's pages
 

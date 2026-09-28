@@ -36,6 +36,7 @@ use cat_feeder::schedule::{
 };
 use cat_feeder::store::{SharedStore, Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
+use cat_feeder::tz::{Zone, ZoneRecordError};
 use cat_feeder::wiring::{Bus, TimeSync, now_ms};
 use cat_feeder::{
     button_pin, display_scl_pin, display_sda_pin, encoder_a_pin, encoder_b_pin, led_pin,
@@ -268,6 +269,7 @@ async fn main(spawner: Spawner) -> ! {
     // read here, once, before either task can write.
     let mut store = store;
     let meals = load_schedule(&mut store);
+    BUS.zone.set(load_zone(&mut store));
     let store = mk_static!(SharedStore, SharedStore::new(store));
     let calibration = Calibration {
         portion_scale_pct: cfg.portion_scale_pct,
@@ -1293,17 +1295,23 @@ async fn schedule_task(store: &'static SharedStore, meals: Option<Schedule>) {
     let mut clock = LocalClock::new();
     let mut scheduler = Scheduler::new();
     let mut waiting_logged = false;
+    // When a live `feeder/time` last arrived. While Home Assistant publishes,
+    // its offset is the authority and the stored timezone waits.
+    let mut last_live_ms: Option<u64> = None;
 
     // What flash held at boot. `None` leaves the scheduler without a schedule
     // at all, which is what a new unit is: it never feeds, and the panel and
     // the state payload say so, until it is given one.
     if let Some(schedule) = meals {
-        BUS.held.set(schedule.clone());
+        BUS.held.set(Some(schedule.clone()));
         scheduler.set_schedule(schedule);
     }
 
     loop {
         if let Some(sync) = BUS.time.try_take() {
+            if sync.source == TimeSource::Live {
+                last_live_ms = Some(sync.monotonic_ms);
+            }
             let alignment = clock.align(sync.monotonic_ms, sync.wall, sync.source);
             log_alignment(alignment, sync.wall, sync.source);
         }
@@ -1320,6 +1328,10 @@ async fn schedule_task(store: &'static SharedStore, meals: Option<Schedule>) {
         // broker and an RTC that lost its time waits to be told; so does one
         // handed only a retained time, which may be whatever Home Assistant
         // published before it stopped. Both wait; neither guesses.
+        if clock.is_trusted() {
+            follow_zone(&mut clock, last_live_ms);
+        }
+
         let trusted_now = clock.now(now_ms()).filter(|_| clock.is_trusted());
         BUS.now.set(trusted_now);
         match trusted_now {
@@ -1351,6 +1363,46 @@ async fn apply_commands(scheduler: &mut Scheduler, store: &'static SharedStore) 
     }
 }
 
+/// How long after the last live `feeder/time` the stored timezone takes over.
+/// Home Assistant publishes every minute, so ten minutes of silence means it
+/// has stopped, not that it is between ticks.
+const HA_WINS_MS: u64 = 10 * 60 * 1_000;
+
+/// Keeps the clock in the offset the stored timezone says is in force — the
+/// summer-time change, on a unit nobody tells the time — and gives an offset
+/// to a reading that has none, such as the knob's.
+///
+/// Not while Home Assistant is publishing: its live time carries the offset
+/// from the tz database it ships, which is fresher than any rule stored here.
+/// A change goes to the RTC too, so a restart comes back in the right frame.
+#[inline(never)]
+fn follow_zone(clock: &mut LocalClock, last_live_ms: Option<u64>) {
+    let now = now_ms();
+    if last_live_ms.is_some_and(|at| now.saturating_sub(at) < HA_WINS_MS) {
+        return;
+    }
+    let Some(zone) = BUS.zone.get() else {
+        return;
+    };
+    let Some(wall) = clock.now(now) else {
+        return;
+    };
+    let Some(moved) = cat_feeder::tz::follow(&zone.parsed(), wall) else {
+        return;
+    };
+    clock.rezone(now, moved);
+    if wall.offset_minutes.is_some() {
+        info!("clock: {} changed to {moved}", zone.name);
+    } else {
+        info!("clock: {moved}, in {}", zone.name);
+    }
+    BUS.rtc_time.signal(TimeSync {
+        monotonic_ms: now,
+        wall: moved,
+        source: TimeSource::Manual,
+    });
+}
+
 /// A schedule command: store it, then put it in force, then echo it.
 ///
 /// Flash first, so what the unit acts on is what it would come back up with.
@@ -1371,7 +1423,7 @@ async fn accept_schedule(
     }
     let stored = store.lock().await.save_schedule(&schedule);
     log_schedule_stored(schedule.meals(), stored);
-    BUS.held.set(schedule.clone());
+    BUS.held.set(Some(schedule.clone()));
     scheduler.set_schedule(schedule);
     BUS.schedule_changed.signal(());
 }
@@ -1431,6 +1483,22 @@ fn log_schedule_stored(meals: usize, stored: Result<(), StoreError>) {
         Ok(()) => info!("schedule: {meals} meals, stored"),
         Err(e) => {
             warn!("schedule: {meals} meals in force, but not stored ({e:?}); a reboot loses them")
+        }
+    }
+}
+
+/// The timezone in flash at boot, and a line saying what it was.
+#[inline(never)]
+fn load_zone(store: &mut Store) -> Option<Zone> {
+    match store.load_zone() {
+        Ok(zone) => {
+            info!("clock: timezone {} ({})", zone.name, zone.rule);
+            Some(zone)
+        }
+        Err(ZoneRecordError::NotStored) => None,
+        Err(ZoneRecordError::Corrupt) => {
+            warn!("clock: stored timezone is unreadable; keeping plain local time");
+            None
         }
     }
 }

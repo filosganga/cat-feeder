@@ -39,6 +39,7 @@ use crate::calibrate::{Failure, Measurement, Progress};
 use crate::indicator::Health;
 use crate::menu::{Calibration, Mode};
 use crate::schedule::{Schedule, ScheduleCommand, Slot, TimeSource, Wall};
+use crate::tz::Zone;
 
 /// How many unread feed **requests** can be waiting before producers drop them.
 ///
@@ -332,31 +333,37 @@ impl<T: Copy> Shared<T> {
     }
 }
 
-/// The schedule the unit holds, or `None` if it has never been given one.
+/// Something held for others to read, or `None` if there is nothing yet.
 ///
-/// `Schedule` is not `Copy`, so this is a lock around a `RefCell` rather than
-/// a [`Shared`]. Read by cloning: a schedule is a few dozen bytes.
-pub struct HeldSchedule(Mutex<CriticalSectionRawMutex, RefCell<Option<Schedule>>>);
+/// For values that are not `Copy` — a schedule, a timezone — so this is a lock
+/// around a `RefCell` rather than a [`Shared`]. Read by cloning: each is a few
+/// dozen bytes.
+pub struct Held<T>(Mutex<CriticalSectionRawMutex, RefCell<Option<T>>>);
 
-impl Default for HeldSchedule {
+impl<T: Clone> Default for Held<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HeldSchedule {
+impl<T: Clone> Held<T> {
     pub const fn new() -> Self {
         Self(Mutex::new(RefCell::new(None)))
     }
 
-    pub fn set(&self, schedule: Schedule) {
-        self.0.lock(|cell| *cell.borrow_mut() = Some(schedule));
+    pub fn set(&self, value: Option<T>) {
+        self.0.lock(|cell| *cell.borrow_mut() = value);
     }
 
-    pub fn get(&self) -> Option<Schedule> {
+    pub fn get(&self) -> Option<T> {
         self.0.lock(|cell| cell.borrow().clone())
     }
+}
 
+/// The schedule the unit holds, or `None` if it has never been given one.
+pub type HeldSchedule = Held<Schedule>;
+
+impl Held<Schedule> {
     /// How many meals a day will feed, `0` when there is no schedule at all
     /// or every slot is switched off — the same thing to anyone asking whether
     /// this unit will feed.
@@ -403,6 +410,10 @@ pub struct Bus {
     /// boot, then on every command it stores — and read by `mqtt` for the
     /// retained echo and the state payload's `meals`, and by `display`.
     pub held: HeldSchedule,
+    /// The timezone this unit follows when nobody publishes the time, or `None`
+    /// for plain local time. Written by `main` from flash at boot and by
+    /// `web`; read by `schedule` every tick and by `web` for the page.
+    pub zone: Held<Zone>,
     /// The held schedule changed: `schedule` to `mqtt`, which republishes the
     /// retained `feeder/<id>/schedule/state` echo.
     pub schedule_changed: Signal<CriticalSectionRawMutex, ()>,
@@ -482,6 +493,7 @@ impl Bus {
             rtc_time: Signal::new(),
             schedule: Channel::new(),
             held: HeldSchedule::new(),
+            zone: Held::new(),
             schedule_changed: Signal::new(),
             last_fed: LastFed::new(),
             next: NextSlot::new(),

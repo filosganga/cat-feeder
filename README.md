@@ -228,8 +228,9 @@ the units are already installed and a laptop is not.
 the address is on the knob's `WI-FI` page, and Home Assistant links to it as
 *Visit device*. Log in with any username and the same sticker password. It
 shows the clock and the next meal, feeds on demand, edits the eight meals,
-sets the clock (one button takes your phone's time), sets or measures the
-detent interval and portion scale, and changes the Wi-Fi or broker (which
+sets the clock (one button takes your phone's time) and its timezone, so it
+keeps summer time even with no Home Assistant, sets or measures the detent
+interval and portion scale, and changes the Wi-Fi or broker (which
 restarts the unit). Stored passwords are never shown;
 leave a password box empty to keep it.
 

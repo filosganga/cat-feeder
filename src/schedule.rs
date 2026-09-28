@@ -446,6 +446,16 @@ impl LocalClock {
         self.anchor.is_some()
     }
 
+    /// Moves a running clock to `wall` **without changing its trust** — for a
+    /// timezone change, where the instant is the same and only the reading of
+    /// it moves. [`Self::align`] would let a correction earn trust it has not;
+    /// this cannot. Does nothing to a clock that was never set.
+    pub fn rezone(&mut self, monotonic_ms: u64, wall: Wall) {
+        if self.anchor.is_some() {
+            self.anchor = Some((monotonic_ms, wall));
+        }
+    }
+
     /// Whether a live time has ever arrived, and so whether the schedule may
     /// run. Never goes back to false: a unit that has been told the time keeps
     /// free-running if Home Assistant disappears.
@@ -463,7 +473,7 @@ fn later(a: Date, b: Date) -> bool {
 ///
 /// Howard Hinnant's `days_from_civil`, which is exact for the proleptic
 /// Gregorian calendar and needs no tables.
-fn days_from_civil(date: Date) -> i64 {
+pub(crate) fn days_from_civil(date: Date) -> i64 {
     let (m, d) = (date.month as i64, date.day as i64);
     let y = date.year as i64 - (m <= 2) as i64;
     let era = y.div_euclid(400);
@@ -471,6 +481,39 @@ fn days_from_civil(date: Date) -> i64 {
     let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     era * 146_097 + doe - 719_468
+}
+
+/// The date `days` after 1970-01-01: the inverse of [`days_from_civil`].
+///
+/// Hinnant's `civil_from_days`, exact and table-free like its twin.
+pub(crate) fn civil_from_days(days: i64) -> Date {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u8;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u8;
+    let year = (yoe + era * 400 + (month <= 2) as i64) as u16;
+    Date { year, month, day }
+}
+
+impl Wall {
+    /// Seconds since 1970-01-01 00:00 **on this wall clock** — not UTC unless
+    /// the offset is zero. Subtract the offset for the real instant.
+    pub fn local_seconds(&self) -> i64 {
+        days_from_civil(self.date) * DAY_S as i64 + self.second_of_day as i64
+    }
+
+    /// The wall time `local_seconds` from the epoch on a clock at `offset`.
+    pub fn from_local_seconds(local_seconds: i64, offset_minutes: Option<i16>) -> Self {
+        Self {
+            date: civil_from_days(local_seconds.div_euclid(DAY_S as i64)),
+            second_of_day: local_seconds.rem_euclid(DAY_S as i64) as u32,
+            offset_minutes,
+        }
+    }
 }
 
 /// Signed difference in seconds, `to - from`, exact across any dates.
@@ -1844,6 +1887,39 @@ mod tests {
         // Six hours later, still nothing from Home Assistant.
         assert!(clock.is_trusted());
         assert_eq!(clock.now(6 * 3600 * 1000).unwrap(), wall(14, 13, 0));
+    }
+
+    #[test]
+    fn days_round_trip_across_centuries() {
+        for days in [-719_468, -1, 0, 1, 10_957, 20_724, 47_481, 100_000] {
+            assert_eq!(days_from_civil(civil_from_days(days)), days, "{days}");
+        }
+        assert_eq!(civil_from_days(0), date(1970, 1, 1));
+        assert_eq!(civil_from_days(20_724), date(2026, 9, 28));
+        assert_eq!(civil_from_days(11_016), date(2000, 2, 29));
+    }
+
+    #[test]
+    fn a_wall_round_trips_through_local_seconds() {
+        let w = Wall {
+            offset_minutes: Some(120),
+            ..wall_s(28, 23, 59, 59)
+        };
+        assert_eq!(Wall::from_local_seconds(w.local_seconds(), Some(120)), w);
+        let next = Wall::from_local_seconds(w.local_seconds() + 1, Some(120));
+        assert_eq!((next.date, next.second_of_day), (date(2026, 9, 29), 0));
+    }
+
+    #[test]
+    fn rezoning_moves_the_reading_but_never_earns_trust() {
+        let mut clock = LocalClock::new();
+        clock.rezone(0, wall(28, 8, 0));
+        assert!(!clock.is_set());
+
+        clock.align(0, wall(28, 8, 0), TimeSource::Retained);
+        clock.rezone(1_000, wall(28, 9, 0));
+        assert!(!clock.is_trusted());
+        assert_eq!(clock.now(1_000), Some(wall(28, 9, 0)));
     }
 
     // ---- parsing the schedule ----
