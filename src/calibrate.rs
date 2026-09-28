@@ -71,6 +71,20 @@ pub enum Failure {
     TooSlow { slowest_ms: u64 },
 }
 
+/// Where the latest run is, for anyone who wants to show it. Published by the
+/// feeder task, which is the only one that knows; the knob's menu follows its
+/// own run through signals, and the admin page reads this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Progress {
+    /// No run since power-on.
+    #[default]
+    None,
+    /// Turning; this many clicks counted of [`DETENTS`].
+    Running { clicks: u8 },
+    /// The last run ended like this. Nothing is saved until someone saves it.
+    Finished(Result<Measurement, Failure>),
+}
+
 /// One calibration run, click by click.
 #[derive(Debug, Default)]
 pub struct Run {

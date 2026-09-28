@@ -656,7 +656,21 @@ pub struct Head {
     pub content_length: usize,
     /// Where the body starts in the buffer the head was parsed from.
     pub body_at: usize,
+    /// The `Authorization` header, or empty. One too long to be a credential
+    /// this firmware issued is left empty too, which is a refusal.
+    pub authorization: String<AUTH_LEN>,
+    /// The `Host` header, or empty.
+    pub host: String<64>,
+    /// The `Origin` header, or empty — which is what `curl` and other
+    /// non-browser clients send. An oversized one is an error rather than
+    /// empty, because empty is what lets a request through the admin page's
+    /// same-origin check.
+    pub origin: String<64>,
 }
+
+/// Longest `Authorization` header kept: `Basic ` and the base64 of a
+/// 64-character username and password pair, with room to spare.
+pub const AUTH_LEN: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HttpError {
@@ -692,15 +706,22 @@ pub fn parse_head(buf: &[u8]) -> Result<Option<Head>, HttpError> {
     let path = target.split('?').next().unwrap_or(target);
 
     let mut content_length = 0;
+    let mut authorization = String::new();
+    let mut host = String::new();
+    let mut origin = String::new();
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        let value = value.trim();
         if name.eq_ignore_ascii_case("content-length") {
-            content_length = value
-                .trim()
-                .parse::<usize>()
-                .map_err(|_| HttpError::Malformed)?;
+            content_length = value.parse::<usize>().map_err(|_| HttpError::Malformed)?;
+        } else if name.eq_ignore_ascii_case("authorization") {
+            authorization = String::try_from(value).unwrap_or_default();
+        } else if name.eq_ignore_ascii_case("host") {
+            host = String::try_from(value).map_err(|_| HttpError::TooLong)?;
+        } else if name.eq_ignore_ascii_case("origin") {
+            origin = String::try_from(value).map_err(|_| HttpError::TooLong)?;
         }
     }
 
@@ -709,6 +730,9 @@ pub fn parse_head(buf: &[u8]) -> Result<Option<Head>, HttpError> {
         path: String::try_from(path).map_err(|_| HttpError::TooLong)?,
         content_length,
         body_at,
+        authorization,
+        host,
+        origin,
     }))
 }
 
@@ -721,6 +745,13 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // ---------------------------------------------------------------------------
 // The page
 // ---------------------------------------------------------------------------
+
+/// The tab icon, inline: a cat, drawn by the browser's own emoji font, so it
+/// costs a hundred-odd bytes and no request. Without a `rel=icon` a browser
+/// asks for `/favicon.ico`, which spends one of the few connection slots on a
+/// 404. Shared by the setup form and the admin page.
+pub const FAVICON: &str = "<link rel=icon href=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' \
+viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐱</text></svg>\">";
 
 /// How much rendered HTML a page may take.
 ///
@@ -762,8 +793,12 @@ pub fn render_form(
     let _ = page.push_str(
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
          <meta name=viewport content=\"width=device-width,initial-scale=1\">\
-         <title>cat-feeder setup</title><style>\
-         body{font:16px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;\
+         <title>cat-feeder setup</title>",
+    );
+    let _ = page.push_str(FAVICON);
+    let _ = page.push_str(
+        "<style>\
+         body{font:16px/1.5 system-ui,sans-serif;margin:0 auto;padding:1.5rem;\
          max-width:26rem;background:#faf9f7;color:#222}\
          h1{font-size:1.25rem;margin:0 0 1rem}\
          label{display:block;margin:.75rem 0 .2rem;font-weight:600;font-size:.9rem}\
@@ -878,8 +913,8 @@ pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
         page,
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
          <meta name=viewport content=\"width=device-width,initial-scale=1\">\
-         <title>cat-feeder setup</title><style>\
-         body{{font:16px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;\
+         <title>cat-feeder setup</title>{FAVICON}<style>\
+         body{{font:16px/1.5 system-ui,sans-serif;margin:0 auto;padding:1.5rem;\
          max-width:26rem;background:#faf9f7;color:#222}}\
          </style></head><body><h1>Saved</h1>\
          <p>This feeder is restarting and will join <b>{}</b>, then connect to \
@@ -1610,5 +1645,44 @@ mod tests {
     fn an_unknown_method_is_recognised_as_such() {
         let head = parse_head(b"DELETE / HTTP/1.1\r\n\r\n").unwrap().unwrap();
         assert_eq!(head.method, Method::Other);
+    }
+
+    #[test]
+    fn the_headers_the_admin_page_checks_are_kept() {
+        let head = parse_head(
+            b"POST /schedule HTTP/1.1\r\nHost: 192.168.68.60\r\n\
+              origin: http://192.168.68.60\r\nAUTHORIZATION: Basic YTpi\r\n\r\n",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(head.host, "192.168.68.60");
+        assert_eq!(head.origin, "http://192.168.68.60");
+        assert_eq!(head.authorization, "Basic YTpi");
+
+        let bare = parse_head(b"GET / HTTP/1.1\r\n\r\n").unwrap().unwrap();
+        assert!(bare.host.is_empty() && bare.origin.is_empty() && bare.authorization.is_empty());
+    }
+
+    /// Empty is what passes the same-origin check, so an Origin too long to
+    /// hold must not quietly become empty.
+    #[test]
+    fn an_oversized_origin_is_refused_not_dropped() {
+        let raw = std::format!(
+            "POST / HTTP/1.1\r\nOrigin: http://{}\r\n\r\n",
+            "x".repeat(80)
+        );
+        assert_eq!(parse_head(raw.as_bytes()), Err(HttpError::TooLong));
+
+        let raw = std::format!(
+            "GET / HTTP/1.1\r\nAuthorization: Basic {}\r\n\r\n",
+            "A".repeat(200)
+        );
+        assert!(
+            parse_head(raw.as_bytes())
+                .unwrap()
+                .unwrap()
+                .authorization
+                .is_empty()
+        );
     }
 }

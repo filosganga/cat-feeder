@@ -1,6 +1,6 @@
 ---
 name: ha-mqtt-discovery
-description: Supplies this project's MQTT topic contract and the exact Home Assistant discovery payloads for the feed button, the paused switch and the jammed binary sensor, so they are copied rather than reconstructed. Use when writing or reviewing mqtt.rs, changing a topic or payload, adding an entity, debugging an entity that does not appear in Home Assistant or shows as unavailable, or writing the Home Assistant side that publishes the time and sends the schedule.
+description: Supplies this project's MQTT topic contract and the exact Home Assistant discovery payloads for the feed button, the paused switch, the jammed binary sensor and the Meal n time/portions entities, so they are copied rather than reconstructed. Use when writing or reviewing mqtt.rs, changing a topic or payload, adding an entity, debugging an entity that does not appear in Home Assistant or shows as unavailable, or writing the Home Assistant side that publishes the time and sends the schedule.
 ---
 
 # Home Assistant MQTT discovery for cat-feeder
@@ -24,6 +24,8 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 | `feeder/<id>/schedule` | `[{"time":"08:00","portions":2}]` | → one device | **no** |
 | `feeder/all/schedule` | `[{"time":"08:00","portions":2}]` | → all devices | **no** |
 | `feeder/<id>/schedule/state` | `[{"time":"08:00","portions":2}]`, `[]` for none | device → | yes |
+| `feeder/<id>/meal/<n>/time` | `08:00:00` (or `08:00`), n = 1..8 | → device, from *Meal n time* | **no** |
+| `feeder/<id>/meal/<n>/portions` | `2`; `0` switches the meal off | → device, from *Meal n portions* | **no** |
 | `feeder/time` | `"2026-09-14T08:00:00+02:00"` | HA → all, each minute | yes |
 | `feeder/time/request` | `<id>` | device → HA | **no** |
 | `feeder/<id>/state` | `{"feeding":bool,"jammed":bool,"paused":bool,"meals":n,"last_fed":"..."}` | device → | yes |
@@ -36,7 +38,7 @@ reconnect. `feeder/<id>/schedule/state` is retained too, but only as an echo of 
 the unit holds, published on every connect and every change; the unit never
 reads it back.
 
-The two `feed` topics and the two schedule commands must **never** be
+The two `feed` topics, the two schedule commands and the meal edits must **never** be
 retained. A retained feed command is replayed on every reconnect, and because
 manual feeds accumulate, a boot loop would empty the hopper. A retained
 schedule command would hand meals to every unit that subscribes later, which
@@ -96,7 +98,8 @@ Get this wrong and entities appear unavailable or never appear at all.
 
 1. In the MQTT CONNECT packet, set the last will: topic
    `feeder/<id>/availability`, payload `offline`, **retain true**, QoS 1.
-2. After CONNACK, publish the three discovery configs, each **retained**, to
+2. After CONNACK, publish every discovery config `discovery::entities()` names
+   — nineteen today — each **retained**, to
    `homeassistant/<component>/feeder_<id>/<object>/config`.
 3. Only then publish `online` to `feeder/<id>/availability`, retained.
 3a. If the knob's menu changed the pause while the broker was unreachable,
@@ -104,7 +107,8 @@ Get this wrong and entities appear unavailable or never appear at all.
    retained replay the subscription triggers carries the new value back rather
    than undoing it.
 4. Subscribe to `feeder/<id>/feed`, `feeder/all/feed`, `feeder/<id>/paused`,
-   `feeder/<id>/schedule`, `feeder/all/schedule`, `feeder/time`.
+   `feeder/<id>/schedule`, `feeder/all/schedule`, `feeder/<id>/meal/+/+`,
+   `feeder/time`.
 4a. Publish what the unit holds to `feeder/<id>/schedule/state`, retained — `[]` for
    none — because the broker's copy may be from before a reboot or a factory
    reset.
@@ -127,7 +131,7 @@ Because the discovery messages are retained, Home Assistant re-reads them after
 a restart on its own. The firmware does not need to subscribe to
 `homeassistant/status`.
 
-## The three entities
+## The entities
 
 Full JSON, ready to copy, is in [references/payloads.md](references/payloads.md).
 Topics used:
@@ -137,8 +141,18 @@ Topics used:
 | `button` | `homeassistant/button/feeder_<id>/feed/config` | feed one portion |
 | `switch` | `homeassistant/switch/feeder_<id>/paused/config` | pause the schedule |
 | `binary_sensor` | `homeassistant/binary_sensor/feeder_<id>/jammed/config` | jam alarm |
+| `time` ×8 | `homeassistant/time/feeder_<id>/meal_<n>_time/config` | meal *n*'s time |
+| `number` ×8 | `homeassistant/number/feeder_<id>/meal_<n>_portions/config` | meal *n*'s portions, 0–16 |
 
-All three carry the same `device` block and a `unique_id`, which is what makes
+**The payloads are rendered by `src/discovery.rs`, which is the source of
+truth**; its host tests parse every one as JSON. The meal entities read their
+slot out of `feeder/<id>/schedule/state` by position —
+`{{ value_json[2].time if value_json|length > 2 else 'None' }}` for meal 3 — and
+the literal `None` is what both platforms show as unknown. Neither is
+optimistic, and neither sets `retain`, so Home Assistant's default of not
+retaining applies.
+
+All of them carry the same `device` block and a `unique_id`, which is what makes
 Home Assistant group them into one device. Without `unique_id` the `device`
 block is ignored and the entities appear loose.
 

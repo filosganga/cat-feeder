@@ -8,6 +8,11 @@
 # handed meals nobody chose for it. If Home Assistant stops, the feeders keep
 # feeding on what they hold.
 #
+# The script is for giving all of them the same meals at once. One feeder's
+# meals can also be changed on its own device page, through the "Meal n time"
+# and "Meal n portions" entities it announces by itself — nothing in this file
+# is needed for those.
+#
 # Install: see "Home Assistant automations" in dev/README.md. The same file goes
 # to the local Docker stack and to any deployed instance, unchanged — nothing in
 # it names a host, which is why it is tracked in the firmware repo at all.

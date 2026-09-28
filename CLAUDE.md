@@ -909,6 +909,8 @@ feeder/<id>/paused         ON | OFF                retained, pause the schedule;
 feeder/<id>/schedule       [{"time":"08:00","portions":2}, ...]   cmd, NOT retained, this unit's meals
 feeder/all/schedule        [{"time":"08:00","portions":2}, ...]   cmd, NOT retained, every unit's meals
 feeder/<id>/schedule/state [{"time":"08:00","portions":2}, ...]   retained, what the unit holds
+feeder/<id>/meal/<n>/time      08:00:00            cmd, NOT retained, meal n's time (n = 1..8)
+feeder/<id>/meal/<n>/portions  2                   cmd, NOT retained, meal n's portions; 0 switches it off
 feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
 feeder/time/request        <id>                    cmd to HA, NOT retained
 feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"meals":n,"last_fed":"..."}
@@ -960,8 +962,12 @@ no clock, and Home Assistant already records button presses in its own history.
 
 Home Assistant MQTT discovery: on connect, publish **retained** config to
 `homeassistant/<component>/feeder_<id>/<object>/config` for: a `button`
-(feed), a `switch` (paused) and a `binary_sensor` (jammed). All share the same
-`device` block so HA groups them into one device. Then publish `online`.
+(feed), a `switch` (paused), a `binary_sensor` (jammed), and eight `time` plus
+eight `number` entities, *Meal n time* and *Meal n portions* — the schedule
+editor, v2's point 4. All share the same `device` block so HA groups them into
+one device. Then publish `online`. The payloads are rendered by `discovery.rs`,
+which is pure so a host test can parse every one as JSON and measure it against
+the buffer; its module doc has the entity table.
 
 **Manual feeds accumulate.** The button always sends `1`. Three presses in a
 row mean three portions, even if they land while the motor is already running:
@@ -1156,6 +1162,8 @@ src/
   indicator.rs    pure logic: what the LED shows, the priority ladder, the
                   blink timing
   led.rs          the WS2812 itself, over RMT. Colours in, bits out
+  discovery.rs    pure logic: the Home Assistant entities and their retained
+                  discovery configs, JSON-checked on the host
   display.rs      pure logic: the six lines the screen shows — home, info
                   pages, menu, setup — and when the panel is lit
   oled.rs         the SSD1306 itself, over async I2C. Text in, pixels out
@@ -1174,7 +1182,13 @@ src/
   store.rs        reads and writes the record in the nvs partition
   dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
   setup.rs        setup mode: the access point, its own stack, DHCP, and the
-                  sockets the form is served over
+                  form served over http.rs
+  http.rs         the sockets under both web servers: reading a request,
+                  answering it, and the buffers they share
+  admin.rs        pure logic: the admin page — who may (Basic auth with the
+                  derived password, same-origin POSTs), the schedule and
+                  network forms, and the page itself
+  web.rs          the admin page on the house network, over http.rs
   config.rs       Config, from a flash record
 build.rs          injects ap_secret from cfg.toml, and nothing else
 examples/mkrecord.rs
@@ -1192,7 +1206,8 @@ Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
 re-aligns), `rtc` (owns the DS3231: logs it at boot, arms the clock from it,
 keeps it set from live times), `encoder` (reads the knob's `A`/`B`), `ui`
 (owns the knob's click, the menu and the store's writes from it), `display`
-(owns the panel), `indicator` (owns the LED). They communicate through the one
+(owns the panel), `indicator` (owns the LED), `web` (the admin page). They
+communicate through the one
 `wiring::Bus` static, which names every shared handle and documents who writes
 each one.
 
@@ -1699,7 +1714,7 @@ complete, or should reset the DHCP socket when it is.
 
 ### What is left
 
-Everything not yet built or not yet seen, in one place, as of 2026-09-27.
+Everything not yet built or not yet seen, in one place, as of 2026-09-28.
 Anything absent from this list is done and verified on the Zero; each row
 points at the section with the detail.
 
@@ -1708,9 +1723,8 @@ points at the section with the detail.
 | Item | State | Where |
 |---|---|---|
 | Schedule editor on the knob | not built — the schedule arrives only as an MQTT command | *Version 1.5: the knob* |
-| The unit's own HA entities: 8 `time` + 8 `number` slots over discovery (v2 point 4) | not built. Once it exists the package's send-the-schedule script becomes optional | *A second version*, point 4 |
-| Admin page in station mode, authenticated with the derived password (v2 point 5) | not built; the HTTP, form and 3-connection plumbing exists in setup mode only | *A second version*, point 5 |
-| `configuration_url` in the discovery `device` block | not built; only useful once the admin page exists | point 5 |
+| The admin page from a real browser and from Home Assistant's *Visit device* link | built and driven with `curl` only; the login prompt, the time pickers, *Use this device's time*, a phone layout, **Feed** and **Run calibration** turning the motor are unseen | *A second version*, point 5 |
+| Changing a `Meal n` entity from Home Assistant's own UI | built; driven with the payloads HA's platforms send, not from its UI | point 4 |
 | Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
 | Subsets of feeders by HA label | Home Assistant side only; no firmware change | point 6 |
 | Optional "copy this feeder's schedule to those" blueprint | not written; only sensible after point 4 | *What Home Assistant is left doing* |
@@ -2120,10 +2134,10 @@ a different thing from one that degrades to not feeding.
 
 ### A second version: the unit owns its clock and its schedule
 
-**Decided in principle, not started, and not to be smuggled in one commit at a
-time.** It contradicts *No local RTC, no NTP, no flash persistence* above, and
-it is meant to: that rule is right for a system whose only user owns the broker,
-and wrong for a feeder somebody else is given. What follows is one decision with
+**Built, all but the Home Assistant half of point 6** — see the status
+paragraph below. It overturned what used to read *No local RTC, no NTP, no
+flash persistence*, and meant to: that rule is right for a system whose only
+user owns the broker, and wrong for a feeder somebody else is given. What follows is one decision with
 seven consequences, not seven options.
 
 The question that forces it: what does a person who did not build this have to
@@ -2134,7 +2148,8 @@ correct behaviour and indistinguishable from a fault. Every comparable product �
 PetLibro, SureFeed, Aqara, Shelly, Tasmota, an ESPHome device — answers it the
 same way: **the device owns its configuration and the app is a control surface**.
 
-✅ **Points 1, 2, 6 and 7 are built** (2026-09-25), and verified on the Zero
+✅ **Points 1, 2, 4, 5, 6 and 7 are built** (4 and 5 on 2026-09-28, the rest
+on 2026-09-25), and verified on the Zero
 against the dev broker: a schedule command is stored in its own flash sector
 (`FDS1`, `store.rs`) and put in force; an identical one is not rewritten; a
 reboot brings it back from flash; a *retained* command replayed at subscribe
@@ -2143,9 +2158,115 @@ echoes what it holds on `feeder/<id>/schedule/state`, and `"meals"` in the state
 payload and `NO MEALS SET` on the panel make blank visible. The package's
 schedule automation became a script, *send the schedule to every feeder*,
 publishing `feeder/all/schedule` — no longer on every Home Assistant start.
-Point 3 is done by the RTC and the knob. Still open: 4 (the unit's own HA
-entities) and 5 (the admin page). Subsets by label, in point 6, are still
-Home Assistant's business and unbuilt.
+Point 3 is done by the RTC and the knob. Point 4 is the sixteen `Meal n`
+entities and point 5 the admin page — both below. Subsets by label, in point 6,
+are still Home Assistant's business and unbuilt.
+
+**Point 5 as built.** `http://<unit>/`, on every configured unit, alongside
+MQTT: a status block (clock, meals a day, paused, next meal, last fed, a jam),
+then **Feed**, the eight **Meals**, the **Clock**, the **Calibration** and the
+**Network**, each its own form. Everything but the network is what the knob
+can already do, by the knob's own paths:
+
+- **Feed** puts 1–`MAX_CLICKS` portions on the feed queue, like a tap on
+  `Feed`.
+- **Clock** takes a `datetime-local`, or the browser's own time with one
+  button, and hands it to `Bus::set_clock_by_hand` — the one function the
+  knob's `Clock` now calls too. `Manual`, so Home Assistant still has the
+  last word.
+- **Calibration** stores the detent and the portion scale with
+  `Store::update`, then sets `Bus::calibration`, held to the knob's ranges and
+  steps. The feeder applies it at its next idle moment. **The menu now reads
+  `Bus::calibration` before every input** (`Menu::set_calibration`) — before
+  that it kept its own copy, and a knob save after a web save would have
+  written the web's figure back.
+- **Run calibration** signals `Bus::calibrate`, after a confirm dialog, since
+  it dispenses five portions. The feeder publishes the run on
+  `Bus::calibration_progress` (a `Progress` from `calibrate.rs`), because the
+  two signals the menu follows have one reader each; the page redraws itself
+  every two seconds while it turns, then offers *Save N ms* when the result
+  differs from the figure in force. A run started here does not disturb the
+  knob, whose menu ignores results it did not ask for.
+ `admin.rs` decides
+everything and is pure; `web.rs` serves it over `http.rs`, the socket code
+setup mode already had, moved out so both use it.
+
+- **Basic auth, any username, the derived password** — the setup network's,
+  the sticker's, `dev/ap-password.sh`'s. Wrong or missing is `401` with a
+  challenge, so a browser asks.
+- **A POST whose `Origin` is not this unit is `403`.** A logged-in browser
+  resends Basic credentials on a form another page submits here; no `Origin`
+  at all is `curl`, which has to bring the password itself. `parse_head`
+  refuses an `Origin` too long to hold rather than dropping it, since empty is
+  what passes.
+- **Stored passwords are never on the page**: `admin::Network` has no field for
+  one, both boxes render empty, and **empty means keep** — so an open Wi-Fi
+  network is set through setup mode, not here. A rejected form comes back
+  with what was typed, less the passwords.
+- **Meals go through `Bus::schedule`**, the same queue as a command from Home
+  Assistant, and the answer waits until the schedule task holds them,
+  so the page never shows old meals under *Meals saved* (`web::APPLY_WAIT`). The echo moves the
+  `Meal n` entities too. A blank time above a set one is refused rather than
+  closed up, because closing it renumbers every meal after it.
+- **The network form restarts, on top of the record read at that moment**, so
+  the knob's last calibration is carried, and an identical record is *Nothing
+  changed* with no write and no restart.
+- **`configuration_url`** in every discovery config's device block,
+  `http://<address>/`, from the address at connect time; left out when there
+  is none.
+
+**RAM: nothing new to speak of.** Setup mode's buffers — three connections of
+2 KB receive, 2 KB transmit, 2 KB request and an 8 KB page — were always
+`StaticCell`s, so they sat reserved in `.bss` on every boot, used or not.
+`http::slots()` hands them to whichever server runs, and only one ever does.
+The station stack went from 4 to 6 sockets.
+
+Feed, clock and calibration were added the same day and verified with `curl`
+for everything that dispenses nothing: a detent saved and restored, a value
+off the 10 ms step refused, the clock set from the laptop and read back, 30
+February and a zero feed refused. **Feed and Run calibration are not yet seen
+turning the motor from the page.**
+
+Verified on the Zero with `curl`: `401` without and with a wrong password;
+the page in ~0.1 s, 4 KB; `404`, `405`, and `403` for a foreign `Origin`;
+meals saved and echoed on `feeder/<id>/schedule/state` in ~0.2 s; a gap
+refused with its message; a hostname refused with the typed value kept; the
+unchanged network form answered *Nothing changed* with the unit staying up;
+and a real round trip — broker port to 1884, restart, back in ~4 s, port to
+1883 from the same page, restart, `online` with meals and calibration intact.
+`configuration_url` reads `http://192.168.68.110/` on the broker.
+
+**Point 4 as built.** A meal is a *position* in the schedule, and Home
+Assistant shows position *n* as *Meal n time* and *Meal n portions*, reading
+both out of the retained `feeder/<id>/schedule/state` echo — so flash stays
+the only copy and the entities only ever show it back. An edit is one
+non-retained command, `feeder/<id>/meal/<n>/time` or `/portions`, applied by
+the schedule task through `Bus::schedule`, now a queue of `ScheduleCommand`s
+rather than a `Signal`: a time and a portion count sent a moment apart are two
+edits, and a signal would keep only the second. The rules — the first three
+host-tested in `schedule.rs`, the last two gated code seen on hardware:
+
+- **Zero portions switches a meal off and keeps it in place.** Removing it
+  would renumber every meal after it under the user's feet. A switched-off
+  slot is never fed, never counted in `meals`, never the `next` feed — and the
+  same now holds for a zero in a whole-schedule command.
+- **A time past the end adds the meal switched off**, padding any gap with
+  switched-off midnight slots. A time alone never feeds.
+- **Portions past the end are refused** (`NoTimeYet`). There is no time to
+  feed them at, and inventing one would dispense a meal nobody chose.
+- **A refused edit republishes the unchanged echo** (`main.rs`), because neither entity is
+  optimistic: that is what makes the value spring back in Home Assistant
+  rather than sit showing something the unit never took.
+- **A retained edit is refused** (`mqtt.rs`), like a retained schedule command.
+
+Verified on the Zero against the dev stack: all sixteen registered; a time and
+portions published back to back both applied, in order, with one flash write
+each; portions for meal 6 refused with `NoTimeYet`, `0/time` and `25:00:00`
+rejected at the topic; an unchanged value not rewritten; and the recorder
+shows `time.cat_feeder_99177c_meal_3_time` going `12:30:00` then `unknown` as
+the slot was added and the schedule replaced. Not yet exercised: changing one
+from Home Assistant's own UI — the payloads above are the ones its `time` and
+`number` platforms send, read from the installed source.
 
 ⚠️ A **retained** publish to a command topic *is* acted on by a unit already
 subscribed, because the broker forwards it live with the retain flag cleared.
@@ -2197,15 +2318,13 @@ switch that already works here. Eight `time` plus eight `number` entities in the
 unit's own device block means a feeding time is a time picker on the feeder's
 page in Home Assistant, with no package, no helpers and no YAML. (Checked
 against the Home Assistant in `compose.yaml`, 2026.9.2.) The unit's own web
-server is the other surface, since `setup.rs` already serves a form — which is
-what Tasmota and Shelly do.
+server is the other surface — point 5 — which is what Tasmota and Shelly do.
 
 **5. The unit serves its own admin page, in station mode and not only during
-setup.** Most of it is already built: `setup.rs` parses a request line and a
-`Content-Length`, renders a form and parses it back, and runs three connections
-with their own buffers, and a configured unit already has a network stack. What
-is new is running the listener alongside MQTT, authenticating it, and a page for
-the schedule.
+setup.** Built on what setup mode already had — request parsing, forms, three
+connections — moved into `http.rs` so both servers share it; what was new is
+running the listener alongside MQTT, authenticating it, and a page for the
+schedule. *Point 5 as built*, in the status paragraph above, has the detail.
 
 It is also the re-provisioning route the button was always a poor substitute
 for. *The value is in re-provisioning, not first boot* is already written above,
@@ -2217,10 +2336,10 @@ not two* still holds.
 
 Four rules it comes with:
 
-- **The admin password is derived by default**, `base32(sha256("<ap_secret>:<id>"))`
-  — the same string the sticker carries and `./dev/ap-password.sh` prints. A unit
-  is then never unauthenticated, even if the field is left blank during setup,
-  and recovery needs no password-reset flow because the boot gesture erases the
+- **The admin password is derived**, `base32(sha256("<ap_secret>:<id>"))`
+  — the same string the sticker carries and `./dev/ap-password.sh` prints.
+  There is no field to set one, so a unit is never unauthenticated, and
+  recovery needs no password-reset flow because the boot gesture erases the
   record. The physical button stays the root of trust, which is the right answer
   for a device with no other identity.
 - **Never render a stored secret back into a form.** The setup page re-fills
@@ -2231,19 +2350,20 @@ Four rules it comes with:
 - **`configuration_url` in the discovery `device` block** (abbreviated `cu`, and
   accepted by the schema — checked) gives Home Assistant a *Visit device* link
   at whatever address the unit had when it connected, republished on every
-  reconnect. mDNS is not an option: `.local` resolves only over multicast, which
+  reconnect — `mqtt.rs` re-reads the address at each session, so a new lease
+  is picked up. mDNS is not an option: `.local` resolves only over multicast, which
   mesh routers reflect unreliably, and a browser with Secure DNS hands `.local`
   to the upstream resolver and gets NXDOMAIN regardless. The display is the other backstop, and **it
   already shows the address**: turn the knob to the `WI-FI` page — see *The
   screen's pages* below.
-- **Saving Wi-Fi or the broker reboots; saving a schedule must not.** A feeder
-  that restarts when a mealtime is adjusted drops its clock trust and goes back
-  to waiting for a live time.
+- **Saving Wi-Fi or the broker reboots; saving a schedule does not.** With a
+  set RTC a restart no longer costs clock trust — it re-arms in about a second
+  — but it still costs a few seconds off the broker and would cut short a feed
+  in progress, for no reason when only a mealtime changed.
 
-The cost is RAM and a permanent listener. Three connections exist because a
-browser opens several at once, and those buffers would now coexist with MQTT,
-the feeder, the schedule task, the indicator and the display — that wants
-measuring on a Zero rather than estimating. An always-on HTTP server is also
+The cost was expected to be RAM and a permanent listener. The RAM turned out
+free — see *Point 5 as built* above: setup mode's buffers were already
+reserved on every boot. The listener is real: an always-on HTTP server is
 permanent attack surface on the house network, which is the real reason the
 authentication above is not optional.
 
@@ -2304,10 +2424,9 @@ automations, so as long as Home Assistant owns the schedule, the package stays.
 offered `input_datetime` and `input_number` helpers as the near-term editor,
 needing no firmware change. The firmware half of v2 has since landed (points 1,
 2, 6 and 7 above), so there is no old design left to extend. Today a person
-changes the feeding times by editing `meals` in the package and running
-*send the schedule to every feeder*; helpers templating `meals` would still
-make that user-facing without YAML, and are still one file's work, but they
-now feed the script rather than a retained topic.
+changes one feeder's times on its own device page, through the `Meal n`
+entities, or all three at once by editing `meals` in the package and running
+*send the schedule to every feeder*.
 
 Pausing already finds its units rather than being told them — see *Pause stops
 the schedule, not the feeder*. That one was cheap enough to do immediately, and

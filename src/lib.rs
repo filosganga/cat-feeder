@@ -23,9 +23,11 @@
 extern crate alloc;
 
 // Pure logic. No esp-hal, testable on the host.
+pub mod admin;
 pub mod button;
 pub mod calibrate;
 pub mod dhcp;
+pub mod discovery;
 pub mod display;
 pub mod ds3231;
 pub mod encoder;
@@ -42,6 +44,8 @@ pub mod sha256;
 pub mod board;
 #[cfg(target_os = "none")]
 pub mod config;
+#[cfg(target_os = "none")]
+pub mod http;
 #[cfg(target_os = "none")]
 pub mod i2c;
 #[cfg(target_os = "none")]
@@ -60,5 +64,7 @@ pub mod setup;
 pub mod store;
 #[cfg(target_os = "none")]
 pub mod switch;
+#[cfg(target_os = "none")]
+pub mod web;
 #[cfg(target_os = "none")]
 pub mod wiring;

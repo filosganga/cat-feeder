@@ -115,7 +115,7 @@ A healthy boot looks like this:
 ```
 INFO - board: zero, id=99177c
 INFO - rtc: DS3231 holds 2026-09-25T19:03:12, running since last set, 26.00 C
-INFO - schedule: 2 slots from flash
+INFO - schedule: 2 meals from flash
 INFO - clock: RTC time 2026-09-25T19:03:12, schedule armed
 INFO - wifi: connected, ip=192.168.68.115/24
 INFO - mqtt: connected, id=feeder_99177c
@@ -224,6 +224,15 @@ With a cable to hand, `./dev/provision.sh` does the same job without any of
 this — it writes the record directly. The access point is for the case where
 the units are already installed and a laptop is not.
 
+**Once it is running, it has a page of its own** at `http://<its address>/` —
+the address is on the knob's `WI-FI` page, and Home Assistant links to it as
+*Visit device*. Log in with any username and the same sticker password. It
+shows the clock and the next meal, feeds on demand, edits the eight meals,
+sets the clock (one button takes your phone's time), sets or measures the
+detent interval and portion scale, and changes the Wi-Fi or broker (which
+restarts the unit). Stored passwords are never shown;
+leave a password box empty to keep it.
+
 There is deliberately no automatic fall back into setup after a failed
 connection. A router rebooting for five minutes must not drop a working feeder
 into setup mode and stop it feeding — the button makes that a decision rather
@@ -298,8 +307,14 @@ feeder/<id>/state          {"feeding":…,"jammed":…,"paused":…,"meals":…,
 ```
 
 Each unit publishes Home Assistant discovery configs on connect, so a feeder
-shows up as one device with a feed button, a pause switch and a jam sensor. No
-YAML on the Home Assistant side.
+shows up as one device with a feed button, a pause switch, a jam sensor, and
+eight *Meal n time* / *Meal n portions* pairs that edit its schedule, plus a
+*Visit device* link to its admin page. No YAML on the Home Assistant side.
+
+```
+feeder/<id>/meal/<n>/time      08:00:00              never retained, meal n's time
+feeder/<id>/meal/<n>/portions  2                     never retained, 0 switches it off
+```
 
 ## Layout
 
@@ -335,7 +350,11 @@ src/
   wiring.rs       what the tasks share
   config.rs       Config from the flash record, and the MAC-derived device id
   dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
-  setup.rs        setup mode: the unit's own network, DHCP, and the sockets
+  setup.rs        setup mode: the unit's own network, DHCP, and the form
+  http.rs         the sockets under both web servers
+  admin.rs        pure: the admin page — login, forms, the page itself
+  web.rs          the admin page on the house network
+  discovery.rs    pure: the Home Assistant entities and their configs
 
 build.rs          reads cfg.toml into the build
 dev/              local Mosquitto and Home Assistant, plus the scripts

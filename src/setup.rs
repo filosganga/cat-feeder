@@ -45,7 +45,6 @@
 //! that has raised a network with a derived password can otherwise only say so
 //! over a serial cable.
 
-use core::fmt::Write as _;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use edge_dhcp::server::{Server, ServerOptions};
@@ -58,7 +57,6 @@ use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Timer};
-use embedded_io_async::Write as _;
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Rng;
 use esp_radio::wifi::{
@@ -70,9 +68,9 @@ use log::{error, info, warn};
 use static_cell::StaticCell;
 
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
+use crate::http;
 use crate::provisioning::{
-    AP_ADDR_OCTETS, Head, Method, PAGE_LEN, Record, parse_head, record_from_form, render_form,
-    render_saved,
+    AP_ADDR_OCTETS, Method, PAGE_LEN, Record, record_from_form, render_form, render_saved,
 };
 use crate::store::Store;
 
@@ -110,11 +108,6 @@ const LEASES: usize = 8;
 /// and the only way back is a reboot. At ten minutes the pool recovers on its
 /// own. A client renews at half the lease, which costs two packets.
 const LEASE_SECS: u32 = 600;
-
-/// The form's port. Plain HTTP: there is no certificate a self-signed unit
-/// could present that a phone would not shout about, and the link itself is
-/// WPA2 — which is the reason the AP password is salted.
-const HTTP_PORT: u16 = 80;
 
 /// Big enough for any DHCP message a client will send. The protocol minimum is
 /// 300 bytes and 576 is the usual maximum, so this has room to spare and a
@@ -285,7 +278,7 @@ fn start_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
     // One UDP socket for DHCP plus `CONNECTIONS` TCP ones for the form, and a
     // spare. Too few shows up as `accept failed (InvalidState)` rather than as
     // anything about sockets.
-    static RESOURCES: StaticCell<StackResources<{ CONNECTIONS + 2 }>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<{ http::CONNECTIONS + 2 }>> = StaticCell::new();
 
     let (stack, runner) =
         embassy_net::new(device, config, RESOURCES.init(StackResources::new()), seed);
@@ -445,33 +438,6 @@ async fn halt() -> ! {
 // The form
 // ---------------------------------------------------------------------------
 
-/// How much of a request this will hold.
-///
-/// The head of a phone browser's `POST` runs to a few hundred bytes of headers;
-/// the body is six fields, the longest of which is a 64-character password that
-/// percent-encoding can treble. 2 KB is comfortable for both, and a request
-/// that does not fit is answered rather than silently truncated — a truncated
-/// body would parse as a form with fields missing and blame the person typing.
-const REQUEST_LEN: usize = 2048;
-
-/// The socket's send buffer. Smaller than a page on purpose: `write_all`
-/// refills it as the peer acknowledges, so this only sets how many round trips
-/// a response takes, not how large one can be.
-const TX_LEN: usize = 2048;
-
-/// How long a connection may sit idle before it is recycled.
-///
-/// A browser opens connections it then sends nothing on. Each occupies a slot
-/// until this expires, so it is short — but not so short that a phone on a weak
-/// signal loses a request in flight.
-const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How many connections are served at once.
-///
-/// **Not one.** See [`serve_form`]: a single socket makes a browser's own
-/// speculative connection block the next real request.
-const CONNECTIONS: usize = 3;
-
 /// Serves the form until a record is saved, then reboots.
 ///
 /// **Several connections at once, not one.** A browser opens more than it uses,
@@ -484,56 +450,43 @@ async fn serve_form(
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
 ) -> ! {
-    static RX: StaticCell<[[u8; REQUEST_LEN]; CONNECTIONS]> = StaticCell::new();
-    static TX: StaticCell<[[u8; TX_LEN]; CONNECTIONS]> = StaticCell::new();
-    static REQUEST: StaticCell<[[u8; REQUEST_LEN]; CONNECTIONS]> = StaticCell::new();
-    static PAGE: StaticCell<[String<PAGE_LEN>; CONNECTIONS]> = StaticCell::new();
+    let [s0, s1, s2] = http::slots();
 
-    // Destructured rather than indexed, so each slot below gets its own
-    // `&'static mut` and the borrow checker can see they do not alias.
-    let [rx0, rx1, rx2] = RX.init([[0; REQUEST_LEN]; CONNECTIONS]);
-    let [tx0, tx1, tx2] = TX.init([[0; TX_LEN]; CONNECTIONS]);
-    let [rq0, rq1, rq2] = REQUEST.init([[0; REQUEST_LEN]; CONNECTIONS]);
-    let [pg0, pg1, pg2] = PAGE.init([String::new(), String::new(), String::new()]);
-
-    info!("setup: form on http://{AP_ADDR}/, {CONNECTIONS} connections");
+    info!(
+        "setup: form on http://{AP_ADDR}/, {} connections",
+        http::CONNECTIONS
+    );
 
     join3(
-        connection(0, stack, rx0, tx0, rq0, pg0, store, previous),
-        connection(1, stack, rx1, tx1, rq1, pg1, store, previous),
-        connection(2, stack, rx2, tx2, rq2, pg2, store, previous),
+        connection(0, stack, s0, store, previous),
+        connection(1, stack, s1, store, previous),
+        connection(2, stack, s2, store, previous),
     )
     .await
     .0
 }
 
 /// One connection slot: accept, answer, recycle, forever.
-///
-/// `slot` exists for the log. Two slots working while a third sits idle is the
-/// normal picture, and without the number a capture reads as one connection
-/// behaving erratically.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the caller splits one static array per buffer so each slot owns \
-    its own; bundling them into a struct would carry the same six fields"
-)]
 async fn connection(
     slot: u8,
     stack: Stack<'static>,
-    rx: &'static mut [u8; REQUEST_LEN],
-    tx: &'static mut [u8; TX_LEN],
-    request: &'static mut [u8; REQUEST_LEN],
-    page: &'static mut String<PAGE_LEN>,
+    buffers: http::Slot,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
 ) -> ! {
+    let http::Slot {
+        rx,
+        tx,
+        request,
+        page,
+    } = buffers;
     let mut socket = TcpSocket::new(stack, rx, tx);
-    socket.set_timeout(Some(HTTP_TIMEOUT));
+    socket.set_timeout(Some(http::TIMEOUT));
 
     loop {
-        if let Err(e) = socket.accept(HTTP_PORT).await {
+        if let Err(e) = socket.accept(http::PORT).await {
             warn!("setup: [{slot}] accept failed ({e:?})");
-            reset_socket(&mut socket).await;
+            http::reset(&mut socket).await;
             continue;
         }
 
@@ -550,20 +503,8 @@ async fn connection(
             esp_hal::system::software_reset()
         }
 
-        reset_socket(&mut socket).await;
+        http::reset(&mut socket).await;
     }
-}
-
-/// Returns the socket to a state `accept` will take.
-///
-/// `close` sends FIN and waits for the peer; `abort` then guarantees the socket
-/// is free even if the peer never answers, which a phone that walked out of
-/// range will not.
-async fn reset_socket(socket: &mut TcpSocket<'_>) {
-    socket.close();
-    let _ = socket.flush().await;
-    socket.abort();
-    let _ = socket.flush().await;
 }
 
 enum Outcome {
@@ -577,12 +518,12 @@ enum Outcome {
 async fn handle(
     slot: u8,
     socket: &mut TcpSocket<'_>,
-    request: &mut [u8; REQUEST_LEN],
+    request: &mut [u8; http::REQUEST_LEN],
     page: &mut String<PAGE_LEN>,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
 ) -> Outcome {
-    let Some((head, body)) = read_request(slot, socket, request).await else {
+    let Some((head, body)) = http::read_request("setup", slot, socket, request).await else {
         return Outcome::Continue;
     };
 
@@ -604,7 +545,7 @@ async fn handle(
                             record.wifi_ssid, record.mqtt_host, record.mqtt_port
                         );
                         render_saved(page, &record);
-                        send(socket, "200 OK", page).await;
+                        http::send("setup", socket, "200 OK", "", page).await;
                         Outcome::Saved
                     }
                     Err(e) => {
@@ -613,7 +554,7 @@ async fn handle(
                         // and cannot explain why.
                         error!("setup: could not save ({e:?})");
                         render_form(page, body, None, Some("Saving to flash failed."));
-                        send(socket, "500 Internal Server Error", page).await;
+                        http::send("setup", socket, "500 Internal Server Error", "", page).await;
                         Outcome::Continue
                     }
                 },
@@ -625,7 +566,7 @@ async fn handle(
                     render_form(page, body, Some(e), None);
                     // 200, not 400. The body *is* the answer — the form again,
                     // with the message — and a browser shows it either way.
-                    send(socket, "200 OK", page).await;
+                    http::send("setup", socket, "200 OK", "", page).await;
                     Outcome::Continue
                 }
             }
@@ -633,7 +574,7 @@ async fn handle(
         (Method::Other, _) => {
             page.clear();
             let _ = page.push_str("Method not allowed.");
-            send(socket, "405 Method Not Allowed", page).await;
+            http::send("setup", socket, "405 Method Not Allowed", "", page).await;
             Outcome::Continue
         }
         // `GET /` and everything else. A phone probes several odd paths the
@@ -644,102 +585,8 @@ async fn handle(
         // typed in by hand.
         _ => {
             render_form(page, "", None, None);
-            send(socket, "200 OK", page).await;
+            http::send("setup", socket, "200 OK", "", page).await;
             Outcome::Continue
         }
-    }
-}
-
-/// Reads until the head parses and the whole body has arrived.
-///
-/// `None` means the connection produced nothing usable and has been answered
-/// if it deserved an answer.
-async fn read_request<'b>(
-    slot: u8,
-    socket: &mut TcpSocket<'_>,
-    request: &'b mut [u8; REQUEST_LEN],
-) -> Option<(Head, &'b str)> {
-    let mut filled = 0;
-
-    let head = loop {
-        // Parse before reading: the first read usually carries the whole head,
-        // and a `GET` has no body to wait for.
-        match parse_head(&request[..filled]) {
-            Ok(Some(head)) => break head,
-            Ok(None) => {}
-            Err(e) => {
-                warn!("setup: [{slot}] bad request ({e:?})");
-                return None;
-            }
-        }
-
-        if filled == request.len() {
-            warn!("setup: [{slot}] request head too large");
-            return None;
-        }
-
-        match socket.read(&mut request[filled..]).await {
-            // A browser opening a connection and dropping it without a
-            // request. Ordinary, and not worth a line in the log.
-            Ok(0) => return None,
-            Ok(n) => filled += n,
-            Err(e) => {
-                warn!("setup: [{slot}] read failed ({e:?})");
-                return None;
-            }
-        }
-    };
-
-    let want = head.body_at.checked_add(head.content_length)?;
-    if want > request.len() {
-        warn!(
-            "setup: [{slot}] body of {} bytes is too large",
-            head.content_length
-        );
-        return None;
-    }
-
-    while filled < want {
-        match socket.read(&mut request[filled..]).await {
-            Ok(0) => {
-                warn!("setup: [{slot}] connection closed mid-body");
-                return None;
-            }
-            Ok(n) => filled += n,
-            Err(e) => {
-                warn!("setup: [{slot}] read failed ({e:?})");
-                return None;
-            }
-        }
-    }
-
-    let body = core::str::from_utf8(&request[head.body_at..want]).ok()?;
-    Some((head, body))
-}
-
-/// Writes a response, headers and all.
-///
-/// `Connection: close` on every one. There are only [`CONNECTIONS`] slots, and
-/// a browser holding one open with keep-alive would spend a third of them on a
-/// connection it has finished with — the same starvation [`serve_form`]
-/// describes, just slower to arrive.
-async fn send(socket: &mut TcpSocket<'_>, status: &str, body: &str) {
-    let mut headers: String<160> = String::new();
-    let _ = write!(
-        headers,
-        "HTTP/1.1 {status}\r\n\
-         Content-Type: text/html; charset=utf-8\r\n\
-         Content-Length: {}\r\n\
-         Cache-Control: no-store\r\n\
-         Connection: close\r\n\r\n",
-        body.len()
-    );
-
-    if let Err(e) = socket.write_all(headers.as_bytes()).await {
-        warn!("setup: write failed ({e:?})");
-        return;
-    }
-    if let Err(e) = socket.write_all(body.as_bytes()).await {
-        warn!("setup: write failed ({e:?})");
     }
 }

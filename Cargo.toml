@@ -153,8 +153,10 @@ toml = "1"
 # For `examples/mkrecord.rs`, which reads the same cfg.toml build.rs does but
 # runs on the host. Dev-dependencies are not compiled into the firmware.
 [dev-dependencies]
-heapless = "0.9"
-toml     = "1"
+heapless   = "0.9"
+# Only to check that discovery.rs renders valid JSON.
+serde_json = "1"
+toml       = "1"
 
 # Builds a provisioning record for dev/provision.sh to flash.
 #

@@ -8,7 +8,9 @@
 #![deny(clippy::large_stack_frames)]
 
 use cat_feeder::button::{BOOT_RESET_HOLD_MS, held_at_boot};
-use cat_feeder::calibrate::{Failure as CalibrationFailure, Measurement, Run as CalibrationRun};
+use cat_feeder::calibrate::{
+    Failure as CalibrationFailure, Measurement, Progress, Run as CalibrationRun,
+};
 use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
 use cat_feeder::display::{self, Fed, Net, Screen, SetupInfo, UnitInfo, View};
 use cat_feeder::ds3231::Reading as RtcReading;
@@ -29,8 +31,8 @@ use cat_feeder::provisioning::{
 };
 use cat_feeder::rtc::Rtc;
 use cat_feeder::schedule::{
-    Alignment, Change, Due, LocalClock, Schedule, ScheduleRecordError, Scheduler, Skipped,
-    TimeSource, Wall, seconds_between,
+    Alignment, Change, Due, LocalClock, Schedule, ScheduleCommand, ScheduleRecordError, Scheduler,
+    Skipped, SlotChange, SlotEdit, TimeSource, Wall, seconds_between,
 };
 use cat_feeder::store::{SharedStore, Store, StoreError};
 use cat_feeder::switch::{ClickSource, Switch};
@@ -43,7 +45,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, Either3, select, select3};
-use embassy_net::{Runner, StackResources};
+use embassy_net::{Runner, Stack, StackResources};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Instant, Timer};
@@ -326,7 +328,8 @@ async fn main(spawner: Spawner) -> ! {
     let (stack, runner) = embassy_net::new(
         interfaces.station,
         embassy_net::Config::dhcpv4(dhcp_config()),
-        mk_static!(StackResources<4>, StackResources::<4>::new()),
+        // DHCP, MQTT and the admin page's connections, with one spare.
+        mk_static!(StationSockets, StationSockets::new()),
         seed,
     );
 
@@ -340,6 +343,26 @@ async fn main(spawner: Spawner) -> ! {
         info!("wifi: connected, ip={}", v4.address);
         BUS.ip.set(Some(v4.address.address().octets()));
     }
+
+    // The admin page. Its password is the one the setup network had — derived,
+    // never stored, so there is nothing to leak from flash and nothing to reset
+    // but the record itself.
+    let password = mk_static!(
+        heapless::String<AP_PASSWORD_LEN>,
+        ap_password(AP_SECRET, id)
+    );
+    let admin = cat_feeder::web::Unit {
+        id: id.as_str(),
+        version: env!("CARGO_PKG_VERSION"),
+        password: password.as_str(),
+        network: cat_feeder::admin::Network {
+            wifi_ssid: cfg.wifi_ssid,
+            mqtt_host: cfg.mqtt_host,
+            mqtt_port: cfg.mqtt_port,
+            mqtt_user: cfg.mqtt_user,
+        },
+    };
+    spawner.spawn(web_task(stack, store, admin).expect("failed to create web task"));
 
     mqtt::run(stack, cfg, id.as_str(), &BUS).await
 }
@@ -617,6 +640,9 @@ impl Click {
 #[inline(never)]
 fn ui_input(menu: &mut Menu, click: &mut Click, input: UiInput) -> Option<MenuOutcome> {
     let now = now_ms();
+    // The calibration in force, before anything edits or saves it: the admin
+    // page may have changed it since the last input.
+    menu.set_calibration(BUS.calibration.get());
     let outcome = match input {
         UiInput::Tick(level) => {
             let mut outcome = None;
@@ -703,22 +729,10 @@ fn on_menu(outcome: MenuOutcome) {
     }
 }
 
-/// The knob set the time: to the schedule's clock, and to the RTC behind it.
-///
-/// Both through the paths a live `feeder/time` takes, stamped now, so there is
-/// no second way for a time to enter the unit. `Manual` behaves as `Live` does
-/// — it arms and it overrides — and the RTC task writes it because it differs
-/// from what the chip holds. Home Assistant's next live time, if there is one,
-/// still has the last word.
+/// The knob set the time. See `Bus::set_clock_by_hand`.
 #[inline(never)]
 fn set_clock(wall: Wall) {
-    let sync = TimeSync {
-        monotonic_ms: now_ms(),
-        wall,
-        source: TimeSource::Manual,
-    };
-    BUS.time.signal(sync);
-    BUS.rtc_time.signal(sync);
+    BUS.set_clock_by_hand(wall);
     info!("menu: clock set by hand to {wall}");
 }
 
@@ -1209,6 +1223,8 @@ fn log_calibration(timings: Timings, portion_scale_pct: u16) {
 /// The state payload does show `feeding`, because the motor is turning.
 async fn calibrate(motor: &mut Drv8833<'static>, jammed: bool) {
     let mut run = CalibrationRun::new();
+    BUS.calibration_progress
+        .set(Progress::Running { clicks: 0 });
     BUS.status.set(true, jammed);
     motor.run_forward();
 
@@ -1222,6 +1238,9 @@ async fn calibrate(motor: &mut Drv8833<'static>, jammed: bool) {
             Either::First(()) => {
                 let clicks = run.on_click(now_ms());
                 BUS.calibration_clicks.signal(clicks as u8);
+                BUS.calibration_progress.set(Progress::Running {
+                    clicks: clicks as u8,
+                });
             }
             Either::Second(()) => break,
         }
@@ -1231,6 +1250,7 @@ async fn calibrate(motor: &mut Drv8833<'static>, jammed: bool) {
     BUS.status.set(false, jammed);
     let result = run.result();
     log_calibration_run(result);
+    BUS.calibration_progress.set(Progress::Finished(result));
     BUS.calibration_result.signal(result);
 }
 
@@ -1288,9 +1308,7 @@ async fn schedule_task(store: &'static SharedStore, meals: Option<Schedule>) {
             log_alignment(alignment, sync.wall, sync.source);
         }
 
-        if let Some(schedule) = BUS.schedule.try_take() {
-            accept_schedule(&mut scheduler, store, schedule).await;
-        }
+        apply_commands(&mut scheduler, store).await;
 
         // Armed means the clock is trusted — a live time, a DS3231 that kept
         // time, or one set by hand — not merely that it is running. A unit
@@ -1318,6 +1336,21 @@ async fn schedule_task(store: &'static SharedStore, meals: Option<Schedule>) {
     }
 }
 
+/// Every schedule command waiting, in order: a meal's time and its portions
+/// are two edits, and the second applies to the first's result.
+///
+/// Out of line for the frame budget, as [`resolve`] is: the commands and the
+/// schedules they produce would otherwise sit in `schedule_task`'s frame for
+/// the life of the task.
+#[inline(never)]
+async fn apply_commands(scheduler: &mut Scheduler, store: &'static SharedStore) {
+    while let Ok(command) = BUS.schedule.try_receive() {
+        if let Some(schedule) = command_result(scheduler.schedule(), command) {
+            accept_schedule(scheduler, store, schedule).await;
+        }
+    }
+}
+
 /// A schedule command: store it, then put it in force, then echo it.
 ///
 /// Flash first, so what the unit acts on is what it would come back up with.
@@ -1333,23 +1366,71 @@ async fn accept_schedule(
     schedule: Schedule,
 ) {
     if BUS.held.get().as_ref() == Some(&schedule) {
-        info!("schedule: {} slots, unchanged", schedule.len());
+        info!("schedule: {} meals, unchanged", schedule.meals());
         return;
     }
     let stored = store.lock().await.save_schedule(&schedule);
-    log_schedule_stored(schedule.len(), stored);
+    log_schedule_stored(schedule.meals(), stored);
     BUS.held.set(schedule.clone());
     scheduler.set_schedule(schedule);
     BUS.schedule_changed.signal(());
 }
 
+/// The schedule a command asks for, or `None` with a line saying why not.
+///
+/// An edit applies to what the scheduler holds — an empty schedule for a unit
+/// never given one, so a blank unit can be given its first meal slot by slot.
+/// A refused edit changes nothing, and the entity in Home Assistant springs
+/// back when the unchanged echo does not move it.
+#[inline(never)]
+fn command_result(held: &Schedule, command: ScheduleCommand) -> Option<Schedule> {
+    let edit = match &command {
+        ScheduleCommand::Edit(edit) => Some(*edit),
+        ScheduleCommand::Replace(_) => None,
+    };
+    match (command.apply(held), edit) {
+        (Ok(schedule), edit) => {
+            if let Some(edit) = edit {
+                log_edit(edit);
+            }
+            Some(schedule)
+        }
+        (Err(e), edit) => {
+            let meal = edit.map_or(0, |edit| edit.index + 1);
+            warn!("schedule: meal {meal} edit refused: {e:?}");
+            // The refusal is invisible in Home Assistant otherwise: a
+            // non-optimistic entity only moves on an echo, and there is none.
+            // Republishing the unchanged one puts it back.
+            BUS.schedule_changed.signal(());
+            None
+        }
+    }
+}
+
 /// See [`log_start`] for why this is a separate function.
 #[inline(never)]
-fn log_schedule_stored(slots: usize, stored: Result<(), StoreError>) {
+fn log_edit(edit: SlotEdit) {
+    let meal = edit.index + 1;
+    match edit.change {
+        SlotChange::Time(minute) => {
+            info!(
+                "schedule: meal {meal} at {:02}:{:02}",
+                minute / 60,
+                minute % 60
+            )
+        }
+        SlotChange::Portions(0) => info!("schedule: meal {meal} switched off"),
+        SlotChange::Portions(n) => info!("schedule: meal {meal} is {n} portions"),
+    }
+}
+
+/// See [`log_start`] for why this is a separate function.
+#[inline(never)]
+fn log_schedule_stored(meals: usize, stored: Result<(), StoreError>) {
     match stored {
-        Ok(()) => info!("schedule: {slots} slots, stored"),
+        Ok(()) => info!("schedule: {meals} meals, stored"),
         Err(e) => {
-            warn!("schedule: {slots} slots in force, but not stored ({e:?}); a reboot loses them")
+            warn!("schedule: {meals} meals in force, but not stored ({e:?}); a reboot loses them")
         }
     }
 }
@@ -1359,7 +1440,7 @@ fn log_schedule_stored(slots: usize, stored: Result<(), StoreError>) {
 fn load_schedule(store: &mut Store) -> Option<Schedule> {
     match store.load_schedule() {
         Ok(schedule) => {
-            info!("schedule: {} slots from flash", schedule.len());
+            info!("schedule: {} meals from flash", schedule.meals());
             Some(schedule)
         }
         Err(ScheduleRecordError::NotStored) => {
@@ -1802,6 +1883,16 @@ async fn wifi_task(mut controller: WifiController<'static>, ssid: &'static str) 
 
         Timer::after(Duration::from_secs(5)).await;
     }
+}
+
+/// The station stack's sockets: DHCP, MQTT, one spare, and one per admin page
+/// connection. Derived, so a change to `http::CONNECTIONS` cannot leave the
+/// page's slots failing to `accept`.
+type StationSockets = StackResources<{ cat_feeder::http::CONNECTIONS + 3 }>;
+
+#[embassy_executor::task]
+async fn web_task(stack: Stack<'static>, store: &'static SharedStore, unit: cat_feeder::web::Unit) {
+    cat_feeder::web::run(stack, store, unit, &BUS).await
 }
 
 #[embassy_executor::task]

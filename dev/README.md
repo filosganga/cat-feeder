@@ -113,7 +113,9 @@ devices on their own once they publish their config.
 
 ## Home Assistant automations
 
-Discovery gives you the three entities. It does **not** give you the schedule:
+Discovery gives you the entities: Feed, Paused, Jammed, and the sixteen
+*Meal n time* / *Meal n portions* under Configuration, which edit that one
+unit's schedule. It does **not** give you a schedule by itself:
 a new unit starts with no meals and will not feed until it is sent some, and a
 unit whose RTC was never set waits for a live `feeder/time` before it trusts
 its clock. That half lives in
@@ -261,7 +263,7 @@ package gets the slow path back.
 
 To change feeding times, edit `meals` in the package, copy it in again,
 restart or reload it, **then run `script.cat_feeder_send_schedule`** — nothing
-sends the schedule by itself any more. Each unit logs `schedule: N slots,
+sends the schedule by itself any more. Each unit logs `schedule: N meals,
 stored` (or `unchanged`, if it already held that one) and echoes it on
 `feeder/<id>/schedule/state`. Verified end to end, when the schedule was still a
 shared retained topic: a slot published this way fired at exactly its time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.

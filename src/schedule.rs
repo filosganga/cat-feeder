@@ -485,10 +485,123 @@ pub fn seconds_between(from: Wall, to: Wall) -> i64 {
 }
 
 /// One feeding time. `minute_of_day` is local wall-clock, matching [`Wall`].
+///
+/// **Zero portions is a meal switched off**, kept in its place rather than
+/// removed. Home Assistant's `Meal n` entities address slots by position, so
+/// deleting one would renumber every meal after it under the user's feet;
+/// switching it off leaves the others where they were. A disabled slot is
+/// never fed, never counted in [`Schedule::meals`], and never shown as the
+/// next feed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slot {
     pub minute_of_day: u16,
     pub portions: u8,
+}
+
+impl Slot {
+    /// What a gap is padded with: midnight, switched off.
+    const OFF: Self = Self {
+        minute_of_day: 0,
+        portions: 0,
+    };
+
+    /// Whether this slot feeds at all. See [`Slot`] for zero.
+    pub fn is_enabled(&self) -> bool {
+        self.portions > 0
+    }
+}
+
+/// A change to one slot, by position: what Home Assistant's `Meal n time` and
+/// `Meal n portions` entities send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotEdit {
+    /// Zero-based. `Meal 1` is index 0.
+    pub index: u8,
+    pub change: SlotChange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotChange {
+    Time(u16),
+    Portions(u8),
+}
+
+/// Why a [`SlotEdit`] was not applied. The schedule is left as it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditError {
+    /// A position past [`MAX_SLOTS`], or a topic that names no slot.
+    NoSuchSlot,
+    /// Portions for a meal with no time yet. Set its time first.
+    NoTimeYet,
+    /// A time or a count that will not parse, or is out of range.
+    BadValue,
+}
+
+impl SlotEdit {
+    /// Reads one from the tail of a command topic and its payload.
+    ///
+    /// `path` is what follows `feeder/<id>/meal/`: `3/time` or `3/portions`,
+    /// one-based to match the entity names. A time is `HH:MM` or `HH:MM:SS`,
+    /// which is what Home Assistant's `time` entity sends; seconds are dropped,
+    /// because a slot is a minute of the day. Portions are a bare integer.
+    pub fn parse(path: &str, payload: &[u8]) -> Result<Self, EditError> {
+        let (number, field) = path.split_once('/').ok_or(EditError::NoSuchSlot)?;
+        let number = digits(number.as_bytes())
+            .filter(|n| !number.starts_with('0') && (1..=MAX_SLOTS as u16).contains(n))
+            .ok_or(EditError::NoSuchSlot)?;
+        let index = (number - 1) as u8;
+
+        let payload = core::str::from_utf8(payload)
+            .map_err(|_| EditError::BadValue)?
+            .trim();
+        let change = match field {
+            "time" => SlotChange::Time(parse_slot_time(payload)?),
+            "portions" => {
+                SlotChange::Portions(payload.parse::<u8>().map_err(|_| EditError::BadValue)?)
+            }
+            _ => return Err(EditError::NoSuchSlot),
+        };
+        Ok(Self { index, change })
+    }
+}
+
+/// `08:00` or `08:00:00` into minutes since midnight.
+pub(crate) fn parse_slot_time(text: &str) -> Result<u16, EditError> {
+    let hhmm = match text.len() {
+        5 => text,
+        8 if text.as_bytes()[5] == b':'
+            && digits(&text.as_bytes()[6..]).is_some_and(|s| s < 60) =>
+        {
+            &text[..5]
+        }
+        _ => return Err(EditError::BadValue),
+    };
+    parse_hhmm(hhmm).map_err(|_| EditError::BadValue)
+}
+
+/// What the schedule task is told to do with the schedule it owns.
+///
+/// Queued rather than signalled: a `Signal` holds one value, so a time and a
+/// portion count sent a moment apart would leave only the second, and the
+/// first edit would vanish without a word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleCommand {
+    /// A whole schedule, from `feeder/<id>/schedule` or `feeder/all/schedule`.
+    Replace(Schedule),
+    /// One slot, from a `Meal n` entity.
+    Edit(SlotEdit),
+}
+
+impl ScheduleCommand {
+    /// The schedule this command asks for, given the one held now — an empty
+    /// one for a unit never given any, so a blank unit can be given its first
+    /// meal slot by slot. A refused edit leaves `held` as it was.
+    pub fn apply(self, held: &Schedule) -> Result<Schedule, EditError> {
+        match self {
+            Self::Replace(schedule) => Ok(schedule),
+            Self::Edit(edit) => held.edited(edit),
+        }
+    }
 }
 
 /// Why a schedule command's payload could not be used.
@@ -526,6 +639,50 @@ impl Schedule {
 
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
+    }
+
+    /// Meals a day that will actually feed: slots with at least one portion.
+    /// `0` is the number that says a healthy-looking unit never will.
+    pub fn meals(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_enabled()).count()
+    }
+
+    /// This schedule with one slot changed, or why not.
+    ///
+    /// Slots are addressed by position, which is how Home Assistant's `Meal n`
+    /// entities and the knob number them. Two rules decide what a position
+    /// past the end means:
+    ///
+    /// - **Setting a time past the end adds the meal switched off**, padding
+    ///   any gap with switched-off slots at midnight. A time alone never feeds;
+    ///   it takes a portion count as well.
+    /// - **Setting portions past the end is refused.** There is no time to feed
+    ///   them at, and inventing one — midnight, say — would dispense a meal
+    ///   nobody chose.
+    pub fn edited(&self, edit: SlotEdit) -> Result<Self, EditError> {
+        let index = edit.index as usize;
+        if index >= MAX_SLOTS {
+            return Err(EditError::NoSuchSlot);
+        }
+
+        let mut schedule = self.clone();
+        match edit.change {
+            SlotChange::Time(minute_of_day) => {
+                if minute_of_day >= 24 * 60 {
+                    return Err(EditError::BadValue);
+                }
+                while schedule.slots.len() <= index {
+                    // Cannot fail: `index < MAX_SLOTS`, checked above.
+                    let _ = schedule.slots.push(Slot::OFF);
+                }
+                schedule.slots[index].minute_of_day = minute_of_day;
+            }
+            SlotChange::Portions(portions) => {
+                let slot = schedule.slots.get_mut(index).ok_or(EditError::NoTimeYet)?;
+                slot.portions = portions;
+            }
+        }
+        Ok(schedule)
     }
 
     /// Parses `[{"time":"08:00","portions":2},{"time":"19:00","portions":2}]`.
@@ -964,6 +1121,7 @@ impl Scheduler {
             .schedule
             .slots()
             .iter()
+            .filter(|slot| slot.is_enabled())
             .filter(|slot| slot.minute_of_day <= now_minute)
             .filter(|slot| after.is_none_or(|limit| slot.minute_of_day > limit))
             // The latest outstanding slot. Anything earlier is a missed meal,
@@ -1030,18 +1188,18 @@ impl Scheduler {
     pub fn upcoming(&self, now: Wall) -> Option<Slot> {
         let now_minute = now.minute_of_day();
 
-        self.schedule
-            .slots()
-            .iter()
+        let enabled = || {
+            self.schedule
+                .slots()
+                .iter()
+                .filter(|slot| slot.is_enabled())
+        };
+
+        enabled()
             .filter(|slot| slot.minute_of_day > now_minute)
             .min_by_key(|slot| slot.minute_of_day)
             // Nothing left today, so the next one is tomorrow's first.
-            .or_else(|| {
-                self.schedule
-                    .slots()
-                    .iter()
-                    .min_by_key(|slot| slot.minute_of_day)
-            })
+            .or_else(|| enabled().min_by_key(|slot| slot.minute_of_day))
             .copied()
     }
 }
@@ -1788,6 +1946,203 @@ mod tests {
 
     fn alloc_string(s: &str) -> std::string::String {
         std::string::String::from(s)
+    }
+
+    // ---- editing one slot ----
+
+    fn edit(path: &str, payload: &str) -> SlotEdit {
+        SlotEdit::parse(path, payload.as_bytes()).unwrap()
+    }
+
+    fn two() -> Schedule {
+        Schedule::parse(br#"[{"time":"08:00","portions":2},{"time":"19:00","portions":3}]"#)
+            .unwrap()
+    }
+
+    #[test]
+    fn reads_what_home_assistant_entities_send() {
+        assert_eq!(
+            edit("1/time", "07:45:00"),
+            SlotEdit {
+                index: 0,
+                change: SlotChange::Time(465)
+            }
+        );
+        assert_eq!(
+            edit("8/time", "23:59"),
+            SlotEdit {
+                index: 7,
+                change: SlotChange::Time(1439)
+            }
+        );
+        assert_eq!(
+            edit("3/portions", "2"),
+            SlotEdit {
+                index: 2,
+                change: SlotChange::Portions(2)
+            }
+        );
+    }
+
+    #[test]
+    fn refuses_edits_it_cannot_place() {
+        for (path, payload, why) in [
+            ("0/time", "08:00", EditError::NoSuchSlot),
+            ("9/time", "08:00", EditError::NoSuchSlot),
+            ("01/time", "08:00", EditError::NoSuchSlot),
+            ("x/time", "08:00", EditError::NoSuchSlot),
+            ("10/time", "08:00", EditError::NoSuchSlot),
+            ("1", "08:00", EditError::NoSuchSlot),
+            ("1/colour", "08:00", EditError::NoSuchSlot),
+            ("1/time", "8:00", EditError::BadValue),
+            ("1/time", "24:00:00", EditError::BadValue),
+            ("1/time", "08:00:60", EditError::BadValue),
+            ("1/time", "08:00:00.5", EditError::BadValue),
+            ("1/portions", "2.5", EditError::BadValue),
+            ("1/portions", "-1", EditError::BadValue),
+            ("1/portions", "256", EditError::BadValue),
+            ("1/portions", "", EditError::BadValue),
+        ] {
+            assert_eq!(
+                SlotEdit::parse(path, payload.as_bytes()),
+                Err(why),
+                "{path} {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_edit_changes_one_slot_in_place() {
+        let edited = two().edited(edit("2/time", "18:30:00")).unwrap();
+        assert_eq!(
+            edited.to_json().as_str(),
+            r#"[{"time":"08:00","portions":2},{"time":"18:30","portions":3}]"#
+        );
+
+        let edited = edited.edited(edit("1/portions", "1")).unwrap();
+        assert_eq!(
+            edited.to_json().as_str(),
+            r#"[{"time":"08:00","portions":1},{"time":"18:30","portions":3}]"#
+        );
+    }
+
+    /// A time past the end adds a meal that does not feed until it is given
+    /// portions, and pads any gap with switched-off slots.
+    #[test]
+    fn a_time_past_the_end_adds_a_meal_switched_off() {
+        let edited = two().edited(edit("4/time", "12:00:00")).unwrap();
+        assert_eq!(
+            edited.to_json().as_str(),
+            concat!(
+                r#"[{"time":"08:00","portions":2},{"time":"19:00","portions":3},"#,
+                r#"{"time":"00:00","portions":0},{"time":"12:00","portions":0}]"#
+            )
+        );
+        assert_eq!(edited.meals(), 2);
+
+        let fed = edited.edited(edit("4/portions", "1")).unwrap();
+        assert_eq!(fed.meals(), 3);
+    }
+
+    /// Never a meal at an invented time.
+    #[test]
+    fn portions_for_a_meal_with_no_time_are_refused() {
+        assert_eq!(
+            two().edited(edit("3/portions", "2")),
+            Err(EditError::NoTimeYet)
+        );
+        assert_eq!(
+            Schedule::new().edited(edit("1/portions", "2")),
+            Err(EditError::NoTimeYet)
+        );
+    }
+
+    #[test]
+    fn a_blank_unit_is_given_its_first_meal_by_two_edits() {
+        let first = Schedule::new().edited(edit("1/time", "08:00:00")).unwrap();
+        assert_eq!(first.meals(), 0);
+        let first = first.edited(edit("1/portions", "2")).unwrap();
+        assert_eq!(first.meals(), 1);
+        assert_eq!(
+            first.to_json().as_str(),
+            r#"[{"time":"08:00","portions":2}]"#
+        );
+    }
+
+    #[test]
+    fn an_edit_survives_flash() {
+        let edited = two().edited(edit("5/time", "13:00")).unwrap();
+        assert_eq!(Schedule::decode(&edited.encode()), Ok(edited.clone()));
+        assert_eq!(Schedule::parse(edited.to_json().as_bytes()), Ok(edited));
+    }
+
+    #[test]
+    fn a_command_replaces_or_edits_what_is_held() {
+        let replace = ScheduleCommand::Replace(Schedule::new());
+        assert_eq!(replace.apply(&two()), Ok(Schedule::new()));
+
+        let edit = ScheduleCommand::Edit(edit("2/portions", "0"));
+        assert_eq!(edit.clone().apply(&two()).map(|s| s.meals()), Ok(1));
+        assert_eq!(edit.apply(&Schedule::new()), Err(EditError::NoTimeYet));
+    }
+
+    /// Every meal `discovery.rs` announces must be addressable, whatever
+    /// `MAX_SLOTS` is, and nothing past it.
+    #[test]
+    fn every_slot_number_parses_and_no_other() {
+        for n in 1..=MAX_SLOTS {
+            let path = format!("{n}/time");
+            assert_eq!(
+                SlotEdit::parse(&path, b"08:00").map(|e| e.index as usize),
+                Ok(n - 1)
+            );
+        }
+        let past = format!("{}/time", MAX_SLOTS + 1);
+        assert_eq!(SlotEdit::parse(&past, b"08:00"), Err(EditError::NoSuchSlot));
+    }
+
+    // ---- switched-off slots ----
+
+    fn with_one_off() -> Scheduler {
+        let mut scheduler = Scheduler::new();
+        scheduler.set_schedule(
+            Schedule::parse(br#"[{"time":"08:00","portions":2},{"time":"12:00","portions":0},{"time":"19:00","portions":3}]"#)
+                .unwrap(),
+        );
+        scheduler
+    }
+
+    #[test]
+    fn a_switched_off_meal_never_feeds_and_is_not_counted() {
+        let mut scheduler = with_one_off();
+        assert_eq!(scheduler.schedule().meals(), 2);
+        assert_eq!(scheduler.schedule().len(), 3);
+
+        armed_at(&mut scheduler, wall(14, 7, 0));
+        assert!(matches!(
+            scheduler.next_due(wall(14, 8, 0), false),
+            Due::Feed { portions: 2, .. }
+        ));
+        assert_eq!(scheduler.next_due(wall(14, 12, 0), false), Due::Nothing);
+        assert_eq!(scheduler.next_due(wall(14, 12, 1), false), Due::Nothing);
+        assert!(matches!(
+            scheduler.next_due(wall(14, 19, 0), false),
+            Due::Feed { portions: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn a_switched_off_meal_is_never_the_next_one() {
+        let scheduler = with_one_off();
+        assert_eq!(
+            scheduler.upcoming(wall(14, 9, 0)).map(|s| s.minute_of_day),
+            Some(19 * 60)
+        );
+
+        let mut all_off = Scheduler::new();
+        all_off.set_schedule(Schedule::parse(br#"[{"time":"08:00","portions":0}]"#).unwrap());
+        assert_eq!(all_off.upcoming(wall(14, 9, 0)), None);
+        assert_eq!(all_off.schedule().meals(), 0);
     }
 
     // ---- the double-feed guard ----

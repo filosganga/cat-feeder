@@ -373,11 +373,12 @@ Check the seconds field on that time: the periodic publishes land on the minute
 at `:00`, so anything else is an answer to the request. Without one, the same
 boot waits up to a full minute for the next tick.
 
-Verify on the broker too, not only on the console: three retained configs under
-`homeassistant/`, then `online` retained on `feeder/<id>/availability`.
+Verify on the broker too, not only on the console: nineteen retained configs
+under `homeassistant/` — three, plus sixteen `Meal n` entities — then `online` retained on `feeder/<id>/availability`.
 
 Observed in Home Assistant: one device, `Cat feeder <id>`, firmware `0.1.0`,
-with **Feed** and **Paused** under Controls and **Jammed** under Diagnostic.
+with **Feed** and **Paused** under Controls, **Jammed** under Diagnostic, and
+the sixteen **Meal n time** / **Meal n portions** under Configuration.
 Three separate entities with no device card means the `device` block or a
 `unique_id` is missing; Jammed sitting in Controls means `entity_category` was
 dropped. The end-to-end check is pressing Feed in Home Assistant and watching
@@ -535,7 +536,7 @@ subscribed is forwarded with the retain flag cleared, so the third line reads
 INFO - clock: no trusted time yet, schedule holding  # before the broker is up
 INFO - mqtt: subscribed
 INFO - clock: started, 2026-09-15T09:00:00+02:00
-INFO - schedule: 2 slots, stored                     # today's wording
+INFO - schedule: 2 meals, stored                     # today's wording
 INFO - schedule: slot 08:00 already past at startup  # baseline: no feed
 
 INFO - clock: aligned, drift=10784s                  # step to 11:59:55
@@ -582,7 +583,7 @@ That is a unit whose RTC is not set. One whose DS3231 is running has already
 printed `clock: RTC time …, schedule armed` about 1.4 s after power-on, long
 before Wi-Fi, and the live answer then only corrects it — silently, unless it
 is 2 s or more out. The schedule comes from flash at boot, as `schedule: N
-slots from flash` (or `none stored; this unit will not feed until given one`),
+meals from flash` (or `none stored; this unit will not feed until given one`),
 not after the clock.
 
 The retained time the broker replays at subscribe usually leaves no line at all,
@@ -647,7 +648,7 @@ from it and feeds from the schedule in flash, with no network at all:
 
 ```
 INFO - rtc: DS3231 holds 2026-09-25T19:03:12, running since last set, 26.00 C
-INFO - schedule: 2 slots from flash
+INFO - schedule: 2 meals from flash
 INFO - clock: RTC time 2026-09-25T19:03:12, schedule armed
 ```
 
@@ -712,7 +713,7 @@ and slots firing at their real times:
 
 ```
 INFO - clock: live time 2026-09-15T19:56:00+02:00, schedule armed
-INFO - schedule: 2 slots, stored
+INFO - schedule: 2 meals, stored
 INFO - schedule: slot 19:56 due, feeding 3
 ```
 

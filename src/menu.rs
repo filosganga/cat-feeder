@@ -424,6 +424,14 @@ impl Menu {
         Outcome::Moved(self.mode)
     }
 
+    /// The calibration in force, which something other than the knob — the
+    /// admin page — may have changed. Called before every input, like
+    /// [`Menu::set_now`], so an edit opens on the current figure and nothing
+    /// here can hand back a stale one.
+    pub fn set_calibration(&mut self, calibration: Calibration) {
+        self.calibration = calibration;
+    }
+
     /// Whether a menu is open. Read by the LED, which blinks cyan for it.
     pub fn is_unlocked(&self) -> bool {
         self.button.is_armed()
@@ -1240,6 +1248,29 @@ mod tests {
 
         assert!(!b.out.iter().any(|o| matches!(o, Outcome::SetClock(_))));
         assert_eq!(b.out.last(), Some(&Outcome::Locked));
+    }
+
+    /// A figure saved elsewhere is the one an edit opens on, and the one a
+    /// save of the *other* figure keeps.
+    #[test]
+    fn a_calibration_changed_elsewhere_is_the_one_edited() {
+        let mut menu = Menu::new(Calibration {
+            portion_scale_pct: 100,
+            detent_ms: 1_900,
+        });
+        menu.set_calibration(Calibration {
+            portion_scale_pct: 100,
+            detent_ms: 2_140,
+        });
+        assert_eq!(menu.calibration().detent_ms, 2_140);
+        menu.saved(Field::PortionScale, 110);
+        assert_eq!(
+            menu.calibration(),
+            Calibration {
+                portion_scale_pct: 110,
+                detent_ms: 2_140
+            }
+        );
     }
 
     // --- calibration ------------------------------------------------------------

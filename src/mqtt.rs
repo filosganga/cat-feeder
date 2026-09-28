@@ -4,7 +4,7 @@
 //! unavailable or not at all:
 //!
 //! 1. CONNECT carrying the will, so the broker says `offline` for us.
-//! 2. The three retained discovery configs.
+//! 2. The retained discovery configs — see `discovery.rs` for the entities.
 //! 3. `online`, retained.
 //! 4. Subscribe to the command topics.
 //! 5. The retained `feeder/<id>/schedule/state` echo: what this unit holds, since the
@@ -19,7 +19,7 @@
 //! Discovery is retained, so Home Assistant re-reads it after a restart on its
 //! own and this firmware never subscribes to `homeassistant/status`.
 
-use core::fmt::{Arguments, Write as _};
+use core::fmt::Write as _;
 use core::net::Ipv4Addr;
 use core::num::NonZero;
 use core::str::FromStr as _;
@@ -42,17 +42,11 @@ use rust_mqtt::io::Transport;
 use rust_mqtt::types::{MqttBinary, MqttString, TopicFilter, TopicName};
 
 use crate::config::Config;
-use crate::schedule::{Schedule, TimeSource, Wall, parse_time};
+use crate::discovery::{self, DISCOVERY_LEN, TOPIC_LEN};
+use crate::schedule::{Schedule, ScheduleCommand, SlotEdit, TimeSource, Wall, parse_time};
 use crate::wiring::{Bus, TimeSync, now_ms};
 
-/// Longest topic this firmware builds is a discovery config,
-/// `homeassistant/binary_sensor/feeder_<id>/jammed/config`, 55 characters.
-const TOPIC_LEN: usize = 64;
 const PAYLOAD_LEN: usize = 128;
-/// Discovery payloads run to about 420 bytes with the device block. A silently
-/// truncated one is a classic reason an entity never appears, so [`fmt_into`]
-/// refuses to publish a payload that did not fit.
-const DISCOVERY_LEN: usize = 512;
 const CLIENT_ID_LEN: usize = 16;
 
 const STATE_INTERVAL: Duration = Duration::from_secs(5);
@@ -106,9 +100,9 @@ const SW_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Concrete client type, so helpers can name it without repeating the generics.
 ///
-/// `MAX_SUBSCRIBES` is 8 because all five SUBSCRIBE packets are sent before any
-/// SUBACK is read; they are only removed from that list once the main loop
-/// polls the acknowledgements.
+/// `MAX_SUBSCRIBES` is 8 because all seven SUBSCRIBE packets are sent before
+/// any SUBACK is read; they are only removed from that list once the main loop
+/// polls the acknowledgements. One more topic filter needs this raised.
 type FeederClient<'c, N> = Client<'c, N, AllocBuffer, 8, 2, 2, 2>;
 
 /// The per-unit topics. Built once, because every publish borrows from them.
@@ -121,6 +115,10 @@ struct Topics {
     schedule_cmd: String<TOPIC_LEN>,
     /// `feeder/<id>/schedule/state`: retained, what this unit holds.
     schedule_state: String<TOPIC_LEN>,
+    /// `feeder/<id>/meal/`: the prefix of every `Meal n` entity's command.
+    meal_prefix: String<TOPIC_LEN>,
+    /// `feeder/<id>/meal/+/+`: all sixteen of them, in one subscription.
+    meal_filter: String<TOPIC_LEN>,
 }
 
 impl Topics {
@@ -145,6 +143,12 @@ impl Topics {
         let mut schedule_state = String::new();
         let _ = write!(schedule_state, "feeder/{id}/schedule/state");
 
+        let mut meal_prefix = String::new();
+        let _ = write!(meal_prefix, "feeder/{id}/meal/");
+
+        let mut meal_filter = String::new();
+        let _ = write!(meal_filter, "feeder/{id}/meal/+/+");
+
         Self {
             availability,
             state,
@@ -152,6 +156,8 @@ impl Topics {
             paused,
             schedule_cmd,
             schedule_state,
+            meal_prefix,
+            meal_filter,
         }
     }
 }
@@ -182,8 +188,8 @@ impl State {
     }
 
     /// `last_fed` is local wall-clock, carrying whatever offset Home Assistant
-    /// published, and covers scheduled feeds only. It is informational; none of
-    /// the three entities reads it.
+    /// published, and covers scheduled feeds only. It is informational; no
+    /// entity reads it.
     fn to_json(self) -> String<PAYLOAD_LEN> {
         let mut json = String::new();
         let _ = write!(
@@ -313,7 +319,14 @@ async fn session(
     // Cleared in `run` when this session ends, however it ends.
     bus.net.set_broker(true);
 
-    publish_discovery(&mut client, id).await?;
+    // The address now, not the one at boot: a Wi-Fi reconnect can come back on
+    // a new lease, and the discovery below carries it as Home Assistant's
+    // *Visit device* link. The knob's `WI-FI` page reads the same value.
+    if let Some(v4) = stack.config_v4() {
+        bus.ip.set(Some(v4.address.address().octets()));
+    }
+
+    publish_discovery(&mut client, id, bus).await?;
 
     publish(
         &mut client,
@@ -338,6 +351,7 @@ async fn session(
         topics.paused.as_str(),
         topics.schedule_cmd.as_str(),
         TOPIC_ALL_SCHEDULE,
+        topics.meal_filter.as_str(),
         TOPIC_TIME,
     ] {
         subscribe(&mut client, filter).await?;
@@ -507,6 +521,9 @@ fn on_message(
     } else if topic_name == topics.schedule_cmd.as_str() || topic_name == TOPIC_ALL_SCHEDULE {
         on_schedule(payload, retained, bus);
         false
+    } else if let Some(path) = topic_name.strip_prefix(topics.meal_prefix.as_str()) {
+        on_meal_edit(path, payload, retained, bus);
+        false
     } else {
         warn!("mqtt: unexpected topic {topic_name}");
         false
@@ -571,8 +588,34 @@ fn on_schedule(payload: &[u8], retained: bool, bus: &'static Bus) {
         return;
     }
     match Schedule::parse(payload) {
-        Ok(schedule) => bus.schedule.signal(schedule),
+        Ok(schedule) => send_schedule(ScheduleCommand::Replace(schedule), bus),
         Err(e) => warn!("mqtt: schedule payload rejected: {e:?}, keeping the last one"),
+    }
+}
+
+/// One slot changed from a `Meal n` entity in Home Assistant.
+///
+/// Same rules as a whole schedule: an empty payload is a retained message
+/// being deleted, and a retained edit is refused — a unit subscribing later
+/// must not inherit somebody else's meal times. Whether the edit *applies* is
+/// the schedule task's call, since it holds the schedule it edits.
+fn on_meal_edit(path: &str, payload: &[u8], retained: bool, bus: &'static Bus) {
+    if payload.is_empty() {
+        return;
+    }
+    if retained {
+        warn!("mqtt: ignored a retained meal edit on {path}; publish it without retain");
+        return;
+    }
+    match SlotEdit::parse(path, payload) {
+        Ok(edit) => send_schedule(ScheduleCommand::Edit(edit), bus),
+        Err(e) => warn!("mqtt: meal edit on {path} rejected: {e:?}"),
+    }
+}
+
+fn send_schedule(command: ScheduleCommand, bus: &'static Bus) {
+    if bus.schedule.try_send(command).is_err() {
+        warn!("mqtt: schedule queue full, command dropped");
     }
 }
 
@@ -603,113 +646,29 @@ fn on_feed(payload: &[u8], bus: &'static Bus) {
     }
 }
 
-/// The three entities, each retained so Home Assistant re-reads them by itself.
-///
-/// All three carry the same `device` block and a `unique_id`, which is what
-/// groups them into one device; without `unique_id` the device block is ignored
-/// and the entities appear loose.
+/// Every entity `discovery.rs` names, each retained so Home Assistant re-reads
+/// them by itself.
 async fn publish_discovery<N: Transport>(
     client: &mut FeederClient<'_, N>,
     id: &str,
+    bus: &'static Bus,
 ) -> Result<(), ()> {
-    /// Repeated verbatim in all three payloads. `identifiers` is what joins
-    /// them; the rest is cosmetic.
-    macro_rules! device {
-        () => {
-            concat!(
-                r#""device":{{"identifiers":["feeder_{id}"],"name":"Cat feeder {id}","#,
-                r#""manufacturer":"DIY","model":"cat-feeder ESP32-C6","sw_version":"{sw}"}}"#,
-            )
-        };
-    }
-
-    // One buffer, reused, because the whole connection's future is sized by
-    // whatever is live at an await point.
+    // One pair of buffers, reused, because the whole connection's future is
+    // sized by whatever is live at an await point.
+    let mut topic_name: String<TOPIC_LEN> = String::new();
     let mut payload: String<DISCOVERY_LEN> = String::new();
 
-    // `payload_press` is 1 and stays 1: three portions is three presses, which
-    // the feeder accumulates. Deliberately not retained — a retained feed
-    // command is replayed on every reconnect, and a boot loop would then empty
-    // the hopper.
-    fmt_into(
-        &mut payload,
-        format_args!(
-            concat!(
-                r#"{{"name":"Feed","unique_id":"feeder_{id}_feed","#,
-                r#""command_topic":"feeder/{id}/feed","payload_press":"1","#,
-                r#""availability_topic":"feeder/{id}/availability","#,
-                device!(),
-                "}}",
-            ),
-            id = id,
-            sw = SW_VERSION
-        ),
-    )?;
-    publish_config(client, "button", "feed", id, &payload).await?;
-
-    // `"retain": true` makes Home Assistant publish the command retained, which
-    // is the whole persistence story for pause: nothing is kept in flash, so a
-    // unit that reboots comes back paused only because the broker remembers.
-    //
-    // Not optimistic: the switch moves when the unit echoes `paused` in its
-    // state, so a switch that springs back means the command never landed.
-    fmt_into(
-        &mut payload,
-        format_args!(
-            concat!(
-                r#"{{"name":"Paused","unique_id":"feeder_{id}_paused","#,
-                r#""command_topic":"feeder/{id}/paused","state_topic":"feeder/{id}/state","#,
-                r#""value_template":"{{{{ 'ON' if value_json.paused else 'OFF' }}}}","#,
-                r#""retain":true,"optimistic":false,"#,
-                r#""availability_topic":"feeder/{id}/availability","#,
-                device!(),
-                "}}",
-            ),
-            id = id,
-            sw = SW_VERSION
-        ),
-    )?;
-    publish_config(client, "switch", "paused", id, &payload).await?;
-
-    // The template must not be `{{ value_json.jammed }}`: a JSON `true` renders
-    // as Python's `True`, which matches neither `payload_on` nor `payload_off`,
-    // and the entity sticks at unknown.
-    fmt_into(
-        &mut payload,
-        format_args!(
-            concat!(
-                r#"{{"name":"Jammed","unique_id":"feeder_{id}_jammed","#,
-                r#""state_topic":"feeder/{id}/state","#,
-                r#""value_template":"{{{{ 'ON' if value_json.jammed else 'OFF' }}}}","#,
-                r#""device_class":"problem","entity_category":"diagnostic","#,
-                r#""availability_topic":"feeder/{id}/availability","#,
-                device!(),
-                "}}",
-            ),
-            id = id,
-            sw = SW_VERSION
-        ),
-    )?;
-    publish_config(client, "binary_sensor", "jammed", id, &payload).await?;
+    for entity in discovery::entities() {
+        // A truncated config is a classic reason an entity never appears, so
+        // one that did not fit is not published at all.
+        entity
+            .render(id, SW_VERSION, bus.ip.get(), &mut topic_name, &mut payload)
+            .map_err(|_| error!("mqtt: discovery for {entity:?} does not fit its buffer"))?;
+        publish(client, &topic_name, payload.as_bytes(), true).await?;
+    }
 
     info!("mqtt: discovery published");
     Ok(())
-}
-
-async fn publish_config<N: Transport>(
-    client: &mut FeederClient<'_, N>,
-    component: &str,
-    object: &str,
-    id: &str,
-    payload: &str,
-) -> Result<(), ()> {
-    let mut topic_name: String<TOPIC_LEN> = String::new();
-    fmt_into(
-        &mut topic_name,
-        format_args!("homeassistant/{component}/feeder_{id}/{object}/config"),
-    )?;
-
-    publish(client, &topic_name, payload.as_bytes(), true).await
 }
 
 async fn subscribe<N: Transport>(
@@ -750,18 +709,6 @@ async fn publish<N: Transport>(
             Err(())
         }
     }
-}
-
-/// Formats into a fixed buffer and fails loudly if it did not fit.
-///
-/// `write!` into a `heapless::String` truncates, and a truncated discovery
-/// payload is one of the classic reasons an entity never appears in Home
-/// Assistant. Silence is the wrong failure here.
-fn fmt_into<const N: usize>(buffer: &mut String<N>, args: Arguments) -> Result<(), ()> {
-    buffer.clear();
-    buffer.write_fmt(args).map_err(|_| {
-        error!("mqtt: {N} byte buffer too small, payload would be truncated");
-    })
 }
 
 fn string(text: &str) -> Result<MqttString<'_>, ()> {

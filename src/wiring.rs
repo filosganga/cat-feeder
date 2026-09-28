@@ -14,7 +14,7 @@
 //!   ui        --time---> schedule     (set by hand on the knob)
 //!   mqtt      --rtc_time rtc          (live times, to keep the DS3231 set)
 //!   ui        --rtc_time rtc          (a hand-set time, likewise)
-//!   mqtt      --schedule schedule     (a command; stored, then in force)
+//!   mqtt      --schedule schedule     (a schedule or a slot edit; stored, then in force)
 //!   schedule  --held---> mqtt, display (what the unit holds; the echo, meals)
 //!   schedule  --changed> mqtt         (republish the echo)
 //!   schedule  --now----> display, ui  (the trusted time)
@@ -35,10 +35,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
-use crate::calibrate::{Failure, Measurement};
+use crate::calibrate::{Failure, Measurement, Progress};
 use crate::indicator::Health;
 use crate::menu::{Calibration, Mode};
-use crate::schedule::{Schedule, Slot, TimeSource, Wall};
+use crate::schedule::{Schedule, ScheduleCommand, Slot, TimeSource, Wall};
 
 /// How many unread feed **requests** can be waiting before producers drop them.
 ///
@@ -55,6 +55,14 @@ pub type FeedChannel = Channel<CriticalSectionRawMutex, u8, FEED_DEPTH>;
 
 /// A producer's end of [`FeedChannel`].
 pub type FeedSender = Sender<'static, CriticalSectionRawMutex, u8, FEED_DEPTH>;
+
+/// How many schedule commands can wait for the schedule task, which drains
+/// them once a second.
+///
+/// Twice the sixteen `Meal n` entities would need: a Home Assistant script
+/// setting every one of them lands inside that second, and a command that
+/// finds no room is dropped with a warning — an edit silently lost.
+pub const SCHEDULE_DEPTH: usize = 2 * 2 * crate::schedule::MAX_SLOTS;
 
 /// Milliseconds since boot. The one clock every task measures against.
 pub fn now_ms() -> u64 {
@@ -349,11 +357,12 @@ impl HeldSchedule {
         self.0.lock(|cell| cell.borrow().clone())
     }
 
-    /// How many meals a day, `0` when there is no schedule at all — the two
-    /// are the same thing to anyone asking whether this unit will feed.
+    /// How many meals a day will feed, `0` when there is no schedule at all
+    /// or every slot is switched off — the same thing to anyone asking whether
+    /// this unit will feed.
     pub fn meals(&self) -> usize {
         self.0
-            .lock(|cell| cell.borrow().as_ref().map_or(0, Schedule::len))
+            .lock(|cell| cell.borrow().as_ref().map_or(0, Schedule::meals))
     }
 }
 
@@ -382,9 +391,14 @@ pub struct Bus {
     /// from it. Live only: a retained time can be any age, and writing one
     /// into the RTC would launder a stale time into one that looks set.
     pub rtc_time: Signal<CriticalSectionRawMutex, TimeSync>,
-    /// A schedule command just received, `mqtt` to `schedule`, which stores
-    /// it in flash and puts it in force.
-    pub schedule: Signal<CriticalSectionRawMutex, Schedule>,
+    /// A schedule command just received — a whole schedule, or one slot
+    /// edited from Home Assistant — `mqtt` to `schedule`, which applies it,
+    /// stores the result in flash and puts it in force.
+    ///
+    /// A queue, not a [`Signal`]: a signal keeps only the newest value, and a
+    /// meal's time and its portions sent a moment apart are two edits, both
+    /// wanted.
+    pub schedule: Channel<CriticalSectionRawMutex, ScheduleCommand, SCHEDULE_DEPTH>,
     /// The schedule this unit holds. Written by `schedule` — from flash at
     /// boot, then on every command it stores — and read by `mqtt` for the
     /// retained echo and the state payload's `meals`, and by `display`.
@@ -429,6 +443,10 @@ pub struct Bus {
     pub calibration_clicks: Signal<CriticalSectionRawMutex, u8>,
     /// How a calibration run ended: `feeder` to `ui`.
     pub calibration_result: Signal<CriticalSectionRawMutex, Result<Measurement, Failure>>,
+    /// Where the latest calibration run is, whoever started it. Written by
+    /// `feeder`, read by `web`, which cannot share the two signals above with
+    /// `ui` — a signal has one reader.
+    pub calibration_progress: Shared<Progress>,
     /// The time now, only while the clock is trusted. Written by `schedule`
     /// each tick, read by `display` for the home page and by `ui` so the
     /// knob's clock editor opens on it.
@@ -462,7 +480,7 @@ impl Bus {
             paused: AtomicBool::new(false),
             time: Signal::new(),
             rtc_time: Signal::new(),
-            schedule: Signal::new(),
+            schedule: Channel::new(),
             held: HeldSchedule::new(),
             schedule_changed: Signal::new(),
             last_fed: LastFed::new(),
@@ -478,6 +496,7 @@ impl Bus {
             calibrate: Signal::new(),
             calibration_clicks: Signal::new(),
             calibration_result: Signal::new(),
+            calibration_progress: Shared::new(Progress::None),
             calibration: Shared::new(Calibration {
                 portion_scale_pct: crate::portions::SCALE_UNCHANGED,
                 detent_ms: crate::provisioning::DEFAULT_DETENT_MS,
@@ -504,6 +523,24 @@ impl Bus {
             feeding: self.status.feeding(),
             jammed: self.status.jammed(),
         }
+    }
+
+    /// A time set by a person — on the knob or the admin page — to the
+    /// schedule's clock and to the RTC behind it.
+    ///
+    /// Through the paths a live `feeder/time` takes, stamped now, so there is
+    /// no second way for a time to enter the unit. `Manual` behaves as `Live`
+    /// does — it arms and it overrides — and the RTC task writes it because it
+    /// differs from what the chip holds. Home Assistant's next live time, if
+    /// there is one, still has the last word.
+    pub fn set_clock_by_hand(&self, wall: Wall) {
+        let sync = TimeSync {
+            monotonic_ms: now_ms(),
+            wall,
+            source: TimeSource::Manual,
+        };
+        self.time.signal(sync);
+        self.rtc_time.signal(sync);
     }
 
     pub fn is_paused(&self) -> bool {

@@ -14,7 +14,7 @@ Replace `<id>` throughout with the MAC-derived device id.
 
 ## The shared device block
 
-Identical in all three payloads. `identifiers` is what joins them.
+Identical in every payload. `identifiers` is what joins them.
 
 ```json
 "device": {
@@ -22,9 +22,14 @@ Identical in all three payloads. `identifiers` is what joins them.
   "name": "Cat feeder <id>",
   "manufacturer": "DIY",
   "model": "cat-feeder ESP32-C6",
-  "sw_version": "0.1.0"
+  "sw_version": "0.1.0",
+  "configuration_url": "http://<address>/"
 }
 ```
+
+`configuration_url` is Home Assistant's *Visit device* link to the admin page,
+from the address at connect time, and is left out while there is none. The
+full examples below omit it for brevity; `src/discovery.rs` is the source.
 
 `manufacturer`, `model` and `sw_version` are cosmetic. `identifiers` and `name`
 are not.
@@ -137,6 +142,60 @@ reaches the template engine as a Python `True` and renders as the string
 `True`, which equals neither the default `payload_on` (`ON`) nor `payload_off`
 (`OFF`), so the entity sticks at unknown.
 
+## Meal n: time and portions
+
+Sixteen entities, `n` = 1..8, rendered by `src/discovery.rs` — copy from there
+if this drifts. Meal 3 shown; the index in the template is `n - 1`.
+
+Topic: `homeassistant/time/feeder_<id>/meal_3_time/config`, retained.
+
+```json
+{
+  "name": "Meal 3 time",
+  "unique_id": "feeder_<id>_meal_3_time",
+  "command_topic": "feeder/<id>/meal/3/time",
+  "state_topic": "feeder/<id>/schedule/state",
+  "value_template": "{{ value_json[2].time if value_json|length > 2 else 'None' }}",
+  "entity_category": "config",
+  "availability_topic": "feeder/<id>/availability",
+  "device": { "...": "the shared block" }
+}
+```
+
+Topic: `homeassistant/number/feeder_<id>/meal_3_portions/config`, retained.
+
+```json
+{
+  "name": "Meal 3 portions",
+  "unique_id": "feeder_<id>_meal_3_portions",
+  "command_topic": "feeder/<id>/meal/3/portions",
+  "state_topic": "feeder/<id>/schedule/state",
+  "value_template": "{{ value_json[2].portions if value_json|length > 2 else 'None' }}",
+  "min": 0, "max": 16, "step": 1, "mode": "box",
+  "entity_category": "config",
+  "availability_topic": "feeder/<id>/availability",
+  "device": { "...": "the shared block" }
+}
+```
+
+What Home Assistant sends, read from its `mqtt/time.py` and `mqtt/number.py`:
+`value.isoformat()`, so `08:00:00`, and an integer as a bare `2`. The unit
+drops the seconds. `None` from a template is the platforms' "unknown", which
+is what a position past the end of the schedule shows.
+
+The unit's side of each rule is a host test in `schedule.rs`: zero switches a
+meal off in place; a time past the end adds the meal switched off; portions
+for a meal with no time are refused. Two more live in gated code and were seen
+on hardware rather than tested: `main.rs` republishes the unchanged echo so
+the entity springs back, and `mqtt.rs` refuses a retained edit.
+
+To drive one without Home Assistant:
+
+```sh
+docker compose exec mosquitto mosquitto_pub -u <user> -P <pass> \
+  -t 'feeder/<id>/meal/3/time' -m '12:30:00'     # never -r
+```
+
 ## State payload
 
 Published retained to `feeder/<id>/state` on every transition:
@@ -145,16 +204,18 @@ Published retained to `feeder/<id>/state` on every transition:
 {"feeding": false, "jammed": false, "paused": false, "meals": 2, "last_fed": "2026-09-14T08:00:00+02:00"}
 ```
 
-`meals` is how many slots the unit holds. `0` is a unit that is online and
-healthy and will never feed — a new or factory-reset one that has not been sent
-a schedule — so it is worth watching for.
+`meals` is how many slots the unit holds **with at least one portion**; a slot
+switched off with `0` is not counted. `0` is a unit that is online and healthy
+and will never feed — a new or factory-reset one that has not been sent a
+schedule, or one with every meal switched off — so it is worth watching for.
 
 `paused` must be published from the flag the device is actually acting on, not
 echoed back from the command as it arrives. Echoing makes the switch look
 correct in Home Assistant even when the schedule task never saw the change.
 
-`feeding` is deliberately not exposed as an entity. The contract lists three
-entities and adding a fourth is a change to make on purpose, not by drift.
+`feeding` is deliberately not exposed as an entity. The entity list is
+`discovery::entities()`, and adding one is a change to make on purpose, not by
+drift.
 
 The pending-portions counter is not published either. It is in RAM, it drains
 within seconds, and a Home Assistant entity that lags a few seconds behind a
@@ -225,7 +286,7 @@ that subscribes later; the firmware refuses one replayed at subscribe time
 already subscribed *does* act on a retained publish, because the broker forwards
 it live with the retain flag cleared — so the rule is never to publish one
 retained, not to rely on the refusal. `feeder/<id>/schedule` does the same
-for one unit. Each unit logs `schedule: N slots, stored` (or `unchanged`) and
+for one unit. Each unit logs `schedule: N meals, stored` (or `unchanged`) and
 echoes what it holds on `feeder/<id>/schedule/state`, retained, which is where to
 check the result.
 
@@ -339,7 +400,7 @@ Discovery topic shape, from the Home Assistant MQTT integration:
 accept only `[a-zA-Z0-9_-]`.
 
 Device block keys: `identifiers`, `name`, `manufacturer`, `model`,
-`sw_version`, `hw_version`, `serial_number`, `model_id`.
+`sw_version`, `hw_version`, `serial_number`, `model_id`, `configuration_url`.
 
 Availability keys: `availability_topic`, `payload_available` (default
 `online`), `payload_not_available` (default `offline`), `availability_mode`
