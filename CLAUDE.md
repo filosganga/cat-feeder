@@ -14,8 +14,9 @@ same instant, coordinated by Home Assistant over MQTT.
 | DRV8833 breakout (black 10-pin) | H-bridge. `nSLEEP`/`ULT` **must be driven high** or the motor won't run |
 | Motor DRF-W500CA, 5 V, 8 rpm | geared reducer → stops dead on brake, no coasting past a detent; ~1.9 s between detents. Back-drivable by hand, but stiff enough that turning the hub is a poor way to test anything |
 | Microswitch on output hub | **1 click = 1 portion.** That is the entire contract |
-| 220 µF 16 V electrolytic | across 5 V/GND next to the DRV8833 (brown-out on motor start) |
-| 5 V from the feeder's original USB port | ≥1 A adapter. **No batteries in v1** |
+| 220 µF 16 V electrolytic | across the rail just after the diode-OR (brown-out on motor start); its two legs are the star points for 5 V and ground — see *The perfboard* |
+| 5 V from the feeder's original USB port | ≥1 A adapter |
+| 3×AA in the feeder's own compartment | **backup only**, joined through a diode-OR (MBRF2045CT) so nothing ever charges them — since 2026-09-28, see *The perfboard* |
 
 ### Two supplies, and one of them is a laptop
 
@@ -41,6 +42,16 @@ With the adapter on, the rail sits above `VBUS − Vf`, `D1` stops conducting, a
 the adapter supplies everything while the laptop supplies nothing. During the
 motor's inrush the rail dips, and if it falls far enough the laptop briefly
 helps through `D1` — milliseconds, well inside the part's surge rating.
+
+⚠️ **The paragraph above predates the diode-OR on the perfboard, and no longer
+holds there.** The adapter now reaches the rail through the MBRF2045CT, so it
+arrives about a Schottky drop lower — no longer above `VBUS − Vf` — and the
+laptop through `D1` and the adapter through the MBRF sit at about the same
+voltage and **share the rail**, the motor's current included. Derived from the
+two parts' drops, not measured. It changes nothing for a running motor; for a
+jam test, unplug the laptop rather than trusting the adapter to carry the stall.
+*Do not fit an external diode* above still stands: it is about the path between
+the pad and the laptop, and the diode-OR is on the other side of the rail.
 
 **Ground is shared, and must be.** The DRV8833's `AIN1`, `AIN2` and `nSLEEP` are
 referenced to the Zero's ground, so the adapter's ground, the driver's and the
@@ -183,6 +194,110 @@ GPIO8 is the onboard WS2812 on both boards. On the Zero it is *also* on the
 back pad row, so an external WS2812 wired there sits in parallel on the same
 data line and shows the same colour — an indicator outside a closed case for no
 extra pin and no firmware change. See roadmap step 10.
+
+### The perfboard
+
+**Drawn, not yet soldered**, 2026-09-28. `pcb.diy` at the repo root is the
+DIY Layout Creator file; `pcb.png` is the layout and `pcb (mask).png` the
+bottom-side traces alone. It is the **headless** build — no panel, no encoder,
+GP3–GP5 unconnected, and the BOOT button the only reset — with the DS3231 on
+the I²C bus as usual.
+
+**The drawing is the component side**, with the bottom-side traces seen
+through the board. Its columns run `X … A` left to right, as the real board's
+printed labels do from the component side; from the solder side the same
+labels read `A … X`. Every hole below is named by those labels, which name the
+same hole from either side — so count by label, never by "third from the
+left", which is exactly the count that flips when the board is turned over.
+
+**The feeder's cable** arrives on one 6-pin DuPont header, right-angle, on the
+board edge (row 18). The order is the cable's, crimped on the matching pair of
+feeders; the third, different-brand unit is still unopened and may not match.
+
+| Pin | Signal | Goes to |
+|---|---|---|
+| 1 | 5 V from the feeder's USB | MBRF2045CT, one anode |
+| 2 | 4.5 V from the feeder's batteries | MBRF2045CT, the other anode |
+| 3 | GND | C1 −, the ground star point |
+| 4 | hub microswitch | **1 kΩ**, then GPIO2 |
+| 5 | motor 1 | DRV8833 `Out4` |
+| 6 | motor 2 | DRV8833 `Out3` |
+
+The driver runs on channel B, `In3`/`In4` → `Out3`/`Out4`: GPIO0 → `In3`,
+GPIO1 → `In4`, GPIO14 → `Ult`. The firmware does not care which channel.
+If the motor turns the wrong way, swap pins 5 and 6 — no firmware change.
+
+**The diode-OR.** A dual common-cathode Schottky, **MBRF2045CT** (the part in
+hand is marked `MBRF2045DT`, a vendor variant): anodes on the two supplies,
+cathode — the middle leg — on the rail. Whichever supply is higher feeds the
+board, and neither can push current into the other, so USB can never charge
+the alkaline cells. A plain wire from the battery pin to the rail would.
+Twenty amps is far past anything here. The rail sits a Schottky drop below the
+higher input — roughly 4.7 V on USB, falling with the cells on batteries —
+which the Zero's regulator tolerates to about 3.5 V.
+
+**On batteries, estimated rather than measured:** the C6 on Wi-Fi draws
+80–120 mA, so three AAs are roughly a day — a power-cut bridge for the next
+meal or two, not a way to run. The motor turns slower on cells, lengthening
+the detent; the 2.5× jam budget should absorb it, and one feed on batteries
+alone is the test. The unit still cannot tell which supply it is on — *no USB
+detection* stands.
+
+**Grounds and 5 V are starred on C1**, not chained along a rail. C1's `+` leg
+is the 5 V node and its `−` leg the ground node, and the header's ground reaches
+`−` before anything leaves it. Then:
+
+- **the DRV8833 gets its own 5 V and its own ground wire to C1**, because the
+  motor's current flows through it. Shared with the Zero, the return current
+  would shift the ground GPIO2 is read against, and the start-up dip would
+  reach the Zero's supply;
+- **the Zero gets its own pair**, and the light loads — the DS3231, the BOOT
+  button — hang off the Zero's ground and 3V3 as an ordinary rail. A shared
+  trunk is harmless at tens of milliamps.
+
+**Two guards on the switch line, one fitted.** The header is not keyed, and the
+switch pin sits beside motor 1, so a plug reversed or one position off would
+put the motor's 5 V on GPIO2. **R1, 1 kΩ in series**, limits that to a current
+the pin's clamp survives, and changes nothing about reading a switch that pulls
+to ground. A 100 nF from GPIO2 to ground was considered and **left out**: the
+prototype shows the 30 ms debounce and the spacing rule coping with the noise a
+switch wire picks up in the motor's cable. Fit it only if spurious clicks ever
+appear. Mark pin 1 on the housing and the board either way.
+
+**GPIO9 has no edge pad** — it is on the Zero's back pad row with GPIO8 — so
+both come out on a 2-pin header, and GPIO9 runs to the BOOT button, other leg
+to ground. On a 4-leg tactile switch the two legs on one side are often joined
+inside; if the pair chosen is, GPIO9 sits low forever and **the unit boots into
+download mode every time**. The beep test below catches it.
+
+**Before first power, with the continuity beeper**, holes as in the drawing:
+
+| Probes | Expect | Catches |
+|---|---|---|
+| S14 ↔ U14 (C1 + ↔ −) | silence | 5 V shorted to ground |
+| B2 ↔ C2 (Zero 5V ↔ GND) | silence | the same, at the Zero |
+| P7 ↔ P8 (DRV GND ↔ Vcc) | silence | the same, at the driver |
+| R16 ↔ T16 (USB ↔ battery anodes) | silence | a bridge that charges the cells |
+| V18 ↔ W18 (switch ↔ motor 1) | silence | 5 V reaching GPIO2 |
+| D2 ↔ D8 (3V3 ↔ GPIO14) | silence | the 3V3 run and GPIO14 share column D, a hole apart |
+| E2 ↔ P6, F2 ↔ P5 (GPIO0 ↔ `In3`, GPIO1 ↔ `In4`) | beep | the jumpers reaching the driver |
+| M2 ↔ C2 (GPIO9 ↔ GND) | silence, beep **only while BOOT is pressed** | the button's leg pair |
+
+Then USB alone: ~4.7 V across C1, 3.3 V on the Zero's `3V3`, and
+`./dev/flash.sh --board zero --headless` showing `switch: watching GPIO2`.
+
+The places a stray blob does damage are where two nets meet a hole apart:
+around C1, where the driver's ground passes the 5 V node, and the row-7 3V3
+run, which passes directly beside the Zero's row-8 pins. Solder those with
+care.
+
+**Finishing.** An insulating spray on the solder side, **after** the beep test
+and a working power-up — it seals a bridge in rather than fixing it — kept out
+of the header's contacts and the BOOT button. In the case, components face
+outward, where the BOOT pinhole, the USB-C and the RTC's coin cell are
+reachable, and the solder side sits on printed bosses ~3 mm proud of a plate,
+so clipped leads touch nothing. A drop of glue or a cable tie takes the cable's
+pull off the right-angle header's joints.
 
 ### Motor control (DRV8833)
 
@@ -388,7 +503,10 @@ loop {
   from a retained topic, so a new unit starts blank. Offline → keep feeding on
   what it holds. Power-cycled with no broker → feed, if the RTC kept time and a
   schedule is stored; otherwise wait, never guess. See *A second version*.
-- **No batteries, no sleep modes, no USB detection** in v1.
+- **No sleep modes, no USB detection** in v1. *No batteries* was part of this
+  line until 2026-09-28: the feeders' own AA compartments are now a backup
+  supply through a diode-OR, and never charged — see *The perfboard*. The
+  firmware does not know which supply it is on.
 - **Wi-Fi + MQTT credentials come from flash and nowhere else.** They are not
   compiled into the binary: `dev/provision.sh` writes a record over USB, or the
   setup form writes one over the unit's own access point. `Config` is what the
@@ -416,11 +534,20 @@ saved, rebooted, joined the house network and reached the broker.
 
 ```text
   boot ── read the record from the nvs partition
-           ├── valid   → station mode, connect, run normally
-           └── missing → access point, serve the form, save, reboot
+           ├── usable  → station mode, connect, run normally
+           └── missing, or no network in it → access point, serve the form, save, reboot
 
-  reset button (GPIO3) held → erase the record, reboot    (lands in "missing")
+  knob's click held through power-on, or BOOT held 5 s while running
+        → forget the network, keep the calibration, reboot   (lands in "no network")
 ```
+
+**A reset forgets rather than erases** (since 2026-09-28). The record holds the
+network *and* the unit's calibration, so erasing it lost the bench-measured
+detent interval too — found the first time the BOOT reset was used, when the
+unit came back on the 1900 ms default. `Record::without_network` blanks every
+credential and keeps the two mechanical figures; the result fails
+`is_usable`, so the boot path goes to setup mode exactly as for erased flash,
+and setup mode's form carries the calibration into the record it saves.
 
 **One way in, not two.** The button erases rather than signalling, so "no valid
 record" is the only state the boot path has to recognise. There is deliberately
@@ -787,7 +914,28 @@ turns the two lines into detents.
 | **editing a number** | change it | save it; in force at once | lock, discarding the edit |
 | **confirming a reset** | `Keep` / `Erase` | run the choice | lock, keeping everything |
 | nothing for 10 s | | | locks again, discarding any edit |
-| **held through power-on, 3 s** | | | erase the record |
+| **held through power-on, 3 s** | | | forget the network, keep the calibration |
+
+**The onboard BOOT button (GPIO9), held 5 s while running, erases the network
+settings** and reboots into setup mode — on every build, knob or not. The LED
+flashes fast blue while it counts, and letting go before five seconds keeps
+everything. Like the power-on gesture it forgets only the network — every
+credential blanked, the rest of the record kept — so meals, calibration and
+timezone stay. It needs no pin (BOOT is on every board)
+and is safe to read at runtime because it only matters at reset, where it
+selects download mode. It is the recovery for a unit that cannot reach its
+network, when its admin page is unreachable for the same reason, and the
+only one a headless unit has. `reset.rs` holds the rule, host-tested; the case
+needs a pinhole over the button.
+
+**A headless build**, `--features headless` (`./dev/flash.sh --headless`),
+leaves out the menu, the encoder and the panel: GPIO3–GPIO5 are unused, and the
+unit is configured over its setup network, its admin page and Home
+Assistant. Setup mode then shows its password only on the console, so the
+sticker from `dev/ap-password.sh` is required rather than a backup. A build
+flag rather than a panel probe, because a broken panel must not silently
+turn the knob's click into something else. Verified booting headless on the
+Zero; the BOOT hold itself is not yet seen on hardware.
 
 The menu is `Feed one portion`, `Pause schedule` (or `Resume schedule`),
 `Settings` and `Lock`. **Settings** holds this unit's calibration — `Portion`
@@ -807,8 +955,8 @@ steps) — then `Factory reset` and `Back`.
 - **Factory reset erases more than the boot gesture does**, behind a
   `Keep`/`Erase` choice that starts on `Keep`. `Store::erase_all` takes the
   credentials, the calibration *and the meals* — the panel says `erases Wi-Fi,
-  broker,` / `calibration and meals` — whereas the button held through
-  power-on erases only the credentials record and keeps the schedule. Both land
+  broker,` / `calibration and meals` — whereas the two reset gestures forget
+  only the network and keep the calibration, the schedule and the timezone. Both land
   in setup mode by the same path.
 - **`Clock` sets the date and time by hand** — year, month, day, hour,
   minute, a tap between each, the tap on the minute sets it with seconds at
@@ -1033,6 +1181,7 @@ one that survives the network being the broken thing. Full reasoning is in
 
 | State | LED |
 |---|---|
+| BOOT held towards a reset | blue, one flash every 0.4 s — let go to cancel |
 | jammed | **solid** red |
 | feeding | **solid** white |
 | button armed | cyan, one flash every 0.5 s |
@@ -1084,7 +1233,7 @@ firmware change, which is why `led.rs` sends 24 bits and not 48.
 - Generated with `esp-generate --chip esp32c6` with: `unstable-hal`, `alloc`,
   `wifi` (esp-radio), `embassy`, `log` + `esp-println`, `esp-backtrace`,
   board `esp32c6-wroom-1`. **No BLE, no probe-rs/defmt.**
-- `./dev/flash.sh [--seconds n] [--filter re] [--board devkit|zero] [--port p]`
+- `./dev/flash.sh [--seconds n] [--filter re] [--board devkit|zero] [--headless] [--port p]`
   = build + flash + bounded capture, with each
   line annotated by the gap since the previous one. `./dev/capture.sh` does the
   same without reflashing. `./dev/soak.sh [--hours n]` captures overnight and
@@ -1161,6 +1310,7 @@ src/
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   portions.rs     pure logic: the pending-click counter, its cap, and the
                   per-unit portions -> clicks conversion
+  reset.rs        pure logic: the BOOT button's 5 s hold to erase the network
   button.rs       pure logic: holds and taps of the knob's click, arming
   menu.rs         pure logic: pages while locked, the menu while unlocked
   encoder.rs      pure logic: the knob's A/B levels into detents
@@ -1201,6 +1351,9 @@ build.rs          injects ap_secret from cfg.toml, and nothing else
 examples/mkrecord.rs
                   host-only: builds a provisioning record for dev/provision.sh
 
+pcb.diy, pcb.png, pcb (mask).png
+                  the perfboard, in DIY Layout Creator, seen from the
+                  component side; see *The perfboard*
 homeassistant/packages/cat_feeder.yaml
                   the other half of the system: publishes the time, the
                   send-the-schedule script, the pause helper, the feed-all
@@ -1592,7 +1745,7 @@ complete, or should reset the DHCP socket when it is.
      ./dev/capture.sh --seconds 40
      ```
 
-     Look for `store: erased by the boot button`, then `setup: raising
+     Look for `store: network forgotten by the boot button, calibration kept`, then `setup: raising
      cat-feeder-<id>` and a `display: |...|` block spelling the same SSID.
 
 10. Status LED. Independent of every other step. See *The RGB LED* above.
@@ -1736,12 +1889,13 @@ points at the section with the detail.
 | Subsets of feeders by HA label | Home Assistant side only; no firmware change | point 6 |
 | Optional "copy this feeder's schedule to those" blueprint | not written; only sensible after point 4 | *What Home Assistant is left doing* |
 
-**Seen only in host tests, not yet on the panel**
+**Seen only in host tests, not yet on the hardware**
 
 | Item | How to see it |
 |---|---|
 | The setup-mode screen (SSID, password, address) | hold the button through power-on, `./dev/capture.sh --seconds 40` |
 | The `WI-FI`, `BROKER` and `DEVICE` info pages | turn the knob while locked |
+| The BOOT button's 5 s reset, and its fast-blue LED and `HOLD TO ERASE WI-FI` banner | hold BOOT; it erases Wi-Fi, so re-provision after |
 
 **Hardware and deployment**
 
@@ -1808,7 +1962,8 @@ took the other forty-nine seconds out. Added up from the parts measured —
 boot should reach an armed schedule in about 6 s; not yet captured end to end.
 
 Later (not now): a short press on the GPIO3 button feeding one portion, so a
-manual feed works with the broker down; battery backup.
+manual feed works with the broker down. (Battery backup, once on this list,
+is now hardware only — see *The perfboard*.)
 
 **A display. The part is ordered.** The original LCD window is 40 × 18 mm,
 which pointed at a 0.91" 128×32 I²C OLED — roughly a 38 × 12 mm module, two

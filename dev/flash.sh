@@ -5,6 +5,7 @@
 #   ./dev/flash.sh --seconds 90             # flash, then capture 90 s
 #   ./dev/flash.sh --filter 'feed:|motor:'  # ...showing only matching lines
 #   ./dev/flash.sh --board zero             # ...a Zero rather than the dev kit
+#   ./dev/flash.sh --board zero --headless  # ...with no knob and no panel
 #   ./dev/flash.sh --port /dev/cu.usbmodemXXXX
 #
 # The first two are also positional, as they always were: `./dev/flash.sh 90
@@ -18,6 +19,11 @@
 # and boots, then prints nothing at all, because it is talking to a UART while
 # the Zero's only console is the chip's own USB. That looks exactly like a dead
 # application or a wrong port. Set it to match the board in your hand.
+#
+# --headless builds the `headless` feature on top of the board's: no menu, no
+# encoder and no panel, for a unit with neither fitted. Its way back to setup
+# mode is the BOOT button held for five seconds. There is no environment
+# variable for it; it is a property of the build you mean, not of the machine.
 #
 # The two boards also enumerate as different serial ports, so --port usually has
 # to change with --board:
@@ -42,6 +48,7 @@ SECONDS_TO_CAPTURE=""
 FILTER=""
 BOARD_ARG=""
 PORT_ARG=""
+HEADLESS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,6 +56,7 @@ while [ $# -gt 0 ]; do
     --board=*) BOARD_ARG="${1#*=}"; shift ;;
     --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
     --port=*) PORT_ARG="${1#*=}"; shift ;;
+    --headless) HEADLESS=1; shift ;;
     --seconds) need_value "$1" "${2:-}"; SECONDS_TO_CAPTURE="$2"; shift 2 ;;
     --seconds=*) SECONDS_TO_CAPTURE="${1#*=}"; shift ;;
     --filter) need_value "$1" "${2:-}"; FILTER="$2"; shift 2 ;;
@@ -72,8 +80,8 @@ SECONDS_TO_CAPTURE="${SECONDS_TO_CAPTURE:-45}"
 # features end up on and esp-println's build script rejects the pair.
 BOARD="${BOARD_ARG:-${BOARD:-devkit}}"
 case "$BOARD" in
-  devkit) BOARD_FLAGS=() ;;
-  zero) BOARD_FLAGS=(--no-default-features --features board-zero) ;;
+  devkit) BOARD_FLAGS=(--features "board-devkit${HEADLESS:+,headless}") ;;
+  zero) BOARD_FLAGS=(--no-default-features --features "board-zero${HEADLESS:+,headless}") ;;
   *) die "flash: --board must be 'devkit' or 'zero', not '$BOARD'" ;;
 esac
 
@@ -82,7 +90,7 @@ PORT="$(require_port "$PORT_ARG")"
 BIN=target/riscv32imac-unknown-none-elf/debug/cat-feeder
 LOG=$(mktemp "${TMPDIR:-/tmp}/cat-feeder-flash.XXXXXX")
 
-echo "building for ${BOARD}..."
+echo "building for ${BOARD}${HEADLESS:+, headless}..."
 cargo build ${BOARD_FLAGS[@]+"${BOARD_FLAGS[@]}"}
 
 echo "flashing and capturing ${SECONDS_TO_CAPTURE}s on ${PORT}"

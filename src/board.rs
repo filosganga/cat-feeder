@@ -92,6 +92,7 @@
 //! | GPIO4 | encoder `A` (`CLK`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO5 | encoder `B` (`DT`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO8 | WS2812 `DIN` | onboard; also a back pad on the Zero |
+//! | GPIO9 | the onboard **BOOT** button | read only *after* boot: held 5 s, erases the network — see `reset.rs` |
 //! | GPIO18 | `SDA`: the panel on `0x3C` and the DS3231 on `0x68` | edge; one bus, see `i2c.rs` |
 //! | GPIO19 | `SCL`: the same two devices | edge |
 //!
@@ -194,6 +195,27 @@ macro_rules! button_pin {
 
 /// See [`SWITCH_PIN`].
 pub const BUTTON_PIN: &str = "GPIO3";
+
+/// The onboard **BOOT** button. **GPIO9** on both boards, with its own pull-up
+/// on the board; the internal one is enabled as well.
+///
+/// A strapping pin, and that is exactly why it is safe to read at runtime and
+/// no other time: held *through* a reset it selects download mode, and the
+/// firmware never runs to see it. Pressed while the firmware runs, it is an
+/// ordinary input. Held for five seconds it erases the network settings and
+/// reboots into setup mode — the one recovery that needs no knob and no
+/// network, which is what a headless unit relies on. It costs no pin: it is
+/// already on every board, and struck out of the usable list above for the
+/// same strapping reason.
+#[macro_export]
+macro_rules! boot_button_pin {
+    ($peripherals:expr) => {
+        $peripherals.GPIO9
+    };
+}
+
+/// See [`SWITCH_PIN`].
+pub const BOOT_BUTTON_PIN: &str = "GPIO9";
 
 /// The onboard WS2812 RGB LED. **GPIO8** on both boards.
 ///

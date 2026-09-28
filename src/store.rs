@@ -208,6 +208,19 @@ impl Store {
         self.save_zone(None)
     }
 
+    /// Forgets the network and keeps the calibration: the record rewritten by
+    /// [`Record::without_network`], so the next boot goes to setup mode and
+    /// setup mode finds the detent interval and portion scale still there.
+    /// What both reset gestures do. A record that does not decode has nothing
+    /// worth keeping, and is erased instead.
+    #[inline(never)]
+    pub fn forget_network(&mut self) -> Result<(), StoreError> {
+        match self.load() {
+            Ok(record) => self.save(&record.without_network()),
+            Err(_) => self.erase(),
+        }
+    }
+
     /// Throws the credentials record away, so the next boot goes to setup.
     /// The schedule is kept — see the module docs.
     ///

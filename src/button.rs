@@ -54,7 +54,7 @@ pub const ARM_HOLD_MS: u64 = 2_000;
 /// arm-and-tap cycles.
 pub const ARMED_WINDOW_MS: u64 = 10_000;
 
-/// How long the button must be held **at power-on** to erase the record.
+/// How long the button must be held **at power-on** to forget the network.
 ///
 /// Longer than [`ARM_HOLD_MS`], but the duration is not what protects it — the
 /// power cycle is. See the module docs.

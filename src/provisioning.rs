@@ -11,7 +11,7 @@
 //!            ├── valid   → station mode, connect, run normally
 //!            └── missing → access point, serve the form, save, reboot
 //!
-//!   reset button held through power-on → erase the record  (lands in "missing")
+//!   a reset gesture → the record without its network, see `Record::without_network`
 //! ```
 //!
 //! There is exactly one way into setup, which is why the button erases rather
@@ -188,6 +188,33 @@ impl Record {
     /// An empty SSID or host cannot work, and a unit that tries anyway looks
     /// broken rather than unconfigured. The form rejects these too; this is the
     /// backstop for a record written by an older or buggier version.
+    /// This record with the network forgotten and the mechanism remembered:
+    /// every credential blank, the calibration as it was.
+    ///
+    /// What both reset gestures write — the BOOT button held five seconds, and
+    /// the knob's click held through power-on. The result is not
+    /// [`Record::is_usable`], so the next boot goes to setup mode exactly as
+    /// for erased flash; but it still decodes, so setup mode finds the
+    /// calibration in it and carries it into the record the form saves (see
+    /// [`record_from_form`]'s `previous`). Erasing the record instead used to
+    /// lose the bench-measured detent interval along with the Wi-Fi password.
+    ///
+    /// Both passwords are blanked, not kept: a reset exists to forget the
+    /// network, and the old Wi-Fi password is the last thing that should
+    /// survive one.
+    pub fn without_network(&self) -> Self {
+        Self {
+            wifi_ssid: String::new(),
+            wifi_password: String::new(),
+            mqtt_host: String::new(),
+            mqtt_port: 0,
+            mqtt_user: String::new(),
+            mqtt_password: String::new(),
+            detent_ms: self.detent_ms,
+            portion_scale_pct: self.portion_scale_pct,
+        }
+    }
+
     pub fn is_usable(&self) -> bool {
         !self.wifi_ssid.is_empty() && !self.mqtt_host.is_empty() && self.mqtt_port != 0
     }
@@ -951,6 +978,33 @@ mod tests {
             detent_ms: DEFAULT_DETENT_MS,
             portion_scale_pct: crate::portions::SCALE_UNCHANGED,
         }
+    }
+
+    #[test]
+    fn a_reset_forgets_the_network_and_keeps_the_mechanism() {
+        let measured = Record {
+            detent_ms: 2_140,
+            portion_scale_pct: 133,
+            ..sample()
+        };
+        let reset = measured.without_network();
+        assert!(!reset.is_usable(), "a reset must land in setup mode");
+
+        let mut flash = [0xFFu8; MAX_RECORD_LEN];
+        let len = reset.encode(&mut flash).unwrap();
+        let read = Record::decode(&flash[..len]).unwrap();
+        assert_eq!((read.detent_ms, read.portion_scale_pct), (2_140, 133));
+        for secret in ["fdlgrm", "hunter2", "feeder-dev"] {
+            assert!(
+                !flash.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                "{secret} survived the reset"
+            );
+        }
+
+        // And setup mode's form then carries the calibration into the new record.
+        let body = "wifi_ssid=new&wifi_password=pw&mqtt_host=192.168.1.10&mqtt_port=1883&mqtt_user=u&mqtt_password=p";
+        let saved = record_from_form(body, Some(&read)).unwrap();
+        assert_eq!((saved.detent_ms, saved.portion_scale_pct), (2_140, 133));
     }
 
     #[test]

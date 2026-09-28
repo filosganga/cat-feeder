@@ -6,6 +6,13 @@
     holding buffers for the duration of a data transfer."
 )]
 #![deny(clippy::large_stack_frames)]
+// The headless build leaves out the knob, the menu and the panel, and the
+// functions only they call. Gating each of those individually would thread
+// `cfg` through a third of this file; an unused function is harmless.
+#![cfg_attr(
+    feature = "headless",
+    allow(dead_code, unused_imports, unused_variables)
+)]
 
 use cat_feeder::button::{BOOT_RESET_HOLD_MS, held_at_boot};
 use cat_feeder::calibrate::{
@@ -29,6 +36,7 @@ use cat_feeder::portions::{Added, MAX_CLICKS};
 use cat_feeder::provisioning::{
     AP_PASSWORD_LEN, AP_SSID_LEN, DecodeError, Record, ap_password, ap_ssid,
 };
+use cat_feeder::reset::{Hold, HoldToReset};
 use cat_feeder::rtc::Rtc;
 use cat_feeder::schedule::{
     Alignment, Change, Due, LocalClock, Schedule, ScheduleCommand, ScheduleRecordError, Scheduler,
@@ -39,8 +47,8 @@ use cat_feeder::switch::{ClickSource, Switch};
 use cat_feeder::tz::{Zone, ZoneRecordError};
 use cat_feeder::wiring::{Bus, TimeSync, now_ms};
 use cat_feeder::{
-    button_pin, display_scl_pin, display_sda_pin, encoder_a_pin, encoder_b_pin, led_pin,
-    motor_in1_pin, motor_in2_pin, motor_sleep_pin, mqtt, switch_pin,
+    boot_button_pin, button_pin, display_scl_pin, display_sda_pin, encoder_a_pin, encoder_b_pin,
+    led_pin, motor_in1_pin, motor_in2_pin, motor_sleep_pin, mqtt, switch_pin,
 };
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_embedded_hal::shared_bus::asynch::i2c::I2cDevice;
@@ -155,8 +163,15 @@ async fn main(spawner: Spawner) -> ! {
     // this board. Spawned on both boot paths with the click, so a unit in
     // setup mode still answers the knob on the console.
     let pull_up = InputConfig::default().with_pull(Pull::Up);
-    let encoder_a = Input::new(encoder_a_pin!(peripherals), pull_up);
-    let encoder_b = Input::new(encoder_b_pin!(peripherals), pull_up);
+    #[cfg(not(feature = "headless"))]
+    let (encoder_a, encoder_b) = (
+        Input::new(encoder_a_pin!(peripherals), pull_up),
+        Input::new(encoder_b_pin!(peripherals), pull_up),
+    );
+
+    // The BOOT button, on both builds: held five seconds while running, it
+    // erases the network settings. See `reset.rs` and `reset_task`.
+    let boot_button = Input::new(boot_button_pin!(peripherals), pull_up);
 
     // Built here rather than after the branch below, so that setup mode can
     // report its level too. A unit in setup mode is a unit on a bench being
@@ -200,6 +215,10 @@ async fn main(spawner: Spawner) -> ! {
             None
         }
     };
+    // Headless: no panel to probe. The bus stays, for the RTC.
+    #[cfg(feature = "headless")]
+    let oled: Option<&'static mut Oled<'static>> = None;
+    #[cfg(not(feature = "headless"))]
     let oled: Option<&'static mut Oled<'static>> = match i2c_bus {
         Some(bus) => match Oled::new(I2cDevice::new(bus)).await {
             Ok(oled) => Some(mk_static!(Oled<'static>, oled)),
@@ -222,7 +241,9 @@ async fn main(spawner: Spawner) -> ! {
             // the menu, so a hold would turn the LED cyan behind a menu nobody
             // can see, and its items would act on a unit with no broker and
             // no feeder task. The boot-time erase above has already run.
-            let _ = (button, encoder_a, encoder_b);
+            let _ = (button, boot_button);
+            #[cfg(not(feature = "headless"))]
+            let _ = (encoder_a, encoder_b);
             log_setup_switch_level(&switch);
 
             // Derived once, here, and handed to both the screen and the radio.
@@ -236,6 +257,9 @@ async fn main(spawner: Spawner) -> ! {
                 ap_password(AP_SECRET, id)
             );
 
+            // Headless: the console above and the sticker are all there is,
+            // which is why `dev/ap-password.sh` exists.
+            #[cfg(not(feature = "headless"))]
             spawner.spawn(
                 display_task(
                     oled,
@@ -276,8 +300,17 @@ async fn main(spawner: Spawner) -> ! {
         detent_ms: cfg.detent_ms,
     };
     BUS.calibration.set(calibration);
-    spawner.spawn(ui_task(button, store, calibration).expect("failed to create ui task"));
-    spawner.spawn(encoder_task(encoder_a, encoder_b).expect("failed to create encoder task"));
+    #[cfg(not(feature = "headless"))]
+    {
+        spawner.spawn(ui_task(button, store, calibration).expect("failed to create ui task"));
+        spawner.spawn(encoder_task(encoder_a, encoder_b).expect("failed to create encoder task"));
+    }
+    #[cfg(feature = "headless")]
+    {
+        let _ = button;
+        info!("board: headless, no knob and no panel");
+    }
+    spawner.spawn(reset_task(boot_button, store).expect("failed to create reset task"));
 
     spawner.spawn(switch_task(switch).expect("failed to create switch task"));
 
@@ -304,6 +337,7 @@ async fn main(spawner: Spawner) -> ! {
         mqtt_port: cfg.mqtt_port,
         mqtt_user: cfg.mqtt_user,
     };
+    #[cfg(not(feature = "headless"))]
     spawner.spawn(display_task(oled, None, Some(unit)).expect("failed to create display task"));
 
     let station = WifiConfig::Station(
@@ -400,8 +434,8 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Bo
     info!("store: nvs at {offset:#x}, {len} bytes");
 
     if wipe {
-        match store.erase() {
-            Ok(()) => warn!("store: erased by the boot button"),
+        match store.forget_network() {
+            Ok(()) => warn!("store: network forgotten by the boot button, calibration kept"),
             Err(e) => warn!("store: erase failed ({e:?})"),
         }
     }
@@ -493,6 +527,50 @@ fn stored_config(store: &mut Store) -> Option<Config> {
         Err(e) => {
             warn!("store: unreadable ({e:?}), going to setup");
             None
+        }
+    }
+}
+
+/// The BOOT button's reset: five seconds held, and the network settings go.
+///
+/// Sampled every 50 ms; the rules are `reset.rs`'s. Only the credentials record
+/// is erased — the boot gesture's erase, not the menu's factory reset — so the
+/// unit comes back in setup mode with its meals, calibration and timezone.
+#[embassy_executor::task]
+async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
+    let mut hold = HoldToReset::new();
+    let mut counting = false;
+    loop {
+        Timer::after(Duration::from_millis(50)).await;
+        match hold.update(now_ms(), boot.is_low()) {
+            Hold::Idle => {
+                if counting {
+                    info!("reset: released, nothing erased");
+                }
+                counting = false;
+                BUS.reset_held.store(false, Ordering::Relaxed);
+            }
+            Hold::Counting { .. } => {
+                if !counting {
+                    info!("reset: BOOT held, keep holding to erase the network settings");
+                }
+                counting = true;
+                BUS.reset_held.store(true, Ordering::Relaxed);
+            }
+            Hold::Reset => {
+                match store.lock().await.forget_network() {
+                    Ok(()) => {
+                        warn!("reset: network forgotten, calibration kept, restarting into setup")
+                    }
+                    Err(e) => {
+                        warn!("reset: erase failed ({e:?}), nothing changed");
+                        continue;
+                    }
+                }
+                // Long enough for the console line to leave the USB buffer.
+                Timer::after(Duration::from_millis(250)).await;
+                esp_hal::system::software_reset();
+            }
         }
     }
 }

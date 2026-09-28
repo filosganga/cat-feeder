@@ -678,6 +678,8 @@ fn banner(status: Status) -> Line {
     let text = match status {
         // Asterisks because this one wants somebody to walk over and look, and
         // it is the only state on the ladder that does.
+        // The BOOT button is being held: letting go keeps everything.
+        Status::Resetting => "HOLD TO ERASE WI-FI",
         Status::Jammed => "** JAMMED **",
         Status::Feeding => "FEEDING",
         Status::Armed => "MENU",

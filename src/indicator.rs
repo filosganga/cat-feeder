@@ -101,6 +101,8 @@ const FLASH_MS: u64 = FLASH_ON_MS + FLASH_GAP_MS;
 /// be tested only on hardware.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Health {
+    /// The BOOT button is being held towards a reset. See `reset.rs`.
+    pub reset_held: bool,
     /// The knob's menu is open. See `menu.rs`.
     pub button_armed: bool,
     /// Setup mode: this unit has raised its own access point. Roadmap step 9.
@@ -123,6 +125,11 @@ pub struct Health {
 /// can read, so [`Status::of`] picks a winner and the rest wait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
+    /// The BOOT button is being held: let go now and nothing happens, keep
+    /// holding and the network settings are erased. Above everything, jams
+    /// included, because it is the one state a person is actively waiting
+    /// on, and it lasts at most five seconds.
+    Resetting,
     /// The mechanism is stuck. Solid, because somebody has to come and look.
     Jammed,
     /// The motor is turning. Also the fastest way to tell "the command never
@@ -158,7 +165,9 @@ impl Status {
     /// top: a jam because you are about to put your hands in the mechanism, and
     /// feeding because it is the one thing you actively want to watch happen.
     pub fn of(health: Health) -> Self {
-        if health.jammed {
+        if health.reset_held {
+            Self::Resetting
+        } else if health.jammed {
             Self::Jammed
         } else if health.feeding {
             Self::Feeding
@@ -185,6 +194,10 @@ impl Status {
             // Solid: a mechanical fault, and the only state that stays lit.
             Self::Jammed => Pattern::solid(RED),
             Self::Feeding => Pattern::solid(WHITE),
+
+            // Setup mode's blue, since that is where it leads, but fast: a
+            // countdown, not a state.
+            Self::Resetting => Pattern::repeating(BLUE, 1, 400),
 
             // Twice a second: unmistakably faster than anything else here, and
             // the urgency is honest — it lapses in ten seconds.
@@ -334,6 +347,7 @@ mod tests {
     /// time, so each test names exactly the fact it is about.
     fn well() -> Health {
         Health {
+            reset_held: false,
             button_armed: false,
             setup: false,
             link: true,
@@ -399,6 +413,7 @@ mod tests {
     #[test]
     fn a_jam_outranks_everything() {
         let bad = Health {
+            reset_held: false,
             jammed: true,
             feeding: true,
             button_armed: true,
@@ -499,6 +514,25 @@ mod tests {
         }
     }
 
+    /// A hold on the BOOT button outranks even a jam — it lasts five
+    /// seconds and somebody is watching for it — and is setup's blue at a
+    /// pace setup never flashes, so the two cannot be confused.
+    #[test]
+    fn a_reset_hold_outranks_everything_and_looks_like_nothing_else() {
+        let holding = Health {
+            reset_held: true,
+            jammed: true,
+            feeding: true,
+            button_armed: true,
+            ..well()
+        };
+        assert_eq!(Status::of(holding), Status::Resetting);
+        let resetting = Status::Resetting.pattern();
+        assert_eq!(resetting.colour, Status::Setup.pattern().colour);
+        assert!(resetting.period_ms * 4 <= Status::Setup.pattern().period_ms);
+        assert!(resetting.period_ms < Status::Armed.pattern().period_ms);
+    }
+
     #[test]
     fn setup_mode_beats_having_no_link() {
         // In setup mode there is deliberately no station connection, so the
@@ -534,6 +568,7 @@ mod tests {
         assert_eq!(Status::Jammed.pattern().level_at(long_after), RED);
 
         for status in [
+            Status::Resetting,
             Status::Armed,
             Status::Setup,
             Status::NoLink,
@@ -646,6 +681,7 @@ mod tests {
     #[test]
     fn every_pattern_fits_inside_its_period() {
         for status in [
+            Status::Resetting,
             Status::Armed,
             Status::Setup,
             Status::NoLink,

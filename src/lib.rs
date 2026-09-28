@@ -36,6 +36,7 @@ pub mod indicator;
 pub mod menu;
 pub mod portions;
 pub mod provisioning;
+pub mod reset;
 pub mod schedule;
 pub mod sha256;
 pub mod tz;

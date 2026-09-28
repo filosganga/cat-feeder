@@ -475,6 +475,9 @@ pub struct Bus {
     /// one bit the LED needs, so nothing else can reach in and change what a
     /// press means.
     pub button_armed: AtomicBool,
+    /// The BOOT button is being held towards a reset. Written by `reset`,
+    /// read by `indicator`.
+    pub reset_held: AtomicBool,
 }
 
 impl Default for Bus {
@@ -515,6 +518,7 @@ impl Bus {
             }),
             net: Connectivity::new(),
             setup: AtomicBool::new(false),
+            reset_held: AtomicBool::new(false),
             button_armed: AtomicBool::new(false),
         }
     }
@@ -526,6 +530,7 @@ impl Bus {
     /// report a state that never actually existed.
     pub fn health(&self) -> Health {
         Health {
+            reset_held: self.reset_held.load(Ordering::Relaxed),
             button_armed: self.button_armed.load(Ordering::Relaxed),
             setup: self.setup.load(Ordering::Relaxed),
             link: self.net.link(),

@@ -10,7 +10,7 @@
 //! - **Authenticated, always, with the derived password.** The same
 //!   `base32(sha256("<ap_secret>:<id>"))` the setup network uses, the sticker
 //!   carries and `dev/ap-password.sh` prints — so a unit is never open, and
-//!   there is no reset flow: the button held through power-on erases the
+//!   there is no reset flow: a reset gesture forgets the network in the
 //!   record, which is the root of trust. HTTP Basic, any username.
 //! - **Never render a stored secret.** The network form shows the SSID, the
 //!   broker and its username; both password boxes are always empty, and
