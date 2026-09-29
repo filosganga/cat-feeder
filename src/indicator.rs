@@ -69,7 +69,7 @@ impl Rgb {
 ///
 /// A WS2812 at full brightness is painful indoors and draws ~60 mA, and the
 /// moment it would be brightest — [`Status::Feeding`] — is the moment the 5 V
-/// rail is already sagging enough to need the 220 µF cap next to the DRV8833.
+/// rail is already sagging enough to need the 220 µF cap on the driver's supply.
 /// Staying under ~10% solves the glare and the current draw together.
 ///
 /// These are not perceptually matched: at equal numbers green reads much
@@ -161,9 +161,11 @@ pub enum Status {
 impl Status {
     /// The priority ladder. First match wins.
     ///
-    /// Ordered by *what nothing else can tell you*, with two exceptions at the
-    /// top: a jam because you are about to put your hands in the mechanism, and
-    /// feeding because it is the one thing you actively want to watch happen.
+    /// Ordered by *what nothing else can tell you*, with three exceptions at
+    /// the top: a BOOT hold, because letting go is the only way to stop an
+    /// erase and the countdown must be seen; a jam, because you are about to
+    /// put your hands in the mechanism; and feeding, because it is the one
+    /// thing you actively want to watch happen.
     pub fn of(health: Health) -> Self {
         if health.reset_held {
             Self::Resetting
@@ -411,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn a_jam_outranks_everything() {
+    fn a_jam_outranks_everything_but_a_reset_hold() {
         let bad = Health {
             reset_held: false,
             jammed: true,
@@ -469,7 +471,7 @@ mod tests {
         // there ten seconds later when the arm lapses.
         //
         // **The network faults, not every fault.** A jam still wins, and
-        // `a_jam_outranks_everything` pins that with `button_armed` set: red
+        // `a_jam_outranks_everything_but_a_reset_hold` pins that with `button_armed` set: red
         // has to keep warning while somebody has their hands in the mechanism.
         // The cost is that arming a jammed feeder shows nothing at all on the
         // LED, which is why `display::render` puts the confirmation on the

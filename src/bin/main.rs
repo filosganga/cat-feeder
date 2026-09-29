@@ -14,6 +14,7 @@
     allow(dead_code, unused_imports, unused_variables)
 )]
 
+#[cfg(not(feature = "headless"))]
 use cat_feeder::button::{BOOT_RESET_HOLD_MS, held_at_boot};
 use cat_feeder::calibrate::{
     Failure as CalibrationFailure, Measurement, Progress, Run as CalibrationRun,
@@ -156,8 +157,15 @@ async fn main(spawner: Spawner) -> ! {
 
     // Before the record is read, so a wipe simply means the normal boot path
     // finds nothing — no reboot needed, because nothing has been decided yet.
+    #[cfg(not(feature = "headless"))]
     let button = Switch::new(button_pin!(peripherals));
+    #[cfg(not(feature = "headless"))]
     let wipe = reset_held_at_boot(&button).await;
+    // Headless: GPIO3 is not wired, so it is not read. A stray bridge to ground
+    // there must not forget the network on every boot; the BOOT hold is this
+    // build's reset.
+    #[cfg(feature = "headless")]
+    let wipe = false;
 
     // The knob's two lines, pulled up like every other contact to ground on
     // this board. Spawned on both boot paths with the click, so a unit in
@@ -241,9 +249,9 @@ async fn main(spawner: Spawner) -> ! {
             // the menu, so a hold would turn the LED cyan behind a menu nobody
             // can see, and its items would act on a unit with no broker and
             // no feeder task. The boot-time erase above has already run.
-            let _ = (button, boot_button);
+            let _ = boot_button;
             #[cfg(not(feature = "headless"))]
-            let _ = (encoder_a, encoder_b);
+            let _ = (button, encoder_a, encoder_b);
             log_setup_switch_level(&switch);
 
             // Derived once, here, and handed to both the screen and the radio.
@@ -307,7 +315,6 @@ async fn main(spawner: Spawner) -> ! {
     }
     #[cfg(feature = "headless")]
     {
-        let _ = button;
         info!("board: headless, no knob and no panel");
     }
     spawner.spawn(reset_task(boot_button, store).expect("failed to create reset task"));
@@ -436,7 +443,7 @@ fn resolve_config(flash: esp_hal::peripherals::FLASH<'static>, wipe: bool) -> Bo
     if wipe {
         match store.forget_network() {
             Ok(()) => warn!("store: network forgotten by the boot button, calibration kept"),
-            Err(e) => warn!("store: erase failed ({e:?})"),
+            Err(e) => warn!("store: forgetting the network failed ({e:?})"),
         }
     }
 
@@ -516,6 +523,10 @@ fn stored_config(store: &mut Store) -> Option<Config> {
         // Every path below lands in setup mode rather than guessing. A unit
         // that believes a half-written record sits trying to join a network
         // that does not exist, with no way back but the button.
+        Ok(record) if record.is_network_forgotten() => {
+            info!("store: no network in the record (calibration kept), going to setup");
+            None
+        }
         Ok(_) => {
             warn!("store: record is unusable, going to setup");
             None
@@ -533,9 +544,10 @@ fn stored_config(store: &mut Store) -> Option<Config> {
 
 /// The BOOT button's reset: five seconds held, and the network settings go.
 ///
-/// Sampled every 50 ms; the rules are `reset.rs`'s. Only the credentials record
-/// is erased — the boot gesture's erase, not the menu's factory reset — so the
-/// unit comes back in setup mode with its meals, calibration and timezone.
+/// Sampled every 50 ms; the rules are `reset.rs`'s. The record is rewritten by
+/// `Record::without_network` — the power-on gesture's forgetting, not the
+/// menu's factory reset — so the unit comes back in setup mode with its meals,
+/// calibration and timezone.
 #[embassy_executor::task]
 async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
     let mut hold = HoldToReset::new();
@@ -563,7 +575,12 @@ async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
                         warn!("reset: network forgotten, calibration kept, restarting into setup")
                     }
                     Err(e) => {
-                        warn!("reset: erase failed ({e:?}), nothing changed");
+                        warn!(
+                            "reset: forgetting the network failed ({e:?}), nothing changed; let go and hold again"
+                        );
+                        // Not "released": the button is still down.
+                        counting = false;
+                        BUS.reset_held.store(false, Ordering::Relaxed);
                         continue;
                     }
                 }
@@ -575,7 +592,8 @@ async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
     }
 }
 
-/// Whether the button was held down through power-on, meaning "erase".
+/// Whether the button was held down through power-on, meaning "forget the
+/// network". Not on the headless build, which has no knob to hold.
 ///
 /// Costs one GPIO read on an ordinary boot: if the button is not already down
 /// there is nothing to wait for. Only a boot that starts with it held pays the
@@ -586,6 +604,7 @@ async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
 /// duration alone would mean a beat too long on a working feeder wipes its
 /// credentials; requiring a power cycle means it cannot happen by accident at
 /// all. See `button.rs`.
+#[cfg(not(feature = "headless"))]
 async fn reset_held_at_boot(button: &Switch<'static>) -> bool {
     const INTERVAL_MS: u64 = 50;
 
@@ -593,7 +612,7 @@ async fn reset_held_at_boot(button: &Switch<'static>) -> bool {
         return false;
     }
 
-    info!("button: held at boot, keep holding to erase the configuration");
+    info!("button: held at boot, keep holding to forget the network settings");
 
     // One sample past the threshold, so the loop can only decide "yes" by
     // actually observing the full duration.
@@ -607,7 +626,7 @@ async fn reset_held_at_boot(button: &Switch<'static>) -> bool {
 
     let held = held_at_boot(samples, INTERVAL_MS);
     if !held {
-        info!("button: released too early, configuration kept");
+        info!("button: released too early, network settings kept");
     }
     held
 }

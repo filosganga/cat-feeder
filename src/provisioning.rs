@@ -8,15 +8,16 @@
 //!
 //! ```text
 //!   boot ── read the record from the nvs partition
-//!            ├── valid   → station mode, connect, run normally
-//!            └── missing → access point, serve the form, save, reboot
+//!            ├── usable  → station mode, connect, run normally
+//!            └── missing, or no network in it
+//!                        → access point, serve the form, save, reboot
 //!
 //!   a reset gesture → the record without its network, see `Record::without_network`
 //! ```
 //!
-//! There is exactly one way into setup, which is why the button erases rather
-//! than signalling: "no valid record" is the only state the boot path has to
-//! recognise.
+//! There is exactly one way into setup, which is why a reset rewrites the
+//! record rather than signalling: "no usable record" is the only state the
+//! boot path has to recognise.
 //!
 //! ## Why a checksum
 //!
@@ -183,11 +184,6 @@ impl Record {
         })
     }
 
-    /// Whether this record is worth trying to connect with.
-    ///
-    /// An empty SSID or host cannot work, and a unit that tries anyway looks
-    /// broken rather than unconfigured. The form rejects these too; this is the
-    /// backstop for a record written by an older or buggier version.
     /// This record with the network forgotten and the mechanism remembered:
     /// every credential blank, the calibration as it was.
     ///
@@ -215,6 +211,18 @@ impl Record {
         }
     }
 
+    /// Whether a reset wrote this record: no network in it at all, only the
+    /// calibration. Lets the boot path tell a deliberate reset from a record
+    /// that is merely unusable, which reads like corruption.
+    pub fn is_network_forgotten(&self) -> bool {
+        *self == self.without_network()
+    }
+
+    /// Whether this record is worth trying to connect with.
+    ///
+    /// An empty SSID or host cannot work, and a unit that tries anyway looks
+    /// broken rather than unconfigured. The form rejects these too; this is the
+    /// backstop for a record written by an older or buggier version.
     pub fn is_usable(&self) -> bool {
         !self.wifi_ssid.is_empty() && !self.mqtt_host.is_empty() && self.mqtt_port != 0
     }
@@ -989,6 +997,8 @@ mod tests {
         };
         let reset = measured.without_network();
         assert!(!reset.is_usable(), "a reset must land in setup mode");
+        assert!(reset.is_network_forgotten());
+        assert!(!measured.is_network_forgotten());
 
         let mut flash = [0xFFu8; MAX_RECORD_LEN];
         let len = reset.encode(&mut flash).unwrap();

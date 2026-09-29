@@ -33,7 +33,8 @@ pub enum Hold {
     Idle,
     /// Held, and long enough to show on the LED.
     Counting { remaining_ms: u64 },
-    /// Held the whole time: erase and reboot. Reported once.
+    /// Held the whole time: erase and reboot. Reported once per hold, so a
+    /// hold whose erase failed has to be let go and held again.
     Reset,
 }
 
@@ -55,6 +56,9 @@ impl HoldToReset {
     pub fn update(&mut self, now_ms: u64, pressed: bool) -> Hold {
         if !pressed {
             self.since = None;
+            // A new hold may fire again. The reset normally reboots before
+            // this matters; it is what keeps a failed erase retryable.
+            self.fired = false;
             return Hold::Idle;
         }
         let since = *self.since.get_or_insert(now_ms);
@@ -119,6 +123,23 @@ mod tests {
         ]);
         assert_eq!(out[2], Hold::Idle);
         assert!(matches!(out[4], Hold::Counting { .. }));
+        assert_eq!(out[5], Hold::Reset);
+    }
+
+    /// `main.rs` carries on when the erase fails, so the next hold has to
+    /// fire as well. On a headless unit this is the only way back.
+    #[test]
+    fn a_second_hold_after_a_failed_erase_fires_again() {
+        let out = run(&[
+            (0, true),
+            (5_000, true),
+            (5_050, true),
+            (6_000, false),
+            (7_000, true),
+            (12_000, true),
+        ]);
+        assert_eq!(out[1], Hold::Reset);
+        assert_eq!(out[2], Hold::Idle);
         assert_eq!(out[5], Hold::Reset);
     }
 

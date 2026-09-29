@@ -25,7 +25,9 @@ board-zero   = ["esp-println/jtag-serial"]
 # No knob and no panel: the menu, the encoder and the display are left out,
 # and the unit is configured over its setup network, its admin page and Home
 # Assistant. The BOOT button's 5 s reset is how it gets back to setup mode.
-# Combines with either board: `--features board-zero,headless`.
+# Combines with either board:
+# `--no-default-features --features board-zero,headless`, or
+# `./dev/flash.sh --board zero --headless`.
 headless     = []
 
 # Portable dependencies. These build for the host too, so the pure-logic

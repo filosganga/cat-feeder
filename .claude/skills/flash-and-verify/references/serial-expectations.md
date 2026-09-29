@@ -809,8 +809,10 @@ INFO (1265) - display: awake
 Correct this block with what a real capture shows, rather than leaving it as a
 prediction — that is the rule this whole file is written under.
 
-**There is no third outcome**, because there is no build-time fallback left.
-`configured for ...` or `going to setup`, and nothing in between.
+**There is no build-time fallback left**, so the record decides alone:
+`configured for ...`, or one of the `going to setup` lines — `no record yet`
+for blank flash, `no network in the record (calibration kept)` after a reset —
+and nothing in between.
 
 Configuration lives in the `nvs` partition and `espflash` rewrites only the app
 partition, so a provisioned unit keeps its credentials across every `cargo run`.

@@ -8,8 +8,8 @@
 //!
 //! ## The one way in
 //!
-//! "No usable record" is the only state that reaches here. The reset button
-//! erases rather than signalling, so there is no second path and no flag to get
+//! "No usable record" is the only state that reaches here. A reset rewrites
+//! the record without its network rather than signalling, so there is no second path and no flag to get
 //! out of step. There is deliberately **no fall back into setup after failing
 //! to connect**: a router rebooting for five minutes must not drop a working
 //! feeder into setup mode and stop it feeding.

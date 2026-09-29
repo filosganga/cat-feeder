@@ -53,20 +53,22 @@ jam test, unplug the laptop rather than trusting the adapter to carry the stall.
 *Do not fit an external diode* above still stands: it is about the path between
 the pad and the laptop, and the diode-OR is on the other side of the rail.
 
-**Ground is shared, and must be.** The DRV8833's `AIN1`, `AIN2` and `nSLEEP` are
+**Ground is shared, and must be.** The DRV8833's inputs and `nSLEEP` are
 referenced to the Zero's ground, so the adapter's ground, the driver's and the
 board's are one node. Sharing ground while the 5 V rails are separately sourced
 reads as contradictory and is not.
 
 The rail itself is one node with three taps — adapter, `VM`, and the Zero's
-pad — so motor current flows adapter → rail → `VM` and never crosses the pad.
-The pad is a load on that node, not a link in the path.
+pad — so on the breadboard motor current flows adapter → rail → `VM` and never
+crosses the pad. The pad is a load on that node, not a link in the path. (On
+the perfboard the laptop can share it; see the note below.)
 
 ⚠️ **The one combination to avoid is provoking a jam on USB alone.** With no
 adapter, the motor's current *is* drawn through `D1` and `P8` pin 1. That is
 fine for a running motor at a couple of hundred milliamps — it is how every
 bench test so far has run — but a stall held for the whole jam budget is more
-than a 1 A Schottky should carry. Plug the adapter in before testing a jam.
+than a 1 A Schottky should carry. Plug the adapter in before testing a jam —
+and on the perfboard, unplug the laptop as well.
 
 Both supplies live is also exactly what the **detent interval** measurement
 needs: the motor turning a real mechanism on its real adapter, with the console
@@ -470,9 +472,9 @@ loop {
   That ordering is deliberate and stays — red has to keep warning while
   somebody has their hands in the mechanism — so **the panel carries the
   confirmation instead**: `** JAMMED **` stays at the top while the menu is
-  open, and the first item reads `Retry feed` rather than `Feed one portion`. A jam is one of the two states `display::awake`
-  never sleeps in — setup is the other — so the line is there whenever somebody
-  walks over to look.
+  open, and the first item reads `Retry feed` rather than `Feed one portion`. A jam is one of the states `display::awake`
+  never sleeps in — setup and a BOOT hold are the others — so the line is
+  there whenever somebody walks over to look.
 
   The hint's duration comes from `button::ARM_HOLD_MS` through
   `display::hold_hint_for`, and is **rounded up** rather than to nearest: an
@@ -549,8 +551,8 @@ credential and keeps the two mechanical figures; the result fails
 `is_usable`, so the boot path goes to setup mode exactly as for erased flash,
 and setup mode's form carries the calibration into the record it saves.
 
-**One way in, not two.** The button erases rather than signalling, so "no valid
-record" is the only state the boot path has to recognise. There is deliberately
+**One way in, not two.** A reset rewrites the record rather than signalling,
+so "no usable record" is the only state the boot path has to recognise. There is deliberately
 no fall back to setup mode after failing to connect: a router rebooting for five
 minutes must not drop a working feeder into setup and stop it feeding.
 
@@ -688,9 +690,10 @@ room for DNS later.
 Rebooting out of it would only return to setup mode, and a unit that gives up
 while you are fetching your phone is worse than one that waits.
 
-The reset button is already built — see *The outside button* below. It erases at
-power-on rather than at runtime, so by the time setup mode exists the "no valid
-record" state is reachable without any further work.
+The reset gestures are already built — see *The outside button* below: the
+knob's click held through power-on, and BOOT held 5 s while running. Both
+forget the network, so the "no usable record" state is reachable without any
+further work.
 
 ### Credentials: getting them out of the binary
 
@@ -764,8 +767,10 @@ password changed while it is still on the bench.
 
 **To verify:** provision a board, reflash the application, and look for
 `store: configured for ...`. An unprovisioned board says
-`store: no record yet, going to setup` instead and raises its own network —
-there is no third outcome, because there is no fallback left.
+`store: no record yet, going to setup` instead and raises its own network.
+A unit that was reset says `store: no network in the record (calibration
+kept), going to setup`, which is the same path with the calibration carried.
+There is no build-time fallback left, so nothing else can happen.
 
 That the Wi-Fi password is genuinely absent from the binary is checkable
 directly rather than by reading code:
@@ -929,13 +934,17 @@ only one a headless unit has. `reset.rs` holds the rule, host-tested; the case
 needs a pinhole over the button.
 
 **A headless build**, `--features headless` (`./dev/flash.sh --headless`),
-leaves out the menu, the encoder and the panel: GPIO3–GPIO5 are unused, and the
+leaves out the menu, the encoder and the panel: GPIO3–GPIO5 are unused — not
+even read at boot, so there is no power-on gesture and a stray bridge there
+cannot forget the network — and the
 unit is configured over its setup network, its admin page and Home
 Assistant. Setup mode then shows its password only on the console, so the
 sticker from `dev/ap-password.sh` is required rather than a backup. A build
 flag rather than a panel probe, because a broken panel must not silently
 turn the knob's click into something else. Verified booting headless on the
-Zero; the BOOT hold itself is not yet seen on hardware.
+Zero. The BOOT hold has been used on hardware once, in its first form, which
+erased the whole record and so lost the calibration — that is what changed it.
+The current form, forgetting only the network, is not yet seen on hardware.
 
 The menu is `Feed one portion`, `Pause schedule` (or `Resume schedule`),
 `Settings` and `Lock`. **Settings** holds this unit's calibration — `Portion`
@@ -1366,7 +1375,9 @@ Embassy tasks: `net` (Wi-Fi + stack), `mqtt`, `switch` (owns the GPIO),
 re-aligns), `rtc` (owns the DS3231: logs it at boot, arms the clock from it,
 keeps it set from live times), `encoder` (reads the knob's `A`/`B`), `ui`
 (owns the knob's click, the menu and the store's writes from it), `display`
-(owns the panel), `indicator` (owns the LED), `web` (the admin page). They
+(owns the panel), `indicator` (owns the LED), `web` (the admin page), `reset`
+(owns BOOT on GPIO9, and forgets the network after a 5 s hold). `encoder`,
+`ui` and `display` are left out of the headless build. They
 communicate through the one
 `wiring::Bus` static, which names every shared handle and documents who writes
 each one.
@@ -1895,7 +1906,7 @@ points at the section with the detail.
 |---|---|
 | The setup-mode screen (SSID, password, address) | hold the button through power-on, `./dev/capture.sh --seconds 40` |
 | The `WI-FI`, `BROKER` and `DEVICE` info pages | turn the knob while locked |
-| The BOOT button's 5 s reset, and its fast-blue LED and `HOLD TO ERASE WI-FI` banner | hold BOOT; it erases Wi-Fi, so re-provision after |
+| The BOOT button's 5 s reset **in its current form** — the calibration surviving it — and its fast-blue LED and `HOLD TO ERASE WI-FI` banner | hold BOOT; it forgets Wi-Fi, so re-provision after. Look for `reset: network forgotten` then `store: no network in the record` |
 
 **Hardware and deployment**
 
@@ -2497,8 +2508,8 @@ Four rules it comes with:
 - **The admin password is derived**, `base32(sha256("<ap_secret>:<id>"))`
   — the same string the sticker carries and `./dev/ap-password.sh` prints.
   There is no field to set one, so a unit is never unauthenticated, and
-  recovery needs no password-reset flow because the boot gesture erases the
-  record. The physical button stays the root of trust, which is the right answer
+  recovery needs no password-reset flow because a reset gesture forgets the
+  network. The physical button stays the root of trust, which is the right answer
   for a device with no other identity.
 - **Never render a stored secret back into a form.** The setup page re-fills
   fields on error, and that must not extend to passwords once the page is

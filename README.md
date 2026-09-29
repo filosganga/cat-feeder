@@ -75,9 +75,14 @@ Per feeder:
 - DRV8833 H-bridge breakout. Its `nSLEEP` pin must be driven high or the motor
   will not turn.
 - The feeder's original 5 V motor, 8 rpm, and its hub microswitch.
-- A 220 µF capacitor across 5 V and ground beside the driver. Without it the
+- A 220 µF capacitor across the driver's 5 V and ground. Without it the
   motor's inrush browns out the ESP32 on start.
-- 5 V from the feeder's original USB port, 1 A or better. No batteries.
+- 5 V from the feeder's original USB port, 1 A or better.
+- Optionally the feeder's own AA batteries as a backup, joined through a dual
+  Schottky (MBRF2045CT) so USB never charges them. Roughly a day of runtime,
+  estimated rather than measured.
+- A perfboard to carry it all: `pcb.diy`, drawn in DIY Layout Creator, with
+  `pcb.png` as the picture to solder from.
 
 ## Getting started
 
@@ -107,8 +112,9 @@ not the same model can run one binary:
 
 **Nothing is compiled in.** A board with no record does not fall back to
 anything — it raises its own Wi-Fi network and asks to be configured. The
-console says `store: configured for ...` or `store: no record yet, going to
-setup`, and there is no third answer.
+console says `store: configured for ...`, or `store: no record yet, going to
+setup` — or, after a reset, `store: no network in the record (calibration
+kept), going to setup` — and nothing else.
 
 A healthy boot looks like this:
 
@@ -155,6 +161,28 @@ cargo run --no-default-features --features board-zero  # a Zero
 
 `--no-default-features` is not optional there; Cargo features are additive, and
 asking for both boards fails in esp-println's build script.
+
+### Headless
+
+A unit can be built with no knob and no panel — the perfboard in `pcb.diy` is
+one:
+
+```sh
+./dev/flash.sh --board zero --headless
+# or: cargo run --no-default-features --features board-zero,headless
+```
+
+It leaves out the menu, the encoder and the display, and the console says
+`board: headless, no knob and no panel`. Everything else is the same unit:
+feeding, the schedule, the RTC, MQTT and the admin page. What changes:
+
+- **It is configured over the network only** — its setup network, its admin
+  page and Home Assistant. Setup mode shows its password only on the serial
+  console, so print the sticker from `./dev/ap-password.sh` before the unit
+  goes into a case; it is the only way to join it.
+- **Its one reset is BOOT held for five seconds** — there is no knob to hold
+  through power-on, and GPIO3 is not even read. Put a pinhole over the button.
+- GPIO3–GPIO5 are free.
 
 To watch what the firmware is saying:
 
@@ -203,12 +231,16 @@ reproducible off the device.
 
 **Then, per unit.**
 
-1. Hold the reset button on the outside of the case **while plugging the unit
-   in**. It erases its stored configuration, which is the one and only way into
-   setup. It is a power-on gesture rather than a runtime one so that it cannot
-   happen by accident: the same button — the knob's click — opens the feeding
-   menu, and separating the two by hold duration alone would mean a beat too
-   long wipes a working feeder.
+1. Put the unit into setup mode, in one of two ways. Either forgets the
+   network settings and keeps the meals, the calibration and the timezone.
+   - **Hold the knob's click while plugging the unit in**, for three seconds.
+     It is a power-on gesture rather than a runtime one so that it cannot
+     happen by accident: the same click opens the feeding menu, and
+     separating the two by hold duration alone would mean a beat too long
+     wipes a working feeder.
+   - **Hold BOOT for five seconds while it runs**, through a pinhole in the
+     case. The LED flashes fast blue while it counts; let go early and
+     nothing changes. On a [headless](#headless) unit this is the only way.
 2. Join `cat-feeder-<id>` from a phone, using the password on the sticker. A
    unit with a screen fitted is also *meant* to show the network name, its
    password and the address for as long as it waits — that is written but has
@@ -236,18 +268,21 @@ leave a password box empty to keep it.
 
 There is deliberately no automatic fall back into setup after a failed
 connection. A router rebooting for five minutes must not drop a working feeder
-into setup mode and stop it feeding — the button makes that a decision rather
+into setup mode and stop it feeding — the reset makes that a decision rather
 than an accident.
 
 ## The LED and the button
 
-Each unit has an RGB LED and one button on the outside of the case. Between them
-they cover the things Home Assistant cannot tell you — because the failures that
-matter most are the ones where the unit cannot reach Home Assistant at all.
+Each unit has an RGB LED, the knob on the outside of the case, and the
+board's BOOT button behind a pinhole. Between them they cover the things Home
+Assistant cannot tell you — because the failures that matter most are the ones
+where the unit cannot reach Home Assistant at all. A headless unit has only
+the LED and BOOT.
 
 | LED | Meaning |
 |---|---|
 | red, green, blue at power-on | self-test. Proves the LED works, and that its colours are the right way round |
+| blue, fast (every 0.4 s) | BOOT is held: at five seconds the network settings go. Let go to cancel |
 | **solid** red | jammed. Something is stuck; go and look |
 | **solid** white | feeding |
 | cyan, twice a second | the knob's menu is open — a tap on `Feed` will dispense |
@@ -277,7 +312,7 @@ The knob — a rotary encoder whose click is the outside button:
 | **menu open** | move the cursor | run the item: `Feed one portion`, `Pause`/`Resume schedule`, `Settings`, `Lock` | lock |
 | **editing a setting** | change the value | save it; in force from the next feed | cancel |
 | nothing for 10 s | | | locks again |
-| held while plugging in | | | erase the configuration |
+| held while plugging in, 3 s | | | forget the network settings |
 
 The menu has to be opened by a hold because **a control on a cat feeder that
 dispenses food is a control cats will learn to use.** Turning never dispenses.
@@ -287,8 +322,9 @@ has no footing.
 `Settings` holds the clock, set by hand, this unit's portion scale and detent
 interval — the two figures `dev/provision.sh --portion-scale` and `--detent-ms` set — and a
 factory reset that asks `Keep` or `Erase` first. The factory reset erases the
-credentials, the calibration *and the meals*; holding the button while plugging
-in erases only the credentials and keeps the meals. A pause set from the menu
+credentials, the calibration *and the meals*; holding the click while plugging
+in, or BOOT for five seconds, forgets only the network and keeps the meals,
+the calibration and the timezone. A pause set from the menu
 lasts until Home Assistant next restarts or its schedule helper changes; Home
 Assistant is the authority.
 
@@ -333,6 +369,7 @@ src/
   sha256.rs       pure: shared with dev/ap-password.sh
 
   button.rs       pure: what a press of the outside button means
+  reset.rs        pure: BOOT held five seconds forgets the network
   indicator.rs    pure: what the status LED shows, and when
   display.rs      pure: the six lines the screen shows, and when it sleeps
   menu.rs         pure: what the knob's turns and click mean

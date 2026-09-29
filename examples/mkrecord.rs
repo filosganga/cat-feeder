@@ -341,9 +341,7 @@ fn read_password(path: &str) -> Result<String, String> {
     let first = first.strip_suffix('\r').unwrap_or(first);
 
     if first.is_empty() {
-        return Err(format!(
-            "{path} has no password on its first line"
-        ));
+        return Err(format!("{path} has no password on its first line"));
     }
 
     Ok(first.to_string())

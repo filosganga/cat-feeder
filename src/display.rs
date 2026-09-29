@@ -211,8 +211,8 @@ pub const AWAKE_MS: u64 = 30_000;
 /// the screen answers *what exactly* when you walk over and press the button.
 /// You are at the feeder either way by the time the screen matters.
 ///
-/// Two states are exempt, and both for the same reason — the screen is the only
-/// place the information exists:
+/// Three states are exempt, and all for the same reason — the screen is the
+/// only place the information exists:
 ///
 /// - **Setup.** The SSID and password are *why* this display was fitted. A unit
 ///   cannot tell you them any other way, and blanking them while somebody is
@@ -222,6 +222,10 @@ pub const AWAKE_MS: u64 = 30_000;
 ///   when. A jam ends when a human intervenes, so it cannot outlast attention
 ///   the way a fault like `NO BROKER` can — and those *do* sleep, because a
 ///   broker down for a week must not burn itself into the panel.
+/// - **Resetting.** BOOT is not the knob, so holding it is not a press and would
+///   otherwise leave a sleeping panel dark through the whole five seconds —
+///   the one moment `HOLD TO ERASE WI-FI` has anything to say. It lasts only
+///   as long as a finger stays on the button.
 ///
 /// **Boot counts as a wake**, so a unit is lit for the first [`AWAKE_MS`] after
 /// power-on and then sleeps like any other idle moment. Two things fall out of
@@ -236,7 +240,7 @@ pub const AWAKE_MS: u64 = 30_000;
 ///   once. It is the same argument that keeps `led_selftest` in `main.rs`,
 ///   answered here without a self-test to maintain.
 pub fn awake(status: Status, now_ms: u64, last_press_ms: Option<u64>) -> bool {
-    if matches!(status, Status::Setup | Status::Jammed) {
+    if matches!(status, Status::Setup | Status::Jammed | Status::Resetting) {
         return true;
     }
 
@@ -347,9 +351,9 @@ fn menu_screen(view: &View, cursor: Item) -> Screen {
     // The jam stays shouted while the menu is open, which the LED cannot do:
     // `Status::of` puts `Jammed` over `Armed` so red keeps warning, and the
     // panel is the one place that can show both. `FEEDING` likewise, so a tap
-    // visibly lands.
+    // visibly lands, and a BOOT hold, which outranks everything.
     screen.lines[0] = match view.status {
-        Status::Jammed | Status::Feeding => banner(view.status),
+        Status::Resetting | Status::Jammed | Status::Feeding => banner(view.status),
         _ => clip("MENU"),
     };
 
@@ -1644,7 +1648,8 @@ mod tests {
         assert_fits(&screen);
     }
 
-    const EVERY_STATUS: [Status; 9] = [
+    const EVERY_STATUS: [Status; 10] = [
+        Status::Resetting,
         Status::Jammed,
         Status::Feeding,
         Status::Armed,
@@ -1746,11 +1751,11 @@ mod tests {
         assert!(awake(Status::Healthy, second + AWAKE_MS - 1, Some(second)));
     }
 
-    /// The two states where the screen is the only place the information
-    /// exists. Setup is the whole reason the panel is fitted.
+    /// The states where the screen is the only place the information exists.
+    /// Setup is the whole reason the panel is fitted.
     #[test]
-    fn setup_and_jammed_never_sleep() {
-        for status in [Status::Setup, Status::Jammed] {
+    fn setup_jammed_and_a_reset_hold_never_sleep() {
+        for status in [Status::Setup, Status::Jammed, Status::Resetting] {
             assert!(
                 awake(status, 10 * 60 * 60 * 1_000, None),
                 "{status:?} must stay lit with nothing pressed for ten hours"

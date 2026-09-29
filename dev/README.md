@@ -341,7 +341,10 @@ is `./dev/provision.sh` again, with no rebuild.
 
 A board with **no** record does not fall back to anything: it says
 `store: no record yet, going to setup` and raises its own Wi-Fi network.
-Nothing is compiled into the binary, so there is no third outcome.
+A board that was reset — BOOT held 5 s, or the knob held through power-on —
+says `store: no network in the record (calibration kept), going to setup`
+and does the same, keeping its calibration. Nothing is compiled into the
+binary, so there is no other outcome.
 
 ## When the ESP32 cannot connect
 

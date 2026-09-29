@@ -23,7 +23,7 @@
 //!
 //! | Offset in `nvs` | Record | Written by |
 //! |---|---|---|
-//! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the knob's settings |
+//! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the knob's settings, the admin page, both reset gestures (`Record::without_network`) |
 //! | `0x1000` | the schedule, `FDS1` | a schedule command, a `Meal n` entity, the admin page |
 //! | `0x2000` | the timezone, `FDZ1` | the admin page |
 //!

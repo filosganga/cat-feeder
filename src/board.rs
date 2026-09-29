@@ -65,10 +65,12 @@
 //! That leaves GP0–GP5, GP14 and GP18–GP22 on the edge, plus GP6, GP7 and GP23
 //! on the back pads: **fifteen usable, nine of them spent today.**
 //!
-//! Nine and not ten, though the table below has ten rows: GPIO8 is not one of
-//! the fifteen, having been struck out twice just above as strapping and as the
-//! onboard WS2812. It is wired, but it was never available to spend. Count the
-//! free pins against nine or the arithmetic comes out one short.
+//! Nine and not eleven, though the table below has eleven rows: GPIO8 and
+//! GPIO9 are not among the fifteen. GPIO8 is struck out twice just above, as
+//! strapping and as the onboard WS2812; GPIO9 is strapping and the onboard
+//! BOOT button. Both are wired, but neither was ever available to spend. Count
+//! the free pins against nine or the arithmetic comes out short. The headless
+//! build spends six: GPIO3–GPIO5 go with the knob.
 //!
 //! **GPIO4 and GPIO5 are strapping pins too, and are spent anyway.** They are
 //! `MTMS`/`MTDI`, and on the C6 they only choose the SDIO slave's sampling and
@@ -84,22 +86,26 @@
 //!
 //! | Pin | Goes to | Notes |
 //! |---|---|---|
-//! | GPIO0 | DRV8833 `AIN1` | edge |
-//! | GPIO1 | DRV8833 `AIN2` | edge |
+//! | GPIO0 | DRV8833 `IN1` of either channel | edge; the perfboard uses channel B, so `In3` |
+//! | GPIO1 | DRV8833 `IN2` of the same channel | edge; `In4` on the perfboard |
 //! | GPIO14 | DRV8833 `nSLEEP` (`ULT`/`SLP`) | edge; high enables the bridge |
-//! | GPIO2 | hub microswitch | other side to GND, internal pull-up |
-//! | GPIO3 | encoder push switch | the outside button; other side to GND, internal pull-up |
+//! | GPIO2 | hub microswitch | other side to GND, internal pull-up; 1 kΩ in series on the perfboard |
+//! | GPIO3 | encoder push switch | the outside button; other side to GND, internal pull-up. Unwired and unread on the headless build |
 //! | GPIO4 | encoder `A` (`CLK`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO5 | encoder `B` (`DT`) | strapping, harmless — see above; internal pull-up |
 //! | GPIO8 | WS2812 `DIN` | onboard; also a back pad on the Zero |
-//! | GPIO9 | the onboard **BOOT** button | read only *after* boot: held 5 s, erases the network — see `reset.rs` |
+//! | GPIO9 | the onboard **BOOT** button | read only *after* boot: held 5 s, forgets the network — see `reset.rs`. A back pad on the Zero, so an external button can sit in parallel |
 //! | GPIO18 | `SDA`: the panel on `0x3C` and the DS3231 on `0x68` | edge; one bus, see `i2c.rs` |
 //! | GPIO19 | `SCL`: the same two devices | edge |
 //!
-//! Neither switch needs a resistor: both enable the chip's internal pull-up and
-//! read a press as a **falling** edge. Power is `3V3` to the display, `5V` to
-//! the DRV8833's motor supply, and one ground shared by everything — including
-//! the 220 µF sitting across the DRV8833's 5 V and ground.
+//! No switch needs a pull-up resistor: each enables the chip's internal one and
+//! reads a press as a **falling** edge. The 1 kΩ on GPIO2 is not a pull-up but
+//! a guard: the feeder's cable is an unkeyed header with the switch beside a
+//! motor wire, and it keeps a plug put on wrong from reaching the pin with 5 V.
+//! Power is `3V3` to the display and the RTC, `5V` to the DRV8833's motor
+//! supply, and one ground shared by everything — with the 220 µF across the
+//! driver's 5 V and ground, which on the perfboard is also the star point for
+//! both. See *The perfboard* in `CLAUDE.md`.
 //!
 //! On a bench that `5V` can arrive from two places at once — the feeder's own
 //! adapter and a laptop's USB cable — and they meet at the Zero's `5V` pad. It
@@ -235,11 +241,12 @@ macro_rules! led_pin {
     };
 }
 
-/// DRV8833 `AIN1`. **GPIO0** on both boards.
+/// DRV8833 `IN1` of the channel in use. **GPIO0** on both boards.
 ///
-/// One channel drives the motor: `AIN1`/`AIN2` in, `AOUT1`/`AOUT2` out. The B
-/// channel is unused and its inputs can be left unconnected — they have
-/// internal pull-downs, so that channel stays coasting.
+/// One channel drives the motor, and it does not matter which: the breadboard
+/// uses A (`AIN1`/`AIN2` in, `AOUT1`/`AOUT2` out), the perfboard B (`In3`/`In4`,
+/// `Out3`/`Out4`). The other channel's inputs can be left unconnected — they
+/// have internal pull-downs, so it stays coasting.
 #[macro_export]
 macro_rules! motor_in1_pin {
     ($peripherals:expr) => {
@@ -247,7 +254,8 @@ macro_rules! motor_in1_pin {
     };
 }
 
-/// DRV8833 `AIN2`. **GPIO1** on both boards. See [`motor_in1_pin!`].
+/// DRV8833 `IN2` of the same channel. **GPIO1** on both boards. See
+/// [`motor_in1_pin!`].
 #[macro_export]
 macro_rules! motor_in2_pin {
     ($peripherals:expr) => {
