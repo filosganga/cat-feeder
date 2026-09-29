@@ -126,7 +126,7 @@ pub struct Health {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// The BOOT button is being held: let go now and nothing happens, keep
-    /// holding and the network settings are erased. Above everything, jams
+    /// holding and the network settings are forgotten. Above everything, jams
     /// included, because it is the one state a person is actively waiting
     /// on, and it lasts at most five seconds.
     Resetting,
@@ -162,8 +162,8 @@ impl Status {
     /// The priority ladder. First match wins.
     ///
     /// Ordered by *what nothing else can tell you*, with three exceptions at
-    /// the top: a BOOT hold, because letting go is the only way to stop an
-    /// erase and the countdown must be seen; a jam, because you are about to
+    /// the top: a BOOT hold, because letting go is the only way to stop a
+    /// reset and the countdown must be seen; a jam, because you are about to
     /// put your hands in the mechanism; and feeding, because it is the one
     /// thing you actively want to watch happen.
     pub fn of(health: Health) -> Self {

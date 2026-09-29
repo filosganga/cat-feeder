@@ -41,7 +41,9 @@
 #   store: configured for <ssid> via <host>:<port>
 #
 # An unprovisioned board says "no record yet, going to setup" instead and raises
-# its own Wi-Fi network. There is no third outcome: nothing is compiled in.
+# its own Wi-Fi network; one that was reset says "no network in the record
+# (calibration kept), going to setup". Nothing is compiled in, so anything
+# else is a warning naming a fault in the record or the partition.
 
 set -euo pipefail
 

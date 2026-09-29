@@ -831,8 +831,8 @@ pub fn render_restarting(page: &mut String<PAGE_LEN>, record: &Record) {
          <title>cat-feeder</title>{FAVICON}<style>{STYLE}</style></head><body><h1>Saved</h1>\
          <p>This feeder is restarting and will join <b>{}</b>, then connect to \
          the broker at <b>{}:{}</b>.</p><p>Its address may change. If it does \
-         not come back, hold the button through a power cycle to set it up \
-         again.</p></body></html>",
+         not come back, hold the board's BOOT button for five seconds while it \
+         is running to set it up again.</p></body></html>",
         Escaped(&record.wifi_ssid),
         Escaped(&record.mqtt_host),
         record.mqtt_port,

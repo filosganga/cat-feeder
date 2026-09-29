@@ -980,6 +980,19 @@ mod tests {
         assert_fits(&screen);
     }
 
+    /// BOOT is held with the menu open: the countdown heads the menu rather
+    /// than `MENU`, because letting go is the only way to stop it.
+    #[test]
+    fn a_reset_hold_heads_the_menu() {
+        let screen = render(&View {
+            status: Status::Resetting,
+            ..menu(Item::Feed)
+        });
+
+        assert_eq!(screen.lines[0], "HOLD TO ERASE WI-FI");
+        assert_fits(&screen);
+    }
+
     /// A jammed unit will not reach its next slot without someone intervening,
     /// so printing one would promise a meal that is not coming — the same rule
     /// `next_line` already applies to `Paused` and `NoTime`.

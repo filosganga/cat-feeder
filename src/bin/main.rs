@@ -178,7 +178,7 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     // The BOOT button, on both builds: held five seconds while running, it
-    // erases the network settings. See `reset.rs` and `reset_task`.
+    // forgets the network settings. See `reset.rs` and `reset_task`.
     let boot_button = Input::new(boot_button_pin!(peripherals), pull_up);
 
     // Built here rather than after the branch below, so that setup mode can
@@ -191,7 +191,7 @@ async fn main(spawner: Spawner) -> ! {
     // on it, rather than before both: `Oled::new` probes two I²C addresses, and
     // a bus shorted by a hand-soldered jumper — the recurring mistake on these
     // boards — leaves that probe waiting on the peripheral's own timeout. In
-    // front of this call it would delay the button gesture erasing a record and
+    // front of this call it would delay a reset gesture forgetting the network and
     // the access point coming up, which is the one way back into a unit nobody
     // can reach. Behind it, the worst case is a slow boot with a warning.
     let boot = resolve_config(peripherals.FLASH, wipe);
@@ -248,7 +248,8 @@ async fn main(spawner: Spawner) -> ! {
             // No knob in setup mode. The setup screen replaces every page and
             // the menu, so a hold would turn the LED cyan behind a menu nobody
             // can see, and its items would act on a unit with no broker and
-            // no feeder task. The boot-time erase above has already run.
+            // no feeder task. The power-on gesture above, if this build has one, has
+            // already run.
             let _ = boot_button;
             #[cfg(not(feature = "headless"))]
             let _ = (button, encoder_a, encoder_b);
@@ -557,14 +558,14 @@ async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
         match hold.update(now_ms(), boot.is_low()) {
             Hold::Idle => {
                 if counting {
-                    info!("reset: released, nothing erased");
+                    info!("reset: released, network settings kept");
                 }
                 counting = false;
                 BUS.reset_held.store(false, Ordering::Relaxed);
             }
             Hold::Counting { .. } => {
                 if !counting {
-                    info!("reset: BOOT held, keep holding to erase the network settings");
+                    info!("reset: BOOT held, keep holding to forget the network settings");
                 }
                 counting = true;
                 BUS.reset_held.store(true, Ordering::Relaxed);

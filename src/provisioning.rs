@@ -962,8 +962,9 @@ pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
          the broker at <b>{}:{}</b>.</p>\
          <p>Its setup network is about to disappear — that is what success \
          looks like. Rejoin your own Wi-Fi.</p>\
-         <p>If it does not appear in Home Assistant, hold the button through a \
-         power cycle to erase and start again.</p>\
+         <p>If it does not appear in Home Assistant, hold the board's BOOT \
+         button for five seconds while it is running: it forgets the network \
+         and starts setup again.</p>\
          </body></html>",
         Escaped(&record.wifi_ssid),
         Escaped(&record.mqtt_host),

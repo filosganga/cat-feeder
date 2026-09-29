@@ -114,7 +114,8 @@ not the same model can run one binary:
 anything — it raises its own Wi-Fi network and asks to be configured. The
 console says `store: configured for ...`, or `store: no record yet, going to
 setup` — or, after a reset, `store: no network in the record (calibration
-kept), going to setup` — and nothing else.
+kept), going to setup`. Anything else is a warning naming a fault in the
+record or the partition, and it goes to setup too.
 
 A healthy boot looks like this:
 

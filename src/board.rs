@@ -124,7 +124,7 @@
 //! options in `CLAUDE.md`'s *Version 1.5: the knob*, this is **fork (a)**: the
 //! shaft switch *is* the outside button, on GPIO3. A hold opens or closes the
 //! menu and a tap runs the item under the cursor — see `menu.rs` — and the
-//! boot-time erase is unchanged. GP20 and GP21 used to be reserved for `A`/`B`;
+//! power-on gesture that forgets the network is unchanged. GP20 and GP21 used to be reserved for `A`/`B`;
 //! they went to GPIO4 and GPIO5 instead, and the reservation is released.
 //!
 //! It is a bare encoder, not a breakout: its common pin and the switch's other
@@ -181,8 +181,9 @@ macro_rules! switch_pin {
 pub const SWITCH_PIN: &str = "GPIO2";
 
 /// The outside button: the rotary encoder's push switch. **GPIO3** on both
-/// boards. It arms, feeds and locks at runtime, and erases the record when held
-/// through power-on — see `button.rs`.
+/// boards. It arms, feeds and locks at runtime, and forgets the network when
+/// held through power-on — see `button.rs`. Not read at all on the headless
+/// build.
 ///
 /// Separate from the hub microswitch on purpose: that one is inside the
 /// mechanism and unreachable once a feeder is assembled, and this one has to be
@@ -208,7 +209,7 @@ pub const BUTTON_PIN: &str = "GPIO3";
 /// A strapping pin, and that is exactly why it is safe to read at runtime and
 /// no other time: held *through* a reset it selects download mode, and the
 /// firmware never runs to see it. Pressed while the firmware runs, it is an
-/// ordinary input. Held for five seconds it erases the network settings and
+/// ordinary input. Held for five seconds it forgets the network settings and
 /// reboots into setup mode — the one recovery that needs no knob and no
 /// network, which is what a headless unit relies on. It costs no pin: it is
 /// already on every board, and struck out of the usable list above for the

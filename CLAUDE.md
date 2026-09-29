@@ -770,7 +770,8 @@ password changed while it is still on the bench.
 `store: no record yet, going to setup` instead and raises its own network.
 A unit that was reset says `store: no network in the record (calibration
 kept), going to setup`, which is the same path with the calibration carried.
-There is no build-time fallback left, so nothing else can happen.
+There is no build-time fallback left, so anything else is a warning naming a
+fault — `record is unusable`, `unreadable (…)`, or `no nvs partition`.
 
 That the Wi-Fi password is genuinely absent from the binary is checkable
 directly rather than by reading code:
@@ -921,7 +922,7 @@ turns the two lines into detents.
 | nothing for 10 s | | | locks again, discarding any edit |
 | **held through power-on, 3 s** | | | forget the network, keep the calibration |
 
-**The onboard BOOT button (GPIO9), held 5 s while running, erases the network
+**The onboard BOOT button (GPIO9), held 5 s while running, forgets the network
 settings** and reboots into setup mode — on every build, knob or not. The LED
 flashes fast blue while it counts, and letting go before five seconds keeps
 everything. Like the power-on gesture it forgets only the network — every
@@ -1319,7 +1320,7 @@ src/
   schedule.rs     pure logic: Schedule, LocalClock, next_due(), double-feed guard
   portions.rs     pure logic: the pending-click counter, its cap, and the
                   per-unit portions -> clicks conversion
-  reset.rs        pure logic: the BOOT button's 5 s hold to erase the network
+  reset.rs        pure logic: the BOOT button's 5 s hold to forget the network
   button.rs       pure logic: holds and taps of the knob's click, arming
   menu.rs         pure logic: pages while locked, the menu while unlocked
   encoder.rs      pure logic: the knob's A/B levels into detents

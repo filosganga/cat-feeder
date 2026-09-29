@@ -203,7 +203,8 @@ impl Button {
     }
 }
 
-/// Whether the button was held long enough at power-on to mean "erase".
+/// Whether the button was held long enough at power-on to mean "forget the
+/// network".
 ///
 /// A plain fold over samples rather than anything stateful, because it runs
 /// once and the answer is needed before the rest of the firmware starts. The

@@ -1,4 +1,4 @@
-//! The BOOT button's reset: held for five seconds, it erases the network
+//! The BOOT button's reset: held for five seconds, it forgets the network
 //! settings and the unit reboots into setup mode.
 //!
 //! Pure logic, sampled by `main.rs`'s `reset_task`. It is the way back into a
@@ -33,8 +33,8 @@ pub enum Hold {
     Idle,
     /// Held, and long enough to show on the LED.
     Counting { remaining_ms: u64 },
-    /// Held the whole time: erase and reboot. Reported once per hold, so a
-    /// hold whose erase failed has to be let go and held again.
+    /// Held the whole time: forget the network and reboot. Reported once per
+    /// hold, so a hold whose forgetting failed has to be let go and held again.
     Reset,
 }
 
@@ -57,7 +57,7 @@ impl HoldToReset {
         if !pressed {
             self.since = None;
             // A new hold may fire again. The reset normally reboots before
-            // this matters; it is what keeps a failed erase retryable.
+            // this matters; it is what keeps a failed reset retryable.
             self.fired = false;
             return Hold::Idle;
         }
@@ -126,10 +126,10 @@ mod tests {
         assert_eq!(out[5], Hold::Reset);
     }
 
-    /// `main.rs` carries on when the erase fails, so the next hold has to
+    /// `main.rs` carries on when forgetting the network fails, so the next hold has to
     /// fire as well. On a headless unit this is the only way back.
     #[test]
-    fn a_second_hold_after_a_failed_erase_fires_again() {
+    fn a_second_hold_after_a_failed_reset_fires_again() {
         let out = run(&[
             (0, true),
             (5_000, true),
