@@ -199,7 +199,28 @@ extra pin and no firmware change. See roadmap step 10.
 
 ### The perfboard
 
-**Drawn, not yet soldered**, 2026-09-28. `pcb.diy` at the repo root is the
+**Drawn 2026-09-28, soldered and running 2026-09-30** as unit `9a6ecc`, the
+second Zero. Verified on it: the beep test (5 V to ground reads megohms — C1
+charging and the chips' leakage, not a short), the headless build joining
+Wi-Fi and the broker and reaching `led: Healthy` in 6.8 s, and one `feed 1`
+running the motor, counting a click through R1 and braking. The DS3231 answers
+too, and the schedule arms from it 1.4 s after power-on — after two lessons
+worth keeping for unit three:
+
+- **Use the module's 6-pin side**, soldering only `SCL · SDA · VCC · GND`,
+  with `GND` on N11. The 4-pin passthrough on its other side reads
+  `SCL · SDA · VCC · GND` in the opposite direction, and fitted there every
+  pin landed on its mirror: 3V3 on the module's `SDA`, ground on its `SCL`.
+  Nothing was damaged — the only path was through the module's pull-ups —
+  but check the silkscreen against N11–N14 before soldering, whichever side.
+- **One open I²C line and one wrong order look identical** on the console:
+  `rtc: nothing answered; running without one`. Beep each module pin to the
+  Zero's pin (SDA ↔ F8, SCL ↔ G8), not pad to pad; here it was an SDA joint.
+
+A factory-fresh Zero arrives
+running Waveshare's demo, which leaves ESP-IDF data in `nvs`; the schedule
+sector then reads `schedule: stored record is unreadable` until a schedule
+is sent. `pcb.diy` at the repo root is the
 DIY Layout Creator file; `pcb.png` is the layout and `pcb (mask).png` the
 bottom-side traces alone. It is the **headless** build — no panel, no encoder,
 GP3–GP5 unconnected, and the BOOT button the only reset — with the DS3231 on
@@ -270,7 +291,10 @@ appear. Mark pin 1 on the housing and the board either way.
 both come out on a 2-pin header, and GPIO9 runs to the BOOT button, other leg
 to ground. On a 4-leg tactile switch the two legs on one side are often joined
 inside; if the pair chosen is, GPIO9 sits low forever and **the unit boots into
-download mode every time**. The beep test below catches it.
+download mode every time**. The beep test below catches it. ✅ Verified on
+`9a6ecc`: the unit boots normally with the button fitted, and a press logs
+`reset: BOOT held, …` then `reset: released, network settings kept` — so the
+wire soldered to the back pad under the module reaches GPIO9.
 
 **Before first power, with the continuity beeper**, holes as in the drawing:
 
@@ -943,9 +967,12 @@ Assistant. Setup mode then shows its password only on the console, so the
 sticker from `dev/ap-password.sh` is required rather than a backup. A build
 flag rather than a panel probe, because a broken panel must not silently
 turn the knob's click into something else. Verified booting headless on the
-Zero. The BOOT hold has been used on hardware once, in its first form, which
+Zero. The BOOT hold was first used on hardware in its original form, which
 erased the whole record and so lost the calibration — that is what changed it.
-The current form, forgetting only the network, is not yet seen on hardware.
+✅ **The current form is verified on `9a6ecc`, headless, 2026-09-30**: held
+five seconds, the unit came back with `store: no network in the record
+(calibration kept), going to setup` and `setup: keeping this unit's measured
+timings from the old record`, and `provision.sh` put it back online.
 
 The menu is `Feed one portion`, `Pause schedule` (or `Resume schedule`),
 `Settings` and `Lock`. **Settings** holds this unit's calibration — `Portion`
@@ -1907,7 +1934,7 @@ points at the section with the detail.
 |---|---|
 | The setup-mode screen (SSID, password, address) | hold the button through power-on, `./dev/capture.sh --seconds 40` |
 | The `WI-FI`, `BROKER` and `DEVICE` info pages | turn the knob while locked |
-| The BOOT button's 5 s reset **in its current form** — the calibration surviving it — and its fast-blue LED and `HOLD TO ERASE WI-FI` banner | hold BOOT; it forgets Wi-Fi, so re-provision after. Look for `reset: network forgotten` then `store: no network in the record` |
+| The BOOT hold's `HOLD TO ERASE WI-FI` banner, on a unit with a panel. The reset itself is verified, headless, on `9a6ecc` | hold BOOT on a knob unit; it forgets Wi-Fi, so re-provision after |
 
 **Hardware and deployment**
 
@@ -1915,7 +1942,8 @@ points at the section with the detail.
 |---|---|
 | Detent interval measured with a **full** hopper | a full hopper; then set it on the knob's `Detent` |
 | The third feeder opened: switch confirmed, interval and portion ratio measured | opening it |
-| Units two and three: soldered, flashed, provisioned, sent their meals | soldering |
+| Unit two, `9a6ecc`, on the perfboard: its meals sent | a schedule |
+| Unit three: soldered, flashed, provisioned, sent its meals | soldering |
 | Motor direction checked on a real mechanism before bolting anything | each unit, before step 8 |
 | The printed enclosure, then retiring the old PCBs (step 8) | CAD |
 | Deploying to the Pi (step 11): package installed, units repointed, **meals sent** | the package on the Pi |
