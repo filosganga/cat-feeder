@@ -23,7 +23,8 @@
 //!   }
 //! ```
 //!
-//! See `CLAUDE.md` for why feeding counts edges rather than levels, and why the
+//! See `docs/adr/0008-count-edges-and-filter-in-the-feeder.md` for why feeding
+//! counts edges rather than levels, and why the
 //! minimum click spacing lives here rather than in `switch.rs`.
 
 use crate::portions::{Added, Pending, clicks_for};

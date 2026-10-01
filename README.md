@@ -1,426 +1,356 @@
 # cat-feeder
 
-Replacement electronics for three commercial automatic cat feeders, so all
-three dispense at the same instant.
+Replacement electronics for commercial automatic cat feeders: an ESP32-C6
+running Rust firmware drives the feeder's own motor, counts portions on its
+own hub switch, and takes its orders from Home Assistant over MQTT.
 
-The original board in each feeder is removed. The mechanics are kept: a 5 V
-geared motor and a microswitch on the output hub, which clicks once per portion
-dispensed. An ESP32-C6 running Rust firmware drives the motor and takes its
-orders from Home Assistant over MQTT.
+The feeder's original board comes out; its mechanics stay. What you get:
 
-Home Assistant asks for *portions*; each unit turns as many *clicks* as its own
-mechanism needs, because the three feeders are not all the same model.
+- **It feeds without a network.** Each unit keeps its meals in flash and its
+  time on a battery-backed clock, so a power cut or a dead router does not
+  cost a meal.
+- **It never double-feeds.** A missed meal is preferable to a double one, and
+  the firmware is built around that rule.
+- **Home Assistant integration with no YAML to write.** A unit announces itself
+  as a device with a feed button, a pause switch, a jam sensor and editable
+  meal times. Several feeders can be fed at the same instant.
 
-Each unit owns its clock and its schedule. A DS3231 real-time clock with a coin
-cell keeps the time through a power cut, and Home Assistant's `feeder/time`,
-published every minute, keeps it corrected; there is no NTP. The schedule is
-sent to a unit deliberately — a new unit starts with no meals and does not feed
-until given some — and the unit keeps it in its own flash. So a feeder that
-loses power comes back feeding, with or without a broker, as long as its RTC
-was set. One whose RTC was never set, or whose coin cell is flat, waits rather
-than guessing.
+## Will it fit your feeder?
 
-Flash holds three things: how to reach the broker, each unit's own mechanical
-calibration, and its meals. The first two are facts the broker cannot supply,
-because they are how a unit reaches it in the first place — and because the
-three feeders are not all the same model.
+Open the feeder and look at the mechanism. You need:
 
-## Status
+- **A 5 V DC motor with a reduction gearbox** turning the dispensing hub, so
+  the hub stops dead when the motor stops.
+- **A microswitch on the output hub that clicks once per portion.** One click
+  is one portion; that is the whole contract between the firmware and the
+  mechanism.
 
-Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
+An optical or Hall-effect sensor in place of the microswitch will **not** work
+without firmware changes: the firmware counts falling edges on a switch with
+a pull-up.
 
-| | |
+Two mechanisms are known to work. They look alike outside and are the same
+design inside:
+
+| You will see | Motor | Time between clicks | Wiring |
+|---|---|---|---|
+| Separate wires from the mechanism | DRF-W500CA, 5 V, 8 rpm | about 2 s | needs re-crimping into the board's connector order |
+| A flat ribbon cable from the mechanism | HC 180-15180, 5 V, in its own gearbox | about 5.3 s | plugs straight into the board |
+
+Both figures were measured with an empty hopper. A different feeder of the
+same shape will very likely work; it needs two things measured, both done
+from the unit itself once it is running:
+
+- **The detent interval** — the time between clicks. *Run calibration* on the
+  unit's admin page measures it. Do it with a **full hopper**: a loaded
+  mechanism is slower, and calibrating empty gives false jam alarms on refill
+  day.
+- **The portion size** — what one click dispenses, by weight or by counting
+  clicks into a spoon. If it differs between your feeders, set each unit's
+  portion scale so the same meal dispenses the same amount everywhere.
+
+## Parts, per feeder
+
+| Part | Notes |
 |---|---|
-| Boots, logs over serial | working |
-| Wi-Fi, DHCP | working |
-| MQTT connect, auth, last will, retained availability | working |
-| State topic | working, real values |
-| Debounced switch, feeding logic, jam detection | working, against a real bridge |
-| Home Assistant discovery, commands, pause | working |
-| Schedule, clock, double-feed guard | working |
-| DS3231 real-time clock: arms the schedule at boot, with no Home Assistant | working, verified on the Zero |
-| The unit owns its schedule, in flash; a new unit starts blank | working, verified on the Zero |
-| Home Assistant: an automation publishing the time | working |
-| Home Assistant: a script copying one feeder's meals to others | working; run once to a single device, not yet to a label or an area |
-| Status LED on the onboard WS2812 | working, verified by eye |
-| The knob: turn for info pages, hold for a menu, tap `Feed` to feed | working on a Zero; the info pages are host-tested but not yet seen on the panel |
-| Per-board provisioning from the host (`dev/provision.sh`) | working |
-| Per-unit mechanical calibration | working, defaults until measured |
-| Driving the actual motor | working — align, count and brake watched on a bench motor |
-| OLED: driver, probed address, a screen that sleeps | working, on a 0.96" 128×64 SSD1315 |
-| Setup over the unit's own Wi-Fi | working, driven from a phone |
+| Waveshare **ESP32-C6-Zero** | the production board (8 MB flash) |
+| **DRV8833** H-bridge breakout | drives the motor |
+| **DS3231** RTC module with a **LIR2032** cell | keeps time through power cuts. Power it from 3V3 |
+| 220 µF 16 V electrolytic capacitor | stops the motor's inrush browning out the ESP32 |
+| **MBRF2045CT** dual Schottky | joins USB and the feeder's own AA batteries, so USB never charges them |
+| 1 kΩ resistor | guards the switch input |
+| Perfboard, female headers, a 6-pin header (or JST XH) | the layout is [`pcb.diy`](pcb.diy) |
+| 5 V USB adapter, 1 A or more | into the feeder's original USB socket |
+| *Optional:* 0.96" 128×64 **SSD1315** OLED, I²C | a status screen and menu |
+| *Optional:* **EC11** rotary encoder with push switch | the knob |
+| *Optional:* ESP32-C6-DEV-KIT-N8 | for development on a breadboard |
 
-Most of that was verified on the Waveshare ESP32-C6-DEV-KIT-N8, with a bench
-button standing in for the hub microswitch. The first production board — a
-Zero, id `99177c` — now runs as well, on a breadboard with the driver, the
-switch, the button and a panel: it drives the bridge and draws on the glass.
+Without the panel and knob a unit is **headless**: it is configured entirely
+over the network, and its only controls are the LED and the board's BOOT
+button.
 
-What has *not* happened is any of it turning a feeder's own mechanism. The
-motor has been watched aligning, counting and braking on the bench, but a bare
-shaft, so the detent interval each unit needs is still unmeasured and which way
-the hub turns under `IN1=1, IN2=0` is still unobserved.
+## Building it
 
-Every part has now arrived — the three Zeros, the DRV8833, a display — and the
-feeders still point at the development stack that runs in Docker on a laptop,
-rather than at an always-on Home Assistant. What is left before a
-feeder runs on its own hardware is soldering and CAD, not ordering: the
-electronics go in a separate 3D-printed case rather than into each feeder's own
-LCD window, so one enclosure design serves all three — including the odd one
-out — and each feeder needs only a hole in its bottom shell for the cables.
+The modules sit in female headers on a perfboard, which lives in its own
+3D-printed case outside the feeder. The feeder gets one hole in its bottom
+shell for the motor and switch cable, and 5 V comes from its own USB socket,
+with its AA compartment as a backup supply.
 
-## Hardware
+[**docs/hardware.md**](docs/hardware.md) is the builder's guide: the cable
+pinout, the power path, the perfboard, the safety warnings, and the beep test
+to run before first power. Run `./dev/pcb-check.sh` after any change to the
+layout and before soldering.
 
-Per feeder:
+## Flashing
 
-- Waveshare ESP32-C6-Zero. Development happens on an ESP32-C6-DEV-KIT-N8.
-- DRV8833 H-bridge breakout. Its `nSLEEP` pin must be driven high or the motor
-  will not turn.
-- The feeder's original 5 V motor, 8 rpm, and its hub microswitch.
-- A 220 µF capacitor across the driver's 5 V and ground. Without it the
-  motor's inrush browns out the ESP32 on start.
-- 5 V from the feeder's original USB port, 1 A or better.
-- Optionally the feeder's own AA batteries as a backup, joined through a dual
-  Schottky (MBRF2045CT) so USB never charges them. Roughly a day of runtime,
-  estimated rather than measured.
-- A perfboard to carry it all: `pcb.diy`, drawn in DIY Layout Creator. Open it
-  there to print or export the picture to solder from; CLAUDE.md's *The
-  perfboard* has the cable's pin order and the beep test to run before power.
-
-## Getting started
-
-Rust stable with the `riscv32imac-unknown-none-elf` target, plus
-[espflash](https://github.com/esp-rs/espflash). No `espup` needed, because the
-C6 is RISC-V.
+You need Rust stable (the `riscv32imac-unknown-none-elf` target is installed
+by `rust-toolchain.toml`) and [espflash](https://github.com/esp-rs/espflash).
+No `espup`: the C6 is RISC-V.
 
 ```sh
 cargo install espflash
-cp cfg.toml.example cfg.toml     # then fill in Wi-Fi and broker details
-docker compose up -d             # Mosquitto on 1883, Home Assistant on 8123
-./dev/provision.sh               # once per board, writes cfg.toml into flash
-cargo run                        # build, flash, and open the serial monitor
+cp cfg.toml.example cfg.toml
 ```
 
-`cfg.toml` is git-ignored. `dev/provision.sh` writes its values straight into
-the board's `nvs` partition, which an application reflash never touches — so a
-board is provisioned once and keeps its settings across every `cargo run`, with
-nothing compiled in and nothing re-seeded at boot.
-
-It also carries this unit's mechanical calibration, so three feeders that are
-not the same model can run one binary:
+**Pick a salt once**, before flashing anything:
 
 ```sh
-./dev/provision.sh --detent-ms 900 --portion-scale 133
+openssl rand -hex 16          # put the result in cfg.toml as ap_secret
 ```
 
-**Nothing is compiled in.** A board with no record does not fall back to
-anything — it raises its own Wi-Fi network and asks to be configured. The
-console says `store: configured for ...`, or `store: no record yet, going to
-setup` — or, after a reset, `store: no network in the record (calibration
-kept), going to setup`. Anything else is a warning naming a fault in the
-record or the partition, and it goes to setup too.
+Each unit's setup password and admin password are derived from this salt and
+the unit's id. Without the salt they could be worked out from the MAC the unit
+broadcasts. Changing it later invalidates every label already printed. It is
+the only value compiled into the firmware: Wi-Fi and broker credentials are
+never in the binary.
 
-A healthy boot looks like this:
-
-```
-INFO - board: zero, id=99177c
-INFO - rtc: DS3231 holds 2026-09-25T19:03:12, running since last set, 26.00 C
-INFO - schedule: 2 meals from flash
-INFO - clock: RTC time 2026-09-25T19:03:12, schedule armed
-INFO - wifi: connected, ip=192.168.68.115/24
-INFO - mqtt: connected, id=feeder_99177c
-INFO - mqtt: discovery published
-INFO - mqtt: online
-INFO - mqtt: subscribed
-INFO - mqtt: asked for the time
-```
-
-With the RTC set, the schedule arms about 1.4 s after power-on, before Wi-Fi is
-up — the unit does not need Home Assistant to feed. A unit with no meals says
-`schedule: none stored; this unit will not feed until given one` instead, and
-shows `NO MEALS SET` on its panel.
-
-The device id comes from the MAC, so one binary flashes all three units and
-they still address distinct MQTT topics.
-
-`mqtt: asked for the time` is a publish to `feeder/time/request`, sent once per
-connection after subscribing. The schedule only starts on a *live* time — a
-retained one may be any age if Home Assistant has stopped — and without asking,
-a unit waits for the next minute boundary, up to a full minute of doing nothing.
-
-For a unit whose RTC is set, this only keeps the clock corrected. For one whose
-RTC is not — its console says `oscillator stopped since last set: not trusted` —
-the live answer is what arms it, so `clock: live time ..., schedule armed`
-normally follows within a second. If instead the console shows `clock:
-started, ... (retained; waiting for a live time)` and stops there, nobody
-answered: the broker is up but Home Assistant is not publishing, and that unit
-will not feed on schedule until it does.
-
-The board flashes both boards from one source:
+**Flash**, matching the build to the board in your hand:
 
 ```sh
-cargo run                                              # dev kit
-cargo run --no-default-features --features board-zero  # a Zero
+./dev/flash.sh --board zero               # with panel and knob
+./dev/flash.sh --board zero --headless    # without
+./dev/flash.sh --board zero --port /dev/cu.usbmodemXXXX
 ```
 
-`--no-default-features` is not optional there; Cargo features are additive, and
-asking for both boards fails in esp-println's build script.
+`./dev/flash.sh` builds, flashes and captures the console for 45 s. A Zero
+binary on a dev kit, or the reverse, flashes fine and then prints nothing, so
+check `--board`. `cargo run --no-default-features --features board-zero` is the
+same build with an interactive monitor.
 
-### Headless
+The unit's id is the last three bytes of its MAC, printed at boot
+(`board: zero, id=a1b2c3`). One binary serves every unit.
 
-A unit can be built with no knob and no panel — the perfboard in `pcb.diy` is
-one:
+**Print a label** for the case, with the unit plugged in:
 
 ```sh
-./dev/flash.sh --board zero --headless
-# or: cargo run --no-default-features --features board-zero,headless
+./dev/label.sh                 # reads the id from the connected board
+./dev/label.sh a1b2c3 d4e5f6   # or name the ids
 ```
 
-It leaves out the menu, the encoder and the display, and the console says
-`board: headless, no knob and no panel`. Everything else is the same unit:
-feeding, the schedule, the RTC, MQTT and the admin page. What changes:
-
-- **It is configured over the network only** — its setup network, its admin
-  page and Home Assistant. Setup mode shows its password only on the serial
-  console, so print the sticker from `./dev/ap-password.sh` before the unit
-  goes into a case; it is the only way to join it.
-- **Its one reset is BOOT held for five seconds** — there is no knob to hold
-  through power-on, and GPIO3 is not even read. Put a pinhole over the button.
-- GPIO3–GPIO5 are free.
-
-To watch what the firmware is saying:
-
-```sh
-./dev/watch.sh
-```
-
-The local stack, including the three different addresses the broker answers on
-and the Home Assistant package that publishes the time and copies meals between feeders, is
-documented in [dev/README.md](dev/README.md).
+It opens a page of 50 × 30 mm labels with the setup network's name, its
+password and a QR code that joins it. It needs `qrencode`. The page holds the
+passwords in the clear, so it goes to a temporary file. **On a headless unit
+the label is the only way to learn its password** short of a serial cable —
+print it before the unit goes into a case. `./dev/ap-password.sh <id>` prints
+the same thing as text.
 
 ## Setting up a feeder
 
-> **Works today**, driven end to end from a phone: the unit raises its network,
-> hands out an address, serves the form, saves what you type and reboots into
-> it. `./dev/provision.sh` still configures a board over USB, which stays the
-> quicker route while a unit is on the bench.
+A unit with no configuration raises its own Wi-Fi network and waits.
 
-A feeder is set up from a phone, with no laptop and no toolchain, because the
-case that actually hurts is not first boot — it is the
-Wi-Fi password changing across three units already screwed into place.
+1. Join `cat-feeder-<id>` from a phone, with the password on the label (a unit
+   with a panel shows it too).
+2. Browse to `http://192.168.4.1`.
+3. Fill in your Wi-Fi and your MQTT broker, and save. The broker must be an
+   **IP address**: the firmware has no DNS resolver. Give the broker's machine
+   a DHCP reservation.
+4. The unit reboots onto your network and appears in Home Assistant.
 
-**Once per project — pick a salt.** *Works today.*
-
-```sh
-echo "ap_secret    = \"$(openssl rand -hex 16)\"" >> cfg.toml
-```
-
-Each unit's setup password is derived from this salt and its device id, so it
-differs per unit and cannot be worked out from the MAC the unit broadcasts.
-Without it the password would be public, and WPA2 does not protect a session
-from someone who knows the passphrase — including the session where you type
-your home Wi-Fi password into the form.
-
-**Once per unit — print a sticker.** *Works today.*
+With a USB cable to hand, `./dev/provision.sh` does the same without the setup
+network: fill in Wi-Fi and the broker in `cfg.toml`, then
 
 ```sh
-./dev/ap-password.sh db0260
-# cat-feeder-db0260    55KA-G8H6-9NMQ
+./dev/provision.sh --host 192.168.1.10 --user <name> --password-file <path>
 ```
 
-Pass several ids for all three at once. The id is the last three bytes of the
-station MAC, printed at boot and by `espflash board-info`. Stickers can be made
-before a unit is ever powered on, which is the point of the derivation being
-reproducible off the device.
+The setup network stays up until someone configures it; there is no timeout.
+A unit that cannot reach its Wi-Fi does **not** drop back into setup by itself
+— a router rebooting must not take a working feeder off its schedule. Going
+back to setup is always deliberate (see [Resetting Wi-Fi](#resetting-wi-fi)).
 
-For a label to print rather than a line to copy, `./dev/label.sh` takes the
-same ids and opens a page of 50 × 30 mm labels: the network name, the password,
-and a QR code a phone scans to join the setup network. The same password logs
-into the unit's admin page. It needs `brew install qrencode`, and the page holds
-the passwords in the clear, so it is written to a temporary file.
+### The admin page
 
-```sh
-./dev/label.sh 9a6ecc 99177c
-```
+Every configured unit serves a page at `http://<its address>/`. The address is
+on the panel's `WI-FI` page, and Home Assistant links to it as *Visit device*.
+Log in with any username and the label's password.
 
-**Then, per unit.**
+It shows the clock, the next meal and the last feed, and lets you:
 
-1. Put the unit into setup mode, in one of two ways. Either forgets the
-   network settings and keeps the meals, the calibration and the timezone.
-   - **Hold the knob's click while plugging the unit in**, for three seconds.
-     It is a power-on gesture rather than a runtime one so that it cannot
-     happen by accident: the same click opens the feeding menu, and
-     separating the two by hold duration alone would mean a beat too long
-     wipes a working feeder.
-   - **Hold BOOT for five seconds while it runs**, through a pinhole in the
-     case. The LED flashes fast blue while it counts; let go early and
-     nothing changes. On a [headless](#headless) unit this is the only way.
-2. Join `cat-feeder-<id>` from a phone, using the password on the sticker. A
-   unit with a screen fitted is also *meant* to show the network name, its
-   password and the address for as long as it waits — that is written but has
-   not yet been seen on a panel, so take the sticker as the one that works.
-3. Browse to `http://192.168.4.1`.
-4. Fill in Wi-Fi and broker details, save.
-5. The unit reboots onto your network and appears in Home Assistant by itself.
+- feed now;
+- set the eight meals;
+- set the clock (one button takes your phone's time) and the timezone, so the
+  unit keeps summer time on its own when Home Assistant is not around;
+- set or measure the calibration — **Run calibration** turns five portions
+  into the bowl and times them, then offers to save the result;
+- change Wi-Fi or the broker, which restarts the unit.
 
-A brand-new unit skips step 1: fresh flash has no configuration, so it comes up
-in setup mode on its own.
+Stored passwords are never shown; leave a password box empty to keep it.
 
-With a cable to hand, `./dev/provision.sh` does the same job without any of
-this — it writes the record directly. The access point is for the case where
-the units are already installed and a laptop is not.
+### First things to do with a new unit
 
-**Once it is running, it has a page of its own** at `http://<its address>/` —
-the address is on the knob's `WI-FI` page, and Home Assistant links to it as
-*Visit device*. Log in with any username and the same sticker password. It
-shows the clock and the next meal, feeds on demand, edits the eight meals,
-sets the clock (one button takes your phone's time) and its timezone, so it
-keeps summer time even with no Home Assistant, sets or measures the detent
-interval and portion scale, and changes the Wi-Fi or broker (which
-restarts the unit). Stored passwords are never shown;
-leave a password box empty to keep it.
+1. **Check the motor turns the right way** with a feed, before anything is
+   bolted down. If it runs backwards, swap the two motor wires.
+2. **Calibrate** with a full hopper and a bowl underneath.
+3. **Give it meals.** A new unit starts with none and **will not feed until
+   given some** — its panel says `NO MEALS SET` and its state reports
+   `"meals":0`. That is deliberate: a unit never inherits meals nobody chose
+   for it.
 
-There is deliberately no automatic fall back into setup after a failed
-connection. A router rebooting for five minutes must not drop a working feeder
-into setup mode and stop it feeding — the reset makes that a decision rather
-than an accident.
+## Home Assistant
 
-## The LED and the button
+You need:
 
-Each unit has an RGB LED, the knob on the outside of the case, and the
-board's BOOT button behind a pinhole. Between them they cover the things Home
-Assistant cannot tell you — because the failures that matter most are the ones
-where the unit cannot reach Home Assistant at all. A headless unit has only
-the LED and BOOT.
+- **Mosquitto** with a user for the feeders and `persistence true` (without
+  it, a broker restart loses each unit's pause flag).
+- **Home Assistant on the right timezone.** It publishes local time with its
+  offset, and the feeders use the wall-clock fields as they arrive. An
+  instance left on UTC moves every meal by the offset while everything looks
+  healthy. The console prints the offset it received — check it.
+- **The MQTT integration** configured against that broker.
+- **The package**, [`homeassistant/packages/cat_feeder.yaml`](homeassistant/packages/cat_feeder.yaml),
+  copied unchanged into Home Assistant's `packages/` directory, with this in
+  `configuration.yaml` if it is not there already:
+
+  ```yaml
+  homeassistant:
+    packages: !include_dir_named packages
+  ```
+
+Install the package **before** pointing a feeder at the broker. It publishes
+the time every minute, and answers a unit that asks for it on connecting.
+
+Each unit then appears by itself as a device, *Cat feeder &lt;id&gt;*, with:
+
+| Entity | What it does |
+|---|---|
+| **Feed** button | one portion per press; presses accumulate while the motor runs |
+| **Paused** switch | pauses the schedule. Manual feeds still work |
+| **Jammed** binary sensor | on after a jam, off again after the next successful click |
+| **Feeding** event | in the Activity log: meals served or skipped, feeds at the unit, jams |
+| **Meal 1–8 time** and **portions** | the unit's schedule. Zero portions switches a meal off |
+| *Visit device* | a link to the unit's admin page |
+
+The package adds:
+
+- **`script.cat_feeder_copy_schedule`** — set one feeder's meals, then run this
+  to copy them to every other feeder, or to chosen devices, an area, a floor or
+  a label. It refuses rather than copy from or to an offline unit.
+- **`script.cat_feeder_feed_all`** — one broadcast, so every feeder turns at
+  the same instant.
+- **`schedule.cat_feeder_active`** — a weekly schedule helper. When it turns
+  off, every feeder is paused; when it turns on, they resume. Drag its blocks
+  for a holiday at home.
+
+No feeder id appears in the package: units are found in the device registry,
+so a new one joins by itself.
+
+**Home Assistant is the authority on pausing.** A pause set at the unit lasts
+until Home Assistant next restarts or its schedule helper changes.
+
+A paused feeder is the one state where the cats do not eat and nothing alarms.
+If yours normally runs unattended, add an automation that warns when
+`switch.cat_feeder_<id>_paused` has been on for a day or two.
+
+The full MQTT contract is in [CLAUDE.md](CLAUDE.md).
+
+## Using it
+
+### The LED
 
 | LED | Meaning |
 |---|---|
-| red, green, blue at power-on | self-test. Proves the LED works, and that its colours are the right way round |
-| blue, fast (every 0.4 s) | BOOT is held: at five seconds the network settings go. Let go to cancel |
-| **solid** red | jammed. Something is stuck; go and look |
+| red, green, blue at power-on | self-test |
+| blue, fast | BOOT is held: at five seconds the Wi-Fi settings go. Let go to cancel |
+| **solid** red | jammed — go and look |
 | **solid** white | feeding |
-| cyan, twice a second | the knob's menu is open — a tap on `Feed` will dispense |
-| red ×1 every 3 s | no Wi-Fi. Check the router or the credentials |
-| red ×2 every 3 s | no broker. Check the broker address, or Mosquitto |
-| red ×3 every 3 s | no trusted time, so **this unit will not feed on schedule**. Check Home Assistant is publishing |
+| cyan, twice a second | the menu is open: a tap on `Feed` dispenses |
+| blue, every 2 s | setup mode: waiting to be configured |
+| red ×1 every 3 s | no Wi-Fi |
+| red ×2 every 3 s | no broker |
+| red ×3 every 3 s | no trusted time — **will not feed on schedule** |
 | amber ×1 every 5 s | paused |
 | green ×2, then dark | all well |
 
-**Dark is the healthy state.** If lit were normal, lit would carry no
-information and nobody would look at it. Count the flashes rather than judging
-the colour: one, two and three point at three different things to fix, and
-counting works across a dark room and for a colour-blind reader.
+**Dark is healthy.** Count the flashes rather than judging the colour: one,
+two and three point at three different things to fix. Solid means the
+mechanism; blinking means the network.
 
-Red ×3 should be a flicker on the way up, not something you can count: the unit
-asks for the time on connecting and Home Assistant answers within a second. Red
-×3 you can actually sit and count means nobody answered — Home Assistant is down
-or its publish-the-time automation is missing — and that unit will not feed on
-schedule until it is fixed. A unit whose RTC is set arms from it at boot and
-never shows red ×3 at all.
-
-The knob — a rotary encoder whose click is the outside button:
+### The knob
 
 | | Turn | Tap | Hold 2 s |
 |---|---|---|---|
-| **locked** | step the pages: home, Wi-Fi, broker, device | back to home | open the menu, on `Feed`. The LED blinks cyan |
-| **menu open** | move the cursor | run the item: `Feed one portion`, `Pause`/`Resume schedule`, `Settings`, `Lock` | lock |
-| **editing a setting** | change the value | save it; in force from the next feed | cancel |
+| **locked** | step the pages: home, Wi-Fi, broker, device | back to home | open the menu, on `Feed` |
+| **menu open** | move the cursor | run the item | lock |
+| **editing a value** | change it | save it | cancel, and lock |
 | nothing for 10 s | | | locks again |
-| held while plugging in, 3 s | | | forget the network settings |
+| held while plugging in, 3 s | | | forget the Wi-Fi settings |
 
-The menu has to be opened by a hold because **a control on a cat feeder that
-dispenses food is a control cats will learn to use.** Turning never dispenses.
-A knob cannot be recessed the way a button can, so mount the case where a paw
-has no footing.
+The menu holds `Feed one portion`, `Pause schedule` / `Resume schedule`,
+`Settings` and `Lock`. **Settings** has the clock, the portion scale, the
+detent interval and a factory reset.
 
-`Settings` holds the clock, set by hand, this unit's portion scale and detent
-interval — the two figures `dev/provision.sh --portion-scale` and `--detent-ms` set — and a
-factory reset that asks `Keep` or `Erase` first. The factory reset erases the
-credentials, the calibration *and the meals*; holding the click while plugging
-in, or BOOT for five seconds, forgets only the network and keeps the meals,
-the calibration and the timezone. A pause set from the menu
-lasts until Home Assistant next restarts or its schedule helper changes; Home
-Assistant is the authority.
+**Why a hold:** a control on a cat feeder that dispenses food is a control
+cats will learn to use. Turning never dispenses; only a hold followed by a tap
+on `Feed` does. A knob cannot be recessed, so mount the case where a paw has
+no footing.
 
-## MQTT
+### Recovering from a jam
 
-```
-feeder/<id>/availability   online | offline          retained, last will
-feeder/<id>/feed           <portions>                manual feed
-feeder/all/feed            <portions>                all units at once
-feeder/<id>/paused         ON | OFF                  retained, pauses the schedule
-feeder/<id>/schedule       [{"time":"08:00","portions":2}]   never retained, this unit's meals
-feeder/<id>/schedule/state [{"time":"08:00","portions":2}]   retained, what the unit holds
-feeder/time                "2026-09-14T08:00:00+02:00"       retained, from HA
-feeder/time/request        <id>                      never retained, to HA
-feeder/<id>/state          {"feeding":…,"jammed":…,"paused":…,"meals":…,"last_fed":…}
-```
+A jam stops the motor, discards any portions still owed, and shows solid red.
+Clear the obstruction, then **ask it to feed again** — the Feed button in Home
+Assistant, *Feed now* on the admin page, or on the knob: hold two seconds,
+then tap `Retry feed`. The first click clears the jam. No power cycle is
+needed.
 
-Each unit publishes Home Assistant discovery configs on connect, so a feeder
-shows up as one device with a feed button, a pause switch, a jam sensor, and
-eight *Meal n time* / *Meal n portions* pairs that edit its schedule, plus a
-*Visit device* link to its admin page. No YAML on the Home Assistant side.
+There is no reverse. A retry drives forward into whatever stopped it, so it
+recovers a momentary stall; a real blockage needs a hand.
 
-```
-feeder/<id>/meal/<n>/time      08:00:00              never retained, meal n's time
-feeder/<id>/meal/<n>/portions  2                     never retained, 0 switches it off
-```
+### Resetting Wi-Fi
 
-## Layout
+Either gesture forgets the Wi-Fi and broker settings and reboots into setup
+mode. **The meals, the calibration and the timezone are kept.**
 
-Pure logic sits above the hardware gate in `src/lib.rs` and is tested on the
-host; anything touching a peripheral is below it and is verified on the console.
+- **Hold BOOT for five seconds** while the unit runs (through a pinhole in the
+  case). The LED flashes fast blue while it counts; let go early and nothing
+  changes. On a headless unit this is the only way.
+- **Hold the knob's click while plugging the unit in**, for three seconds.
 
-```
-src/
-  bin/main.rs     peripherals, tasks, executor
+**Factory reset**, in the knob's Settings, also erases the calibration and the
+meals. It asks `Keep` or `Erase` first.
 
-  feeder.rs       pure: align, count, brake, jam timeout, per-unit timings
-  portions.rs     pure: the pending-click counter, its cap, portions -> clicks
-  schedule.rs     pure: clock, schedule, the double-feed guard
-  provisioning.rs pure: the flash record, the setup network's identity, the form
-  sha256.rs       pure: shared with dev/ap-password.sh
+## Troubleshooting
 
-  button.rs       pure: what a press of the outside button means
-  reset.rs        pure: BOOT held five seconds forgets the network
-  indicator.rs    pure: what the status LED shows, and when
-  display.rs      pure: the six lines the screen shows, and when it sleeps
-  menu.rs         pure: what the knob's turns and click mean
-  encoder.rs      pure: the knob's A/B levels into detents
+| Symptom | Likely cause |
+|---|---|
+| red ×1 | Wi-Fi: wrong credentials, or out of range |
+| red ×2 | broker unreachable: wrong address (it may have moved — use a DHCP reservation), wrong credentials, or Mosquitto down |
+| red ×3 that lasts | no trusted time: the RTC lost power (flat or missing coin cell) **and** Home Assistant is not publishing the time. Install the package; check the coin cell |
+| console: `clock: started, … (retained; waiting for a live time)` and nothing more | the broker is up but Home Assistant is not publishing `feeder/time` |
+| online, dark LED, never feeds; `NO MEALS SET` | the unit has no meals. Set them, or copy them from another feeder |
+| amber ×1 | paused — check the Paused switch and `schedule.cat_feeder_active` |
+| resumed by hand, paused again later | Home Assistant re-applied its pause helper; that is by design |
+| every meal an hour or two out | Home Assistant's timezone is wrong (check the offset on `feeder/time`) |
+| solid red | jammed — see [Recovering from a jam](#recovering-from-a-jam). Repeated false jams with a full hopper: recalibrate with it full |
+| `rtc: nothing answered; running without one` | an open I²C line, or the DS3231 fitted on the wrong side. Beep SDA and SCL module pin to Zero pin |
+| RTC cell flat within months | a CR2032 in a module that charges its cell, or the module on 5 V |
+| motor turns the wrong way | swap the two motor wires (pins 4 and 5 of the header) |
+| plugged in, nothing happens, laptop's USB port cuts out | the DRV8833's supply reversed on the board |
+| nothing on the console after flashing | built for the wrong board: check `--board`, and the port |
+| a button reads `currently pressed` at boot while untouched; the unit forgets its Wi-Fi every boot | a button's GPIO and ground legs wired together |
+| `schedule: stored record is unreadable` on a brand-new Zero | data left by the factory demo; harmless, goes once the unit is given meals |
+| `store: no network in the record (calibration kept), going to setup` | the Wi-Fi was reset; set it up again |
+| panel image shifted, edges wrapped | a 1.3" SH1106 panel, not an SSD1306-compatible one |
 
-  board.rs        pin map and board identity, per Cargo feature
-  switch.rs       debounced click stream
-  led.rs          the onboard WS2812, over RMT
-  oled.rs         the SSD1306 panel, over async I2C
-  motor.rs        MotorDriver, the DRV8833, and a logging stand-in
-  mqtt.rs         connection, last will, discovery, commands, state
-  ds3231.rs       pure: the DS3231's registers — time, OSF, EOSC, temperature
-  rtc.rs          the DS3231 over the shared I2C bus
-  i2c.rs          the one I2C bus, shared by the panel and the RTC
-  store.rs        reads and writes the records in the nvs partition
-  wiring.rs       what the tasks share
-  config.rs       Config from the flash record, and the MAC-derived device id
-  dhcp.rs         pure logic: where a DHCP reply goes, and a MAC's spelling
-  setup.rs        setup mode: the unit's own network, DHCP, and the form
-  http.rs         the sockets under both web servers
-  admin.rs        pure: the admin page — login, forms, the page itself
-  web.rs          the admin page on the house network
-  discovery.rs    pure: the Home Assistant entities and their configs
+The serial console says what the unit is doing at every step:
+`./dev/capture.sh` attaches without reflashing.
 
-build.rs          reads cfg.toml into the build
-dev/              local Mosquitto and Home Assistant, plus the scripts
-homeassistant/    the package that publishes the time and copies meals between feeders
-CLAUDE.md         design decisions and the contract the firmware implements
-```
+## For developers
 
-```sh
-cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"
-```
+- Host tests: `cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"`
+  — the explicit target is needed because cargo is pointed at the board.
+- [CLAUDE.md](CLAUDE.md) — developer notes: architecture, the MQTT contract,
+  conventions, and the code layout (also read by AI coding assistants).
+- [docs/adr/](docs/adr/) — the design decisions and why they were made.
+- [docs/roadmap.md](docs/roadmap.md) — open work.
+- [dev/README.md](dev/README.md) — a local Mosquitto and Home Assistant in
+  Docker, and the dev scripts.
 
-The explicit target is not optional: `.cargo/config.toml` points cargo at the
-board, so a plain `cargo test` builds the tests for the ESP32-C6 and fails to
-link.
+## Licence
 
-`CLAUDE.md` is worth reading before changing anything. It records what was
-decided and why, including the parts that look arbitrary: why feeding counts
-switch edges instead of levels, why a missed meal is preferable to a double
-one, and why the unit keeps its own clock and schedule.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT licence](LICENSE-MIT), at your option. This covers everything in the
+repository, including the perfboard drawing and the Home Assistant package.
+
+Unless you explicitly state otherwise, any contribution you intentionally
+submit for inclusion in this work, as defined in the Apache-2.0 licence, is
+dual licensed as above, without any additional terms or conditions.

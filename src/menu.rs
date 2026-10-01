@@ -24,7 +24,7 @@
 //!   hold. A cat batting the knob steps pages and lights the screen.
 //! - **`Feed` stays under the cursor after feeding**, so three portions is three
 //!   taps. There is no portion count held between taps, which is the decision
-//!   *Manual feeds accumulate* in `CLAUDE.md` records.
+//!   `docs/adr/0007-portions-are-the-contract-clicks-the-mechanism.md` records.
 //! - **A hold only ever unlocks or locks.** Leaving an edit is a hold or the
 //!   window lapsing, and both throw the edit away; nothing is saved except by a
 //!   tap on the value itself.

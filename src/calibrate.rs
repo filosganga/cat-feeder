@@ -17,8 +17,8 @@
 //!
 //! ## Which figure is kept
 //!
-//! **The slowest gap, rounded up to 10 ms.** `CLAUDE.md`'s *Per-unit
-//! mechanical timing* says to calibrate on the slowest case: the jam timeout
+//! **The slowest gap, rounded up to 10 ms.** ADR-0006
+//! (`docs/adr/0006-calibration-is-one-measured-number-per-unit.md`) says to calibrate on the slowest case: the jam timeout
 //! (`× 2.5`) fails if sized on a fast run, while the spacing floor (`× 0.4`) is
 //! safe either way. The slowest of a few gaps is that rule applied inside one
 //! run. Rounding up keeps it on the safe side too.

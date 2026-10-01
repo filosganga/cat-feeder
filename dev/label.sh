@@ -3,7 +3,7 @@
 # that joins it, so the case carries everything needed to get back into a unit.
 #
 #   ./dev/label.sh                    # read the id off the board that is plugged in
-#   ./dev/label.sh 9a6ecc 99177c ...  # or name the ids, one label each
+#   ./dev/label.sh a1b2c3 d4e5f6 ...  # or name the ids, one label each
 #   ./dev/label.sh --port /dev/cu.usbmodemXXXX
 #   ./dev/label.sh --out labels.html  # somewhere other than a temporary file
 #

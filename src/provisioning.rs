@@ -574,7 +574,7 @@ fn required<const N: usize>(body: &str, name: &'static str) -> Result<String<N>,
 /// Drops surrounding whitespace.
 ///
 /// **Phone keyboards add trailing spaces**, by autocorrect, by autocomplete, or
-/// by a thumb. An SSID is the field this ruins: `"fdlgrm "` is stored happily,
+/// by a thumb. An SSID is the field this ruins: `"MyWiFi "` is stored happily,
 /// survives the reboot, and then fails forever as `NoAccessPointFound` — which
 /// reads as "wrong password" or "out of range" and says nothing about the
 /// space. Observed on the bench the first time this form was used for real.
@@ -929,8 +929,8 @@ fn text_field(
 
     // `autocapitalize`/`autocorrect`/`spellcheck` off on every field, and this
     // is the root of a real bug rather than polish: a phone keyboard offered
-    // `fdlgrm` as a completion, inserted the trailing space that always follows
-    // one, and the unit stored `"fdlgrm "` and then failed forever with
+    // `MyWiFi` as a completion, inserted the trailing space that always follows
+    // one, and the unit stored `"MyWiFi "` and then failed forever with
     // `NoAccessPointFound`. `provisioning::trimmed` is the belt; this is the
     // braces, and it also stops iOS capitalising the first letter of an SSID.
     let _ = write!(
@@ -984,9 +984,9 @@ mod tests {
 
     fn sample() -> Record {
         Record {
-            wifi_ssid: String::try_from("fdlgrm").unwrap(),
+            wifi_ssid: String::try_from("MyWiFi").unwrap(),
             wifi_password: String::try_from("hunter2").unwrap(),
-            mqtt_host: String::try_from("192.168.68.108").unwrap(),
+            mqtt_host: String::try_from("192.168.1.108").unwrap(),
             mqtt_port: 1883,
             mqtt_user: String::try_from("feeder").unwrap(),
             mqtt_password: String::try_from("feeder-dev").unwrap(),
@@ -1011,7 +1011,7 @@ mod tests {
         let len = reset.encode(&mut flash).unwrap();
         let read = Record::decode(&flash[..len]).unwrap();
         assert_eq!((read.detent_ms, read.portion_scale_pct), (2_140, 133));
-        for secret in ["fdlgrm", "hunter2", "feeder-dev"] {
+        for secret in ["MyWiFi", "hunter2", "feeder-dev"] {
             assert!(
                 !flash.windows(secret.len()).any(|w| w == secret.as_bytes()),
                 "{secret} survived the reset"
@@ -1291,8 +1291,8 @@ mod tests {
 
     #[test]
     fn a_submitted_form_becomes_a_record() {
-        let body = "wifi_ssid=fdlgrm&wifi_password=hunter2\
-                    &mqtt_host=192.168.68.108&mqtt_port=1883\
+        let body = "wifi_ssid=MyWiFi&wifi_password=hunter2\
+                    &mqtt_host=192.168.1.108&mqtt_port=1883\
                     &mqtt_user=feeder&mqtt_password=feeder-dev";
 
         assert_eq!(record_from_form(body, None).unwrap(), sample());
@@ -1478,10 +1478,10 @@ mod tests {
         render_saved(&mut page, &sample());
 
         assert!(
-            page.contains("fdlgrm"),
+            page.contains("MyWiFi"),
             "the SSID it is leaving for is missing"
         );
-        assert!(page.contains("192.168.68.108"));
+        assert!(page.contains("192.168.1.108"));
         assert!(page.contains("1883"));
         assert!(page.ends_with("</html>"));
         // The password reached this function inside the record and must not
@@ -1519,11 +1519,11 @@ mod tests {
         // with a trailing space, the unit rebooted, and every attempt failed as
         // `NoAccessPointFound` — which reads as a wrong password and says
         // nothing whatever about a space.
-        let body = "wifi_ssid=fdlgrm+&mqtt_host=+192.168.1.2+&mqtt_port=+1883+\
+        let body = "wifi_ssid=MyWiFi+&mqtt_host=+192.168.1.2+&mqtt_port=+1883+\
                     &mqtt_user=feeder+";
         let record = record_from_form(body, None).unwrap();
 
-        assert_eq!(record.wifi_ssid.as_str(), "fdlgrm");
+        assert_eq!(record.wifi_ssid.as_str(), "MyWiFi");
         assert_eq!(record.mqtt_host.as_str(), "192.168.1.2");
         assert_eq!(record.mqtt_port, 1883);
         assert_eq!(record.mqtt_user.as_str(), "feeder");
@@ -1727,13 +1727,13 @@ mod tests {
     #[test]
     fn the_headers_the_admin_page_checks_are_kept() {
         let head = parse_head(
-            b"POST /schedule HTTP/1.1\r\nHost: 192.168.68.60\r\n\
-              origin: http://192.168.68.60\r\nAUTHORIZATION: Basic YTpi\r\n\r\n",
+            b"POST /schedule HTTP/1.1\r\nHost: 192.168.1.60\r\n\
+              origin: http://192.168.1.60\r\nAUTHORIZATION: Basic YTpi\r\n\r\n",
         )
         .unwrap()
         .unwrap();
-        assert_eq!(head.host, "192.168.68.60");
-        assert_eq!(head.origin, "http://192.168.68.60");
+        assert_eq!(head.host, "192.168.1.60");
+        assert_eq!(head.origin, "http://192.168.1.60");
         assert_eq!(head.authorization, "Basic YTpi");
 
         let bare = parse_head(b"GET / HTTP/1.1\r\n\r\n").unwrap().unwrap();

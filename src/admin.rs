@@ -864,16 +864,16 @@ mod tests {
         out
     }
 
-    const PW: &str = "H75T-C7VT-6FAV";
+    const PW: &str = "55KA-G8H6-9NMQ";
 
     #[test]
     fn the_derived_password_opens_it_with_any_username() {
-        assert!(authorized(&basic("admin:H75T-C7VT-6FAV"), PW));
-        assert!(authorized(&basic(":H75T-C7VT-6FAV"), PW));
-        assert!(authorized(&basic("someone:H75T-C7VT-6FAV"), PW));
+        assert!(authorized(&basic("admin:55KA-G8H6-9NMQ"), PW));
+        assert!(authorized(&basic(":55KA-G8H6-9NMQ"), PW));
+        assert!(authorized(&basic("someone:55KA-G8H6-9NMQ"), PW));
         // RFC 7617: the scheme name is case-insensitive in practice.
         assert!(authorized(
-            &basic("a:H75T-C7VT-6FAV").replacen("Basic", "basic", 1),
+            &basic("a:55KA-G8H6-9NMQ").replacen("Basic", "basic", 1),
             PW
         ));
     }
@@ -882,14 +882,14 @@ mod tests {
     fn anything_else_is_refused() {
         for header in [
             std::string::String::new(),
-            basic("admin:H75T-C7VT-6FA"),
-            basic("admin:H75T-C7VT-6FAVX"),
-            basic("admin:h75t-c7vt-6fav"),
-            basic("H75T-C7VT-6FAV"),
+            basic("admin:55KA-G8H6-9NM"),
+            basic("admin:55KA-G8H6-9NMQX"),
+            basic("admin:55ka-g8h6-9nmq"),
+            basic("55KA-G8H6-9NMQ"),
             "Basic !!!!".into(),
             "Basic YWRtaW4".into(),
-            "Bearer H75T-C7VT-6FAV".into(),
-            basic("admin:H75T-C7VT-6FAV").replacen("Basic ", "", 1),
+            "Bearer 55KA-G8H6-9NMQ".into(),
+            basic("admin:55KA-G8H6-9NMQ").replacen("Basic ", "", 1),
         ] {
             assert!(!authorized(&header, PW), "{header}");
         }
@@ -922,14 +922,14 @@ mod tests {
 
     #[test]
     fn a_post_from_another_site_is_refused() {
-        assert!(same_origin("http://192.168.68.60", "192.168.68.60"));
-        assert!(same_origin("", "192.168.68.60"));
+        assert!(same_origin("http://192.168.1.60", "192.168.1.60"));
+        assert!(same_origin("", "192.168.1.60"));
         assert!(same_origin("", ""));
-        assert!(!same_origin("http://evil.example", "192.168.68.60"));
-        assert!(!same_origin("https://192.168.68.60", "192.168.68.60"));
-        assert!(!same_origin("null", "192.168.68.60"));
-        assert!(!same_origin("http://192.168.68.60", ""));
-        assert!(!same_origin("http://192.168.68.600", "192.168.68.60"));
+        assert!(!same_origin("http://evil.example", "192.168.1.60"));
+        assert!(!same_origin("https://192.168.1.60", "192.168.1.60"));
+        assert!(!same_origin("null", "192.168.1.60"));
+        assert!(!same_origin("http://192.168.1.60", ""));
+        assert!(!same_origin("http://192.168.1.600", "192.168.1.60"));
     }
 
     // ---- the schedule form ----
@@ -996,7 +996,7 @@ mod tests {
         Record {
             wifi_ssid: "home".try_into().unwrap(),
             wifi_password: "wifi-secret".try_into().unwrap(),
-            mqtt_host: "192.168.68.105".try_into().unwrap(),
+            mqtt_host: "192.168.1.105".try_into().unwrap(),
             mqtt_port: 1883,
             mqtt_user: "feeder".try_into().unwrap(),
             mqtt_password: "mqtt-secret".try_into().unwrap(),
@@ -1005,14 +1005,14 @@ mod tests {
         }
     }
 
-    const FORM: &str = "wifi_ssid=home2&wifi_password=&mqtt_host=192.168.68.126\
+    const FORM: &str = "wifi_ssid=home2&wifi_password=&mqtt_host=192.168.1.126\
                         &mqtt_port=1883&mqtt_user=cat-feeder&mqtt_password=";
 
     #[test]
     fn empty_password_boxes_keep_what_is_stored() {
         let r = network_from_form(FORM, &current()).unwrap();
         assert_eq!(r.wifi_ssid, "home2");
-        assert_eq!(r.mqtt_host, "192.168.68.126");
+        assert_eq!(r.mqtt_host, "192.168.1.126");
         assert_eq!(r.mqtt_user, "cat-feeder");
         assert_eq!(r.wifi_password, "wifi-secret");
         assert_eq!(r.mqtt_password, "mqtt-secret");
@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn the_setup_forms_rules_still_apply() {
-        let body = FORM.replace("192.168.68.126", "broker.lan");
+        let body = FORM.replace("192.168.1.126", "broker.lan");
         assert_eq!(
             network_from_form(&body, &current()),
             Err(FormError::NotAnIp("mqtt_host"))
@@ -1307,7 +1307,7 @@ mod tests {
 
     fn status() -> Status<'static> {
         Status {
-            id: "99177c",
+            id: "a1b2c3",
             version: "0.1.0",
             now: Some(at(7, 5)),
             paused: false,
@@ -1329,7 +1329,7 @@ mod tests {
     fn network() -> Network<'static> {
         Network {
             wifi_ssid: "home",
-            mqtt_host: "192.168.68.105",
+            mqtt_host: "192.168.1.105",
             mqtt_port: 1883,
             mqtt_user: "feeder",
         }
@@ -1363,7 +1363,7 @@ mod tests {
             Schedule::parse(br#"[{"time":"08:00","portions":2},{"time":"19:00","portions":0}]"#)
                 .unwrap();
         let page = render(Some(&schedule), "", None);
-        assert!(page.contains("cat-feeder 99177c"));
+        assert!(page.contains("cat-feeder a1b2c3"));
         assert!(page.contains("2026-09-28 07:05"));
         assert!(page.contains("1 a day"));
         assert!(page.contains("08:00, 2 portions"));

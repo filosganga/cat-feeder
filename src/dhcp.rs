@@ -189,8 +189,8 @@ mod tests {
     fn a_mac_is_spelled_the_way_every_other_tool_spells_one() {
         // Lower case, colon separated, leading zeros kept — so a console line
         // can be matched against what a phone's Wi-Fi settings show.
-        let mac = Mac([0xea, 0xce, 0x1a, 0x6f, 0x94, 0x0b]);
-        assert_eq!(format!("{mac}"), "ea:ce:1a:6f:94:0b");
+        let mac = Mac([0xaa, 0xbb, 0x0c, 0xdd, 0xee, 0x0f]);
+        assert_eq!(format!("{mac}"), "aa:bb:0c:dd:ee:0f");
     }
 
     #[test]

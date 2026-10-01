@@ -3,7 +3,7 @@
 //! [`Config`] comes from the record in flash and nowhere else. There is no
 //! build-time fallback: network credentials are not compiled into this binary,
 //! they are written to the `nvs` partition by `dev/provision.sh` or by the
-//! setup form. See *Credentials: getting them out of the binary* in CLAUDE.md.
+//! setup form. See `docs/adr/0004-credentials-come-from-flash-only.md`.
 //!
 //! The one build-time value left is [`AP_SECRET`], which salts the setup
 //! network's password. It is not a credential for any network — it exists so

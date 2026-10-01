@@ -4,19 +4,12 @@ runner = "espflash flash --monitor --chip esp32c6"
 [env]
 ESP_LOG="info"
 
-# The DEV-KIT exposes two serial ports and espflash picks the wrong one.
-#
-# Application logs go out of UART0, which is the CH343 bridge port below. The
-# Espressif "USB JTAG/serial debug unit" port flashes fine but shows only the
-# bootloader, so the app looks dead when it is merely talking elsewhere.
-#
-# Cargo does not override a variable already present in the environment, so
-# `export ESPFLASH_PORT=...` still wins on a machine where this path differs.
-# Find yours with `espflash list-ports --list-all-ports`.
-#
-# The ESP32-C6-Zero has no bridge chip, so at roadmap step 6 this wants to be
-# the JTAG port and esp-println wants `jtag-serial` instead of `uart`.
-ESPFLASH_PORT="/dev/cu.usbmodem5AAF2846061"
+# No serial port is pinned here: the path is per machine and per board. The
+# DEV-KIT exposes two ports and espflash may pick the wrong one — the CH343
+# bridge carries the application's logs, while the Espressif "USB JTAG/serial
+# debug unit" port shows only the bootloader. The Zero has only the latter.
+# Find yours with `espflash list-ports --list-all-ports`, then either
+# `export ESPFLASH_PORT=...` or pass `--port` to the dev scripts.
 
 [build]
 rustflags = [

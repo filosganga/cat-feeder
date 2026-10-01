@@ -155,7 +155,7 @@ from Home Assistant with that unit as the source. Each unit stores what it is
 sent and echoes what it holds:
 
 ```
-feeder/99177c/schedule/state [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
+feeder/a1b2c3/schedule/state [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
 ```
 
 ### The same thing on a deployed Home Assistant
@@ -195,8 +195,8 @@ Assistant is up but the package is not loaded. It doubles as a credential test,
 so a wrong password fails here rather than silently inside a feeder.
 
 **Read the offset on that line before believing it.** The feeders apply the
-wall-clock fields straight from `feeder/time` without converting — see *MQTT
-contract* in CLAUDE.md — so a Home Assistant on the wrong zone publishes a
+wall-clock fields straight from `feeder/time` without converting — see
+[ADR-0016](../docs/adr/0016-the-unit-keeps-summer-time-from-a-browser-derived-rule.md) — so a Home Assistant on the wrong zone publishes a
 payload that is still entirely valid with every meal moved by an hour. Mounting
 `/etc/localtime` into the container is the usual way to get this right and does
 not need a `TZ` variable, but note that it is not quite the thing being checked:
@@ -261,8 +261,8 @@ quickly.** A unit whose RTC cannot be trusted arms its schedule only on a live
 time, and asks for one as the last step of connecting; without that trigger it
 waits for the next minute boundary instead, which is up to a minute of a boot
 spent doing nothing. A unit with a set RTC arms from it at boot either way. Nothing
-breaks without it — see *Asking for the time instead of waiting for it* in
-CLAUDE.md — but a unit repointed at a Home Assistant that has not got the
+breaks without it — see
+[ADR-0003](../docs/adr/0003-a-retained-time-is-not-a-trusted-time.md) — but a unit repointed at a Home Assistant that has not got the
 package gets the slow path back.
 
 To change feeding times, change one feeder's `Meal n` entities on its device
@@ -291,8 +291,8 @@ docker compose logs -f homeassistant
 docker compose down                     # stop, keep retained messages
 docker compose down -v                  # stop and wipe every retained message
 
-./dev/ap-password.sh 9a6ecc             # a unit's setup/admin password
-./dev/label.sh 9a6ecc 99177c            # printable labels with a join-Wi-Fi QR
+./dev/ap-password.sh a1b2c3             # a unit's setup/admin password
+./dev/label.sh a1b2c3 d4e5f6            # printable labels with a join-Wi-Fi QR
 ./dev/pcb-check.sh                      # check pcb.diy before soldering; see the pcb-review skill
 ```
 
@@ -336,7 +336,7 @@ The Wi-Fi and broker credentials live in a git-ignored `cfg.toml` at the
 repository root. For this stack:
 
 ```toml
-mqtt_host     = "192.168.68.108"   # ipconfig getifaddr en0
+mqtt_host     = "192.168.1.108"    # ipconfig getifaddr en0
 mqtt_port     = 1883
 mqtt_user     = "feeder"
 mqtt_password = "feeder-dev"

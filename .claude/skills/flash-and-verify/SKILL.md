@@ -1,6 +1,6 @@
 ---
 name: flash-and-verify
-description: Runs the build, flash and serial-monitor loop for this ESP32-C6 firmware and says what the serial console must show for a change to count as working, step by step along the roadmap. Use after changing firmware, when asked whether a change actually works on hardware, when the monitor shows nothing or the wrong port is picked, or when deciding whether a roadmap step is done.
+description: Runs the build, flash and serial-monitor loop for this ESP32-C6 firmware and says what the serial console must show for a change to count as working, feature by feature. Use after changing firmware, when asked whether a change actually works on hardware, when the monitor shows nothing or the wrong port is picked, or when deciding whether a feature is done.
 ---
 
 # Flash and verify
@@ -56,12 +56,12 @@ default.
 espflash list-ports --list-all-ports
 ```
 
-Observed on the ESP32-C6-DEV-KIT-N8:
+Observed on the ESP32-C6-DEV-KIT-N8 (the numbers in each path vary by machine, socket and board):
 
 | Port | Device | Use |
 |---|---|---|
-| `/dev/cu.usbmodem11401` | Espressif USB JTAG/serial debug unit, 303a:1001 | `board-info` works, `monitor` fails to connect |
-| `/dev/cu.usbmodem5AAF2846061` | WCH USB-serial bridge, vid 1a86 | flashing and monitoring both work |
+| `/dev/cu.usbmodem<NNNNN>` | Espressif USB JTAG/serial debug unit, 303a:1001 | `board-info` works, `monitor` fails to connect |
+| `/dev/cu.usbmodem<serial>` | WCH USB-serial bridge, vid 1a86 | flashing and monitoring both work |
 
 Plain `espflash list-ports` hides the bridge port, because it only lists devices
 it recognises as development boards. Always pass `--list-all-ports`.
@@ -69,7 +69,7 @@ it recognises as development boards. Always pass `--list-all-ports`.
 Set the port once so `cargo run` never prompts:
 
 ```sh
-export ESPFLASH_PORT=/dev/cu.usbmodem5AAF2846061
+export ESPFLASH_PORT=/dev/cu.usbmodem<serial>
 ```
 
 Or name it per run with `--port`, which wins over the variable.
@@ -119,7 +119,7 @@ INFO (264) - board: devkit, id=db0260
 INFO (358) - wifi: connecting to <ssid>
 INFO (364) - switch: watching GPIO2, currently released
 INFO (1621) - wifi: associated
-INFO (11643) - wifi: connected, ip=192.168.68.123/24
+INFO (11643) - wifi: connected, ip=192.168.1.123/24
 INFO (11797) - mqtt: connected, id=feeder_<id>
 INFO (11821) - mqtt: online
 ```
@@ -137,16 +137,14 @@ the `esp-println` output interface.
 Sample logs elsewhere in this skill omit the millisecond field for readability.
 Real output always carries it.
 
-## Per-step expectations
+## Per-feature expectations
 
 [references/serial-expectations.md](references/serial-expectations.md) lists,
-for each roadmap step, the log lines that step must emit and the physical action
+for each feature, the log lines it must emit and the physical action
 that triggers them. Treat it as the acceptance test: implement the lines it
 names, then flash and read them back.
 
-Most steps carry real transcripts now. The ones still unobserved are 8 and the
-hub half of 3 — the motor and bridge are verified, but with a button standing
-in for the microswitch, so the detent interval is still unmeasured. Those
+Most sections carry real transcripts. The ones that do not
 describe what the console *must* show, and whoever
 first reaches one should correct the file with what it actually showed.
 

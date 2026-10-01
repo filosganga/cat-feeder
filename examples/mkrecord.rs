@@ -13,9 +13,9 @@
 //!
 //! ## Why this exists
 //!
-//! Credentials compiled into the firmware are the thing roadmap step 9 is
-//! removing. The alternative is not "a different build" but **no build at
-//! all**: `provisioning::Record::encode` is pure and host-tested, so the same
+//! Credentials are never compiled into the firmware
+//! (`docs/adr/0004-credentials-come-from-flash-only.md`). The alternative is
+//! not "a different build" but **no build at all**: `provisioning::Record::encode` is pure and host-tested, so the same
 //! code the firmware reads with can produce the bytes here, and `espflash`
 //! writes them straight into the `nvs` partition — the one partition an
 //! application reflash never touches.

@@ -1,16 +1,16 @@
-# What the console must show, per roadmap step
+# What the console must show, per feature
 
 - [How to read this file](#how-to-read-this-file)
-- [Step 1 — toolchain and blinky](#step-1--toolchain-and-blinky)
-- [Step 2 — switch task](#step-2--switch-task)
-- [Step 3 — motor and feed(n)](#step-3--motor-and-feedn)
-- [Step 4 — Wi-Fi and MQTT](#step-4--wi-fi-and-mqtt)
-- [Step 5 — schedule, time and the double-feed guard](#step-5--schedule-time-and-the-double-feed-guard)
-- [Step 6 — the Zero boards](#step-6--the-zero-boards)
-- [Step 7 — Home Assistant](#step-7--home-assistant)
-- [Step 8 — retiring the old PCBs](#step-8--retiring-the-old-pcbs)
-- [Step 9 — provisioning](#step-9--provisioning)
-- [Step 10 — the status LED](#step-10--the-status-led)
+- [Toolchain and blinky](#toolchain-and-blinky)
+- [The switch task](#the-switch-task)
+- [Motor and feed(n)](#motor-and-feedn)
+- [Wi-Fi and MQTT](#wi-fi-and-mqtt)
+- [Schedule, time and the double-feed guard](#schedule-time-and-the-double-feed-guard)
+- [The Zero boards](#the-zero-boards)
+- [Home Assistant](#home-assistant)
+- [A unit in its case](#a-unit-in-its-case)
+- [Provisioning](#provisioning)
+- [The status LED](#the-status-led)
 
 ## How to read this file
 
@@ -19,11 +19,9 @@ triggers them, and the failure signatures worth recognising. The exact wording
 is a proposal: implement it as written so this file stays usable as an
 acceptance test, or change both the code and this file together.
 
-Steps marked *observed* carry real transcripts. The rest are contracts, not
+Sections marked *observed* carry real transcripts. The rest are contracts, not
 recordings: when you first reach one, replace its expected block with what the
-console actually printed. Steps 3 (the motor itself), 6 (flashing the Zeros),
-8, the form half of 9, and 10 are the ones still unobserved. All but 10 wait on
-hardware or a phone; 10 only wants a bench session.
+console actually printed.
 
 Every application line is formatted `LEVEL (ms) - message`, for example
 `INFO (261) - Embassy initialized!`. The number is milliseconds since boot,
@@ -53,7 +51,7 @@ Observed on the dev kit for reference: boot to `Embassy initialized!` about
 260 ms, Wi-Fi associated about 1.6 s, an address about 11.6 s. That last gap is
 a lost first DHCP request and a retry, not negotiation.
 
-## Step 1 — toolchain and blinky
+## Toolchain and blinky
 
 Status: done and observed.
 
@@ -74,7 +72,7 @@ Failure signature: the bootloader lines appear and nothing follows. The
 application is running but its output is going nowhere. See the `esp-println`
 entry in [troubleshooting.md](troubleshooting.md).
 
-## Step 2 — switch task
+## The switch task
 
 Two passes. A push button on a breadboard is enough for the first one and is the
 better place to start, because it separates wiring problems from mechanical
@@ -113,9 +111,9 @@ is what makes an unexpected edge visible rather than silently dropped.
 - Holding the button down must produce exactly one click, not a stream. The
   task counts falling edges, not the level.
 
-### The real hub belongs to step 3, not here
+### The real hub belongs to *Motor and feed(n)*, not here
 
-The detent interval is measured in [step 3](#step-3--motor-and-feedn), with the
+The detent interval is measured in [Motor and feed(n)](#motor-and-feedn), with the
 motor driving.
 
 The hub *can* be back-driven by hand, but the gear reduction makes it hard
@@ -128,7 +126,7 @@ sees, and is repeatable.
 A bench button is therefore not a poor substitute at this step, it is the whole
 of it: it proves the debounce, the pull-up, and that every edge is reported.
 
-## Step 3 — motor and feed(n)
+## Motor and feed(n)
 
 Status: observed on a Zero with a real DRV8833 and motor, with a button
 standing in for the hub microswitch. Three consecutive feeds, both starting
@@ -213,7 +211,7 @@ hub started off a detent.
 - **Gaps far from 1.9 s** — fine, and exactly why this is measured rather than
   assumed. That is the number that goes in the record for this unit.
 
-Record it per unit. See *Per-unit mechanical timing* in `CLAUDE.md`.
+Record it per unit. See `docs/adr/0006-calibration-is-one-measured-number-per-unit.md`.
 
 ### A stable count per revolution
 
@@ -271,7 +269,7 @@ then the exemption has been lost, and alignment is spending an extra detent —
 a quarter turn of food that nothing counts. Found exactly this way on a bench,
 with a button standing in for the hub.
 
-Cross-check against step 2. The same fast edges that `feeder.rs` rejects here
+Cross-check against *The switch task*. The same fast edges that `feeder.rs` rejects here
 must still be counted by the bench button test, because `switch.rs` reports
 them. If both tests pass, the rule is in the right place.
 
@@ -318,7 +316,7 @@ ground next to the DRV8833 is missing or too far from the driver.
 Nothing moves at all: `nSLEEP` / `ULT` on the DRV8833 must be driven high. It is
 not pulled up on the breakout.
 
-## Step 4 — Wi-Fi and MQTT
+## Wi-Fi and MQTT
 
 Status: observed on the dev kit against the Docker broker, with `LogMotor`
 standing in for the DRV8833.
@@ -334,8 +332,8 @@ INFO (274) - board: devkit, id=db0260                                   (+4 ms)
 INFO (368) - wifi: connecting to <ssid>                                 (+3 ms)
 INFO (375) - switch: watching GPIO2, currently released                 (+7 ms)
 INFO (1630) - wifi: associated                                          (+4 ms)
-INFO (11774) - wifi: connected, ip=192.168.68.123/24                    (+10144 ms)
-INFO (11780) - mqtt: connecting to 192.168.68.108:1883                  (+6 ms)
+INFO (11774) - wifi: connected, ip=192.168.1.123/24                     (+10144 ms)
+INFO (11780) - mqtt: connecting to 192.168.1.108:1883                   (+6 ms)
 INFO (11960) - mqtt: connected, id=feeder_db0260                        (+6 ms)
 INFO (12052) - mqtt: discovery published                                (+92 ms)
 INFO (12085) - mqtt: online                                             (+33 ms)
@@ -443,7 +441,7 @@ miss:
 
 - **`motor: forward` appears once.** A second one means the machine went idle
   between portions and restarted, which is the failure the `FEED`-in-the-select
-  shape exists to prevent. See *The feeder task owns the motor* in CLAUDE.md.
+  shape exists to prevent. See `docs/adr/0009-one-task-owns-the-motor.md`.
 - **`pending=` rises within ~4 ms of each command.** Tens of milliseconds is
   fine; a delay of a whole portion time means the request waited for a click to
   wake the loop instead of waking it itself. That is the bug, and with no motor
@@ -489,7 +487,7 @@ Failure signatures:
 - Entities missing in Home Assistant while `mosquitto_sub` shows the topics: the
   payload is malformed or truncated. See the `ha-mqtt-discovery` skill.
 
-## Step 5 — schedule, time and the double-feed guard
+## Schedule, time and the double-feed guard
 
 Status: observed on the dev kit.
 
@@ -502,7 +500,7 @@ it roughly twice a day.
 pub() { docker compose exec -T mosquitto \
   mosquitto_pub -h localhost -u feeder -P feeder-dev "$@"; }
 
-pub -t 'feeder/99177c/schedule' -m '[{"time":"08:00","portions":1},{"time":"12:00","portions":2}]'
+pub -t 'feeder/a1b2c3/schedule' -m '[{"time":"08:00","portions":1},{"time":"12:00","portions":2}]'
 pub -r -t 'feeder/time' -m '2026-09-15T09:00:00+02:00'
 ```
 
@@ -668,7 +666,7 @@ state payload before the retained flag arrives.
 Most of this logic is host-testable, and `schedule.rs`'s host tests cover it. Use the console to
 verify the wiring between the pure logic and the tasks, not the logic itself.
 
-## Step 6 — the Zero boards
+## The Zero boards
 
 Two things change and both can silence the console.
 
@@ -700,7 +698,7 @@ Run `espflash board-info` on each of the three and record the MAC, since the id
 in every MQTT topic derives from it. Three units must produce three different
 ids.
 
-## Step 7 — Home Assistant
+## Home Assistant
 
 Status: observed on one unit. The three-unit check below still needs the Zeros.
 
@@ -735,10 +733,10 @@ must produce `feed: start` on all three consoles at once, and all three must log
 the same `feeder/time` re-alignment within the same second. Check it with three
 monitors open, one per unit.
 
-## Step 8 — retiring the old PCBs
+## A unit in its case
 
-No serial output belongs to this step; it is screwdriver work. The console check
-is simply that a feeder still behaves after being reassembled, so run step 3's
+No serial output belongs to this; it is screwdriver work. The console check
+is simply that a feeder still behaves after being reassembled, so run the
 `feed(n)` checks again on the real mechanism once each unit is in its case —
 especially the detent interval, which is the thing most likely to differ between
 a bench hub and an assembled one, and which is per-unit anyway.
@@ -747,7 +745,7 @@ Watch the boot banner's `rst:` line on the first feed after assembly. A reset
 the moment the motor starts is the 220 µF capacitor, not the firmware. See
 [troubleshooting.md](troubleshooting.md).
 
-## Step 9 — provisioning
+## Provisioning
 
 ### Putting a board into setup mode
 
@@ -773,7 +771,7 @@ after a full reflash:
 
 ```
 INFO (289) - store: nvs at 0x9000, 24576 bytes
-INFO (294) - store: configured for fdlgrm via 192.168.68.108:1883
+INFO (294) - store: configured for MyWiFi via 192.168.1.108:1883
 ```
 
 An unprovisioned one raises its own network instead:
@@ -840,9 +838,9 @@ INFO (1227) - setup: access point up
 INFO (1232) - setup: dhcp on 192.168.4.1, pool 192.168.4.2-192.168.4.9
 INFO (1239) - link_up = true
 INFO (1858) - led: Setup
-INFO (46110) - setup: station ea:ce:1a:6f:94:0b associated
-INFO (46921) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
-INFO (46958) - setup: dhcp 192.168.4.2 -> ea:ce:1a:6f:94:0b
+INFO (46110) - setup: station aa:bb:cc:dd:ee:ff associated
+INFO (46921) - setup: dhcp 192.168.4.2 -> aa:bb:cc:dd:ee:ff
+INFO (46958) - setup: dhcp 192.168.4.2 -> aa:bb:cc:dd:ee:ff
 ```
 
 Two `dhcp` lines per client is correct and not a repeat: Discover→Offer, then
@@ -887,7 +885,7 @@ INFO (87932) - setup: [0] Post /save (108 byte body)
 INFO (87938) - setup: form rejected (NotAnIp("mqtt_host"))
 INFO (88017) - setup: [1] Get /favicon.ico (0 byte body)
 INFO (100506) - setup: [0] Post /save (117 byte body)
-INFO (100546) - setup: saved fdlgrm  via 192.168.1.2:1234
+INFO (100546) - setup: saved MyWiFi  via 192.168.1.2:1234
 INFO (100622) - setup: [1] Get /favicon.ico (0 byte body)
 INFO (100840) - setup: saved, restarting
 ```
@@ -895,10 +893,10 @@ INFO (100840) - setup: saved, restarting
 then a clean boot into the record that was just written:
 
 ```
-INFO (306) - store: configured for fdlgrm  via 192.168.1.2:1234
+INFO (306) - store: configured for MyWiFi  via 192.168.1.2:1234
 ```
 
-**`saved fdlgrm  via` has two spaces, and that is the whole of the next
+**`saved MyWiFi  via` has two spaces, and that is the whole of the next
 section.** It is left in rather than tidied away, because it is the only place
 the trailing space is visible before the unit starts failing to associate — and
 because a transcript in this file is worth nothing if it has been cleaned up.
@@ -934,14 +932,14 @@ Worth knowing because the symptom names the wrong thing entirely. The session
 above — the first real use of the form — went on to do this:
 
 ```
-WARN (1979) - wifi: connect failed Disconnected(DisconnectedStationInfo { ssid: "fdlgrm ",
+WARN (1979) - wifi: connect failed Disconnected(DisconnectedStationInfo { ssid: "MyWiFi ",
               bssid: [0, 0, 0, 0, 0, 0], reason: NoAccessPointFound, rssi: -128 })
 ```
 
-The phone keyboard offered `fdlgrm` as a completion and inserted the space that
+The phone keyboard offered `MyWiFi` as a completion and inserted the space that
 follows one. `NoAccessPointFound` reads as a wrong password or a unit out of
 range, and says nothing whatever about a space — and the two log lines above
-are the only place it is visible, because `saved fdlgrm  via` has two spaces
+are the only place it is visible, because `saved MyWiFi  via` has two spaces
 where every other line has one.
 
 Both ends are fixed: the inputs carry `autocapitalize=off autocorrect=off
@@ -954,12 +952,12 @@ to enter.
 space before `via`, where the broken run had two:
 
 ```
-INFO (305) - store: configured for fdlgrm via 192.168.68.108:1883
+INFO (305) - store: configured for MyWiFi via 192.168.1.108:1883
 INFO (1662) - wifi: associated
-INFO (11685) - wifi: connected, ip=192.168.68.123/24
+INFO (11685) - wifi: connected, ip=192.168.1.123/24
 ```
 
-Counting spaces is the check. `saved fdlgrm  via` and `saved fdlgrm via` differ
+Counting spaces is the check. `saved MyWiFi  via` and `saved MyWiFi via` differ
 by one character in a log line nobody reads closely, and everything downstream
 of the difference fails with a message about access points.
 
@@ -969,7 +967,7 @@ device's half. Watch particularly for what a real browser does and a test client
 does not: captive-portal probe requests to odd paths, several connections at
 once, and connections opened and dropped without a request.
 
-## Step 10 — the status LED
+## The status LED
 
 **Console half observed** on the dev kit. The LED itself still wants eyes on a
 board — see the table below.
@@ -1004,7 +1002,7 @@ That capture predates `feeder/time/request`. Against a Home Assistant that
 answers it, `NoTime` now lasts under a second and the sweep through the ladder
 is too fast to read off the board — which is the point of that feature, not a
 loss. The long version is still exactly what a unit shows when nobody answers:
-connected, correct, and not feeding, which before step 10 was visible only on a
+connected, correct, and not feeding, which without the LED is visible only on a
 serial console. It indicates a fault when it *stays* — past about 90 seconds,
 Home Assistant's publish-the-time automation is not running.
 

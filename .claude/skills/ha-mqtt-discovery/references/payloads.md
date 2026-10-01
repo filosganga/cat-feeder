@@ -322,8 +322,8 @@ feeder's `Meal n` entities and publishes them, per target, as:
 
 The `Meal n time` state is `HH:MM:SS` and the firmware takes exactly `HH:MM`,
 so the script cuts it to five characters. There is no `feeder/all/schedule`:
-it was removed on 2026-10-01 (CLAUDE.md, v2 point 6), and syncing is this
-per-unit copy.
+syncing is this per-unit copy
+(`docs/adr/0015-syncing-schedules-is-a-copy-in-home-assistant.md`).
 
 **Never retained.** A retained schedule command would hand meals to every unit
 that subscribes later; the firmware refuses one replayed at subscribe time

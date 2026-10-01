@@ -866,11 +866,11 @@ mod tests {
     }
 
     const UNIT: UnitInfo<'static> = UnitInfo {
-        id: "99177c",
+        id: "a1b2c3",
         board: "zero",
         version: "0.1.0",
-        wifi_ssid: "fdlgrm",
-        mqtt_host: "192.168.68.126",
+        wifi_ssid: "MyWiFi",
+        mqtt_host: "192.168.1.126",
         mqtt_port: 1883,
         mqtt_user: "cat-feeder",
     };
@@ -1426,15 +1426,15 @@ mod tests {
             net: Net {
                 link: true,
                 broker: false,
-                ip: Some([192, 168, 68, 105]),
+                ip: Some([192, 168, 1, 105]),
             },
             ..page(Page::Network)
         });
 
         assert_eq!(screen.lines[0], "WI-FI             2/4");
-        assert_eq!(screen.lines[1], "ip 192.168.68.105");
+        assert_eq!(screen.lines[1], "ip 192.168.1.105");
         assert_eq!(screen.lines[2], "connected");
-        assert_eq!(screen.lines[3], "fdlgrm");
+        assert_eq!(screen.lines[3], "MyWiFi");
         assert_eq!(screen.lines[4], "");
         assert_fits(&screen);
     }
@@ -1490,7 +1490,7 @@ mod tests {
         });
 
         assert_eq!(screen.lines[0], "BROKER            3/4");
-        assert_eq!(screen.lines[1], "192.168.68.126:1883");
+        assert_eq!(screen.lines[1], "192.168.1.126:1883");
         assert_eq!(screen.lines[2], "connected");
         assert_eq!(screen.lines[3], "user cat-feeder");
         assert_fits(&screen);
@@ -1521,7 +1521,7 @@ mod tests {
         });
 
         assert_eq!(screen.lines[0], "DEVICE            4/4");
-        assert_eq!(screen.lines[1], "id 99177c  zero");
+        assert_eq!(screen.lines[1], "id a1b2c3  zero");
         assert_eq!(screen.lines[2], "fw 0.1.0");
         assert_eq!(screen.lines[3], "detent 2048ms");
         assert_eq!(screen.lines[4], "portion x133%");
@@ -1535,15 +1535,15 @@ mod tests {
         let screen = render(&View {
             status: Status::Setup,
             setup: Some(SetupInfo {
-                ssid: "cat-feeder-99177c",
-                password: "H75T-C7VT-6FAV",
+                ssid: "cat-feeder-db0260",
+                password: "55KA-G8H6-9NMQ",
             }),
             unit: None,
             ..view()
         });
 
-        assert_eq!(screen.lines[1], "cat-feeder-99177c");
-        assert_eq!(screen.lines[2], "H75T-C7VT-6FAV");
+        assert_eq!(screen.lines[1], "cat-feeder-db0260");
+        assert_eq!(screen.lines[2], "55KA-G8H6-9NMQ");
         // `AP_URL`, not the string it happens to hold: `setup.rs` binds a
         // socket built from the same octets, and a second literal here would be
         // a second place for that address to be wrong.
@@ -1564,8 +1564,8 @@ mod tests {
         assert!(AP_PASSWORD_LEN <= COLS, "the password cannot fit the panel");
         assert!(AP_URL.len() <= COLS, "the address cannot fit the panel");
 
-        let ssid = ap_ssid("99177c");
-        let password = ap_password("s3cr3t", "99177c");
+        let ssid = ap_ssid("a1b2c3");
+        let password = ap_password("s3cr3t", "a1b2c3");
         let screen = render(&View {
             status: Status::Setup,
             setup: Some(SetupInfo {
@@ -1592,7 +1592,7 @@ mod tests {
             status: Status::Setup,
             setup: Some(SetupInfo {
                 ssid: "cat-feeder-with-a-very-long-name",
-                password: "H75T-C7VT-6FAV",
+                password: "55KA-G8H6-9NMQ",
             }),
             ..view()
         });

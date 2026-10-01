@@ -50,9 +50,12 @@ whenever a constant becomes a parameter — not just the file that changed.
 This repo carries an unusual amount of prose and it is load-bearing, so a change
 that contradicts it has broken something real.
 
-- `CLAUDE.md` — architecture decisions, constants, pin numbers, the code sketch
-  in *The feeder task owns the motor*, the file tree, the roadmap.
-- `README.md` — the status table, the layout tree, the getting-started commands.
+- `CLAUDE.md` — rules, constants, the flash table, the MQTT contract, the
+  code tree.
+- `docs/adr/` — a change that contradicts an ADR needs a new ADR superseding
+  it, not a silent divergence.
+- `docs/hardware.md` — wiring, pin roles, the beep-test table.
+- `README.md` — the builder's guide: commands, LED and knob tables.
 - `.claude/skills/flash-and-verify/references/serial-expectations.md` — quoted
   log lines. **Check they exist**: `grep -rhoE '(info|warn|error)!\("[^"]+' src/`
   lists every line the firmware can actually print. One documented transcript
@@ -64,10 +67,9 @@ that contradicts it has broken something real.
 Config keys are worth a specific check: `build.rs`, `cfg.toml.example` and
 `examples/mkrecord.rs` must agree on every name.
 
-### 3. Roadmap and status claims ahead of reality
+### 3. Roadmap claims ahead of reality
 
-`CLAUDE.md`'s roadmap and `README.md`'s status table are checked by people
-deciding what to work on. A ✅ on something only built, not verified on
+`docs/roadmap.md` is checked by people deciding what to work on. A ✅ on something only built, not verified on
 hardware, is worse than no entry.
 
 The distinction this project makes, and you should hold it to: *built*,
@@ -85,7 +87,22 @@ Tests are named as sentences describing the rule they protect
 (`a_meal_is_never_rounded_away`). A test whose name does not say what would
 break is a weaker test.
 
-### 5. Hardware invariants
+### 5. Documentation bloat and leaks
+
+The repo is public and generic, and `CLAUDE.md` is loaded into every session
+with a 400-line budget (CI enforces it). Flag in the diff:
+
+- `CLAUDE.md` growing with history (dates, "used to", "superseded", "found the
+  hard way"), ✅/⬜ status, verification transcripts, or a decision argued at
+  length instead of one line plus an ADR.
+- The same fact stated in a second place instead of linked.
+- Anything about specific units, addresses, SSIDs, serial ports or the
+  author's Home Assistant in a tracked file — it belongs in the git-ignored
+  `CLAUDE.local.md`. Grep for six-hex unit ids and `192.168.` outside
+  `192.168.4.` and placeholders.
+- An ADR edited to record a change of mind, rather than superseded.
+
+### 6. Hardware invariants
 
 - Pin numbers live only in `src/board.rs`. A GPIO number anywhere else is a bug.
 - GPIO10 and GPIO11 do not exist on the ESP32-C6-Zero.
@@ -100,8 +117,8 @@ break is a weaker test.
 Formatting, naming taste, anything `cargo fmt` or `clippy` already enforces, and
 praise. Do not restate what the change does. Do not propose features.
 
-Prose that is *deliberately* unchanged is not drift: `CLAUDE.md` keeps the old
-hand-picked 800 ms and 5000 ms in the derivation table on purpose, because the
+Prose that is *deliberately* unchanged is not drift: ADR-0006 keeps the old
+hand-picked 800 ms and 5000 ms on purpose, because the
 comparison is the argument for the ratios. Read the surrounding sentence before
 calling a number stale.
 

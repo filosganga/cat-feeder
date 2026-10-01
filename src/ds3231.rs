@@ -22,7 +22,7 @@
 //! a flat or missing coin cell. So "this clock was never set, or has lost its
 //! time" is a fact the firmware reads rather than infers. A cleared RTC
 //! otherwise reads as a plausible date, and a plausible date is exactly what
-//! *never guess* exists to refuse. See *Which means an RTC* in `CLAUDE.md`.
+//! *never guess* exists to refuse. See `docs/adr/0001-the-unit-owns-its-clock-and-schedule.md`.
 //!
 //! `EOSC` is the other half: with it set, the chip keeps time on mains and
 //! silently stops on the coin cell, so a power cut sets `OSF` every time. It is

@@ -7,7 +7,7 @@
 //!
 //! ## Why there is an LED at all
 //!
-//! Not for decoration. `CLAUDE.md` names two states where the cats do not eat
+//! Not for decoration. There are two states where the cats do not eat
 //! and nothing raises an alarm — a feeder left paused, and one sitting at
 //! `schedule holding` — and the second of those is worse than it sounds,
 //! because **a unit that cannot reach the broker cannot report that it cannot

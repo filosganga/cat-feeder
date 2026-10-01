@@ -4,7 +4,8 @@
 //! This is the part of the feeder that decides *how many* portions are owed;
 //! `feeder.rs` will own the motor and the switch and decide *when*.
 //!
-//! The rules it encodes come from `CLAUDE.md`:
+//! The rules it encodes are
+//! `docs/adr/0007-portions-are-the-contract-clicks-the-mechanism.md`:
 //!
 //! - Requests accumulate rather than replace, so three button presses during
 //!   one feed mean three portions.
@@ -35,9 +36,8 @@ pub const SCALE_UNCHANGED: u16 = 100;
 
 /// How many clicks this unit must turn to dispense `portions`.
 ///
-/// **Specified and tested, not yet wired up.** The scale comes from the
-/// per-unit record in flash, which is roadmap step 9; see *Per-unit portion
-/// size* in `CLAUDE.md`.
+/// The scale comes from the per-unit record in flash; see
+/// `docs/adr/0007-portions-are-the-contract-clicks-the-mechanism.md`.
 ///
 /// ## Why a scale exists at all
 ///

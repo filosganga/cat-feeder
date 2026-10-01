@@ -81,8 +81,8 @@ script:
   # Per unit rather than one broadcast, so *every feeder* and *the ones with
   # this label* are the same loop. Nothing is lost by not broadcasting: a meal
   # fires from each unit's own clock at its slot's time, so copies landing
-  # milliseconds apart change nothing. See point 6 of "A second version" in
-  # CLAUDE.md.
+  # milliseconds apart change nothing. See
+  # docs/adr/0015-syncing-schedules-is-a-copy-in-home-assistant.md.
   #
   # Refuses rather than half-copies:
   #   - a source that is offline: its entities are unavailable, and reading

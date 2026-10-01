@@ -1,11 +1,11 @@
 ---
 name: pcb-review
-description: Reviews the perfboard drawing, pcb.diy (DIY Layout Creator), before anything is soldered or powered — runs dev/pcb-check.sh, reads its netlist, pinout, unconnected-pin and neighbouring-net reports, and says what the check cannot see. Use whenever pcb.diy changes, when asked whether a layout is right or safe to solder, when a new module or header is added to the board, when a soldered unit does nothing at power-on, or when writing the beep-test table in CLAUDE.md's *The perfboard*.
+description: Reviews the perfboard drawing, pcb.diy (DIY Layout Creator), before anything is soldered or powered — runs dev/pcb-check.sh, reads its netlist, pinout, unconnected-pin and neighbouring-net reports, and says what the check cannot see. Use whenever pcb.diy changes, when asked whether a layout is right or safe to solder, when a new module or header is added to the board, when a soldered unit does nothing at power-on, or when writing the beep-test table in `docs/hardware.md`.
 ---
 
 # Reviewing the perfboard
 
-`pcb.diy` is the only layout; CLAUDE.md's *The perfboard* describes it. A
+`pcb.diy` is the only layout; `docs/hardware.md` describes it. A
 drawing can look right on screen and still be wrong in ways that cost a part,
 so it is checked by a script, not by eye.
 
@@ -41,7 +41,7 @@ apart. What matters is the rank:
 - `medium` — 3V3 beside a signal. Beside `In1` it runs the motor on its own.
 
 For each `short` and `high` pair, either move one run, insulate it, or put a
-guard in the way (R1 is one), and make sure the beep-test table in CLAUDE.md
+guard in the way (R1 is one), and make sure the beep-test table in `docs/hardware.md`
 has a line that would catch the bridge. A hole pair listed here is where a
 beep-test probe goes.
 
@@ -73,7 +73,7 @@ Say these out loud in a review; a green run does not cover them.
 2. `./dev/pcb-check.sh` until it passes, then read the neighbours.
 3. A new or moved pin: update `dev/pinouts.toml` — `pins` from the part,
    `unused` for what this layout leaves unconnected on purpose.
-4. Update *The perfboard* in CLAUDE.md: the header table, the beep-test table
+4. Update `docs/hardware.md`: the header table, the beep-test table
    (hole names from this board's `A … X`, rows from the bottom), and the list
    of places a blob does damage — the `short` and `high` pairs.
 5. Only then solder, beep with modules in, and power from USB alone.

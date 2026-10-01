@@ -61,8 +61,8 @@ nobody is listening to.
 
 Both halves matter and they fail the same way. The boards enumerate as different
 ports — the dev kit through its WCH bridge, the Zero as the chip's own USB — and
-the default in `.cargo/config.toml` is the dev kit's. **The first `INFO` line
-names the board it was built for** (`board: zero, id=99177c`), which settles
+an exported `ESPFLASH_PORT` points at only one of them. **The first `INFO` line
+names the board it was built for** (`board: zero, id=a1b2c3`), which settles
 this in one glance; silence means look here first.
 
 Second possible cause, if the interface is already explicit: the log level.
@@ -118,13 +118,13 @@ espflash list-ports --list-all-ports
 
 | Port | Identified as | Behaviour |
 |---|---|---|
-| `/dev/cu.usbmodem11401` | Espressif USB JTAG/serial debug unit, 303a:1001 | `board-info` works; `monitor` fails with "Error while connecting to device", including with `--before usb-reset` |
-| `/dev/cu.usbmodem5AAF2846061` | WCH USB-serial bridge, vid 1a86 | flash and monitor both work |
+| `/dev/cu.usbmodem<NNNNN>` | Espressif USB JTAG/serial debug unit, 303a:1001 | `board-info` works; `monitor` fails with "Error while connecting to device", including with `--before usb-reset` |
+| `/dev/cu.usbmodem<serial>` | WCH USB-serial bridge, vid 1a86 | flash and monitor both work |
 
 Use the bridge port on the dev kit and pin it so nothing has to guess:
 
 ```sh
-export ESPFLASH_PORT=/dev/cu.usbmodem5AAF2846061
+export ESPFLASH_PORT=/dev/cu.usbmodem<serial>
 ```
 
 `--port` on any of the dev scripts overrides it for one run.

@@ -86,8 +86,8 @@
 //!
 //! | Pin | Goes to | Notes |
 //! |---|---|---|
-//! | GPIO0 | DRV8833 `IN1` of either channel | edge; the perfboard uses channel B, so `In3` |
-//! | GPIO1 | DRV8833 `IN2` of the same channel | edge; `In4` on the perfboard |
+//! | GPIO0 | DRV8833 `IN1` of either channel | edge; `In1` on the perfboard |
+//! | GPIO1 | DRV8833 `IN2` of the same channel | edge; `In2` on the perfboard |
 //! | GPIO14 | DRV8833 `nSLEEP` (`ULT`/`SLP`) | edge; high enables the bridge |
 //! | GPIO2 | hub microswitch | other side to GND, internal pull-up; 1 kΩ in series on the perfboard |
 //! | GPIO3 | encoder push switch | the outside button; other side to GND, internal pull-up. Unwired and unread on the headless build |
@@ -105,13 +105,13 @@
 //! Power is `3V3` to the display and the RTC, `5V` to the DRV8833's motor
 //! supply, and one ground shared by everything — with the 220 µF across the
 //! driver's 5 V and ground, which on the perfboard is also the star point for
-//! both. See *The perfboard* in `CLAUDE.md`.
+//! both. See *The perfboard* in `docs/hardware.md`.
 //!
 //! On a bench that `5V` can arrive from two places at once — the feeder's own
 //! adapter and a laptop's USB cable — and they meet at the Zero's `5V` pad. It
 //! is safe: the board already carries a Schottky between `VBUS` and that pad,
 //! so the pad cannot back-feed the laptop, and an external diode would be a
-//! second one. See *Two supplies, and one of them is a laptop* in `CLAUDE.md`
+//! second one. See *A laptop on USB at the same time* in `docs/hardware.md`
 //! for the part, why ~4.8 V on the pad is normal, and the one combination that
 //! is worth avoiding.
 //!
@@ -121,7 +121,7 @@
 //! ## The encoder is the outside button
 //!
 //! An EC11-style rotary encoder with a push switch in the shaft. Of the two
-//! options in `CLAUDE.md`'s *Version 1.5: the knob*, this is **fork (a)**: the
+//! options in `docs/adr/0010-the-knob-is-the-outside-control.md`, this is the one taken: the
 //! shaft switch *is* the outside button, on GPIO3. A hold opens or closes the
 //! menu and a tap runs the item under the cursor — see `menu.rs` — and the
 //! power-on gesture that forgets the network is unchanged. GP20 and GP21 used to be reserved for `A`/`B`;
@@ -158,7 +158,7 @@ pub const NAME: &str = "zero";
 /// The hub microswitch. **GPIO2** on both boards.
 ///
 /// Wired to GND through the switch with the internal pull-up enabled, so a
-/// press is a falling edge. See `CLAUDE.md` for the wiring, including the
+/// press is a falling edge. See `docs/hardware.md` for the wiring, including the
 /// warning about the ground pin sitting next to 5V on the dev kit.
 ///
 /// This was GPIO11 until the Zero's pad map was checked against it: GPIO11 is
@@ -190,7 +190,7 @@ pub const SWITCH_PIN: &str = "GPIO2";
 /// pressable from outside the case.
 ///
 /// ⚠️ On the dev kit's J1 header GPIO3 is the pin **directly beside 5V**. That
-/// is the same adjacency `CLAUDE.md` warns about for the ground jumper, and it
+/// is the same adjacency `docs/hardware.md` warns about for the ground jumper, and it
 /// is worth re-reading before wiring a button there. If it makes you nervous,
 /// GP20–GP22 are free edge pads on the Zero and this is a one-line change.
 #[macro_export]
@@ -245,8 +245,7 @@ macro_rules! led_pin {
 /// DRV8833 `IN1` of the channel in use. **GPIO0** on both boards.
 ///
 /// One channel drives the motor, and it does not matter which: the breadboard
-/// uses A (`AIN1`/`AIN2` in, `AOUT1`/`AOUT2` out), the perfboard B (`In3`/`In4`,
-/// `Out3`/`Out4`). The other channel's inputs can be left unconnected — they
+/// and `pcb.diy` both use A (`In1`/`In2` in, `Out1`/`Out2` out). The other channel's inputs can be left unconnected — they
 /// have internal pull-downs, so it stays coasting.
 #[macro_export]
 macro_rules! motor_in1_pin {

@@ -18,7 +18,7 @@
 //! | Meal *n* portions, ×8 | `number` | `feeder/<id>/schedule/state` | `feeder/<id>/meal/<n>/portions` |
 //!
 //! **The meal entities are how a schedule is edited with nothing installed** —
-//! v2's point 4. They read the same retained echo the unit already publishes,
+//! see `docs/adr/0018-a-meal-is-a-position.md`. They read the same retained echo the unit already publishes,
 //! picking their slot out by position, so the unit's flash stays the only copy
 //! and Home Assistant only ever shows it back. A position the schedule does not
 //! reach reads `None`, which both platforms show as unknown.
@@ -294,7 +294,7 @@ mod tests {
                 let mut payload = String::new();
                 entity
                     .render(
-                        "99177c",
+                        "a1b2c3",
                         "10.20.30-rc.4",
                         Some([255, 255, 255, 255]),
                         &mut topic,
@@ -322,8 +322,8 @@ mod tests {
             .iter()
             .find(|(e, _, _)| *e == Entity::Feeding)
             .expect("announced");
-        assert_eq!(topic, "homeassistant/event/feeder_99177c/feeding/config");
-        assert_eq!(json["state_topic"], "feeder/99177c/event");
+        assert_eq!(topic, "homeassistant/event/feeder_a1b2c3/feeding/config");
+        assert_eq!(json["state_topic"], "feeder/a1b2c3/event");
         let announced: Vec<_> = json["event_types"]
             .as_array()
             .unwrap()
@@ -350,11 +350,11 @@ mod tests {
 
         for (entity, _, json) in &all {
             assert_eq!(
-                json["device"]["identifiers"][0], "feeder_99177c",
+                json["device"]["identifiers"][0], "feeder_a1b2c3",
                 "{entity:?}"
             );
             assert_eq!(json["device"]["model"], "cat-feeder ESP32-C6");
-            assert_eq!(json["availability_topic"], "feeder/99177c/availability");
+            assert_eq!(json["availability_topic"], "feeder/a1b2c3/availability");
             assert_eq!(
                 json["device"]["configuration_url"],
                 "http://255.255.255.255/"
@@ -369,10 +369,10 @@ mod tests {
             .iter()
             .find(|(e, _, _)| *e == Entity::MealTime(2))
             .unwrap();
-        assert_eq!(topic, "homeassistant/time/feeder_99177c/meal_3_time/config");
+        assert_eq!(topic, "homeassistant/time/feeder_a1b2c3/meal_3_time/config");
         assert_eq!(time["name"], "Meal 3 time");
-        assert_eq!(time["command_topic"], "feeder/99177c/meal/3/time");
-        assert_eq!(time["state_topic"], "feeder/99177c/schedule/state");
+        assert_eq!(time["command_topic"], "feeder/a1b2c3/meal/3/time");
+        assert_eq!(time["state_topic"], "feeder/a1b2c3/schedule/state");
         assert_eq!(
             time["value_template"],
             "{{ value_json[2].time if value_json|length > 2 else 'None' }}"
@@ -388,9 +388,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             topic,
-            "homeassistant/number/feeder_99177c/meal_8_portions/config"
+            "homeassistant/number/feeder_a1b2c3/meal_8_portions/config"
         );
-        assert_eq!(portions["command_topic"], "feeder/99177c/meal/8/portions");
+        assert_eq!(portions["command_topic"], "feeder/a1b2c3/meal/8/portions");
         assert_eq!(
             portions["value_template"],
             "{{ value_json[7].portions if value_json|length > 7 else 'None' }}"
@@ -413,7 +413,7 @@ mod tests {
                 _ => continue,
             };
             let topic = json["command_topic"].as_str().unwrap();
-            let path = topic.strip_prefix("feeder/99177c/meal/").unwrap();
+            let path = topic.strip_prefix("feeder/a1b2c3/meal/").unwrap();
             assert_eq!(
                 SlotEdit::parse(path, payload.as_bytes()),
                 Ok(SlotEdit { index, change }),
@@ -428,11 +428,11 @@ mod tests {
         let mut topic = String::new();
         let mut payload = String::new();
         Entity::Feed
-            .render("99177c", "0.1.0", None, &mut topic, &mut payload)
+            .render("a1b2c3", "0.1.0", None, &mut topic, &mut payload)
             .unwrap();
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert!(json["device"].get("configuration_url").is_none());
-        assert_eq!(json["device"]["name"], "Cat feeder 99177c");
+        assert_eq!(json["device"]["name"], "Cat feeder a1b2c3");
     }
 
     #[test]

@@ -113,8 +113,8 @@ Get this wrong and entities appear unavailable or never appear at all.
    none — because the broker's copy may be from before a reboot or a factory
    reset.
 5. Publish this unit's id to `feeder/time/request`, so Home Assistant sends a
-   live time now instead of at the next minute boundary. See *Asking for the
-   time instead of waiting for it* in CLAUDE.md.
+   live time now instead of at the next minute boundary. See
+   `docs/adr/0003-a-retained-time-is-not-a-trusted-time.md`.
 6. Publish the first `feeder/<id>/state`, retained.
 
 **Step 5 must come after step 4**, and that ordering is the whole trick: a reply

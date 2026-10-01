@@ -13,6 +13,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # CLAUDE.md is loaded into every Claude Code session, so it has a budget;
+  # see its "Keeping this file small". Raise the number only deliberately.
+  claude-md-budget:
+    name: CLAUDE.md line budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: |
+          lines=$(wc -l < CLAUDE.md)
+          echo "CLAUDE.md: $lines lines (budget 400)"
+          test "$lines" -le 400
+
   rust-checks:
     name: Rust Checks
     runs-on: ubuntu-latest
