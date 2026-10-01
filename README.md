@@ -81,8 +81,9 @@ Per feeder:
 - Optionally the feeder's own AA batteries as a backup, joined through a dual
   Schottky (MBRF2045CT) so USB never charges them. Roughly a day of runtime,
   estimated rather than measured.
-- A perfboard to carry it all: `pcb.diy`, drawn in DIY Layout Creator, with
-  `pcb.png` as the picture to solder from.
+- A perfboard to carry it all: `pcb.diy`, drawn in DIY Layout Creator. Open it
+  there to print or export the picture to solder from; CLAUDE.md's *The
+  perfboard* has the cable's pin order and the beep test to run before power.
 
 ## Getting started
 

@@ -215,156 +215,152 @@ extra pin and no firmware change. See roadmap step 10.
 
 ### The perfboard
 
-**Drawn 2026-09-28, soldered and running 2026-09-30** as unit `9a6ecc`, the
-second Zero. Verified on it: the beep test (5 V to ground reads megohms — C1
-charging and the chips' leakage, not a short), the headless build joining
-Wi-Fi and the broker and reaching `led: Healthy` in 6.8 s, and one `feed 1`
-running the motor, counting a click through R1 and braking. The same day it
-went **into its feeder, on batteries alone**, reporting to the always-on Home
-Assistant: it reconnected by itself, and a `feed 1` sent through that broker
-turned the real mechanism a quarter and dispensed, with no jam — so the slower
-motor on cells still clicks inside the jam budget. The DS3231 answers
-too, and the schedule arms from it 1.4 s after power-on — after two lessons
-worth keeping for unit three:
+**`pcb.diy` is the only layout**, redrawn 2026-10-01 for a double-sided,
+plated-through board and built as unit `99177c`, wired for the third feeder.
+`9a6ecc` runs on the first layout (2026-09-28), which differs in its header
+order, its driver channel and its hole names; that drawing is in git history
+only (`git show 8920020:pcb.diy`), and nothing below describes it.
 
-- **Use the module's 6-pin side**, soldering only `SCL · SDA · VCC · GND`,
-  with `GND` on N11. The 4-pin passthrough on its other side reads
-  `SCL · SDA · VCC · GND` in the opposite direction, and fitted there every
-  pin landed on its mirror: 3V3 on the module's `SDA`, ground on its `SCL`.
-  Nothing was damaged — the only path was through the module's pull-ups —
-  but check the silkscreen against N11–N14 before soldering, whichever side.
-- **One open I²C line and one wrong order look identical** on the console:
-  `rtc: nothing answered; running without one`. Beep each module pin to the
-  Zero's pin (SDA ↔ F8, SCL ↔ G8), not pad to pad; here it was an SDA joint.
+Verified on `99177c`: the Zero enumerating and booting headless, the LED sweep,
+`switch: watching GPIO2`, the DS3231 answering and arming the schedule from
+itself 1.4 s after power-on, and a calibration run and feeds through the
+driver. On `9a6ecc`, the same design on the first layout, it also went **into
+its feeder on batteries alone** and fed through the always-on broker with no
+jam — so the slower motor on cells still clicks inside the jam budget.
 
-A factory-fresh Zero arrives
-running Waveshare's demo, which leaves ESP-IDF data in `nvs`; the schedule
-sector then reads `schedule: stored record is unreadable` until a schedule
-is sent. `pcb.diy` at the repo root is the
-DIY Layout Creator file; `pcb.png` is the layout and `pcb (mask).png` the
-bottom-side traces alone. It is the **headless** build — no panel, no encoder,
-GP3–GP5 unconnected, and the BOOT button the only reset — with the DS3231 on
-the I²C bus as usual.
+It is the **headless** build — no panel, no encoder, GP3–GP5 unconnected —
+with the DS3231 on the I²C bus as usual. **There is no external BOOT button**:
+the Zero's own BOOT button is the only reset, so the case needs a pinhole over
+it. A factory-fresh Zero arrives running Waveshare's demo, which leaves
+ESP-IDF data in `nvs`; the schedule sector then reads `schedule: stored record
+is unreadable` until a schedule is sent.
 
 **The drawing is the component side**, with the bottom-side traces seen
-through the board. Its columns run `X … A` left to right, as the real board's
-printed labels do from the component side; from the solder side the same
-labels read `A … X`. Every hole below is named by those labels, which name the
-same hole from either side — so count by label, never by "third from the
-left", which is exactly the count that flips when the board is turned over.
+through the board. Its columns run `A … X` left to right, as this board's
+printed labels do from the component side, and rows 1–18 bottom to top. Every
+hole below is named by those labels, which name the same hole from either
+side — so count by label, never by "third from the left", which is exactly the
+count that flips when the board is turned over. The first layout's board was
+labelled the other way, `X … A`, which is one more reason its hole names do not
+carry over.
 
-**The feeder's cable** arrives on one 6-pin DuPont header, right-angle, on the
-board edge (row 18). The order is the cable's, crimped on the matching pair of
-feeders. The third, different-brand unit brings its wiring out on a flat
-ribbon cable in another order; adapt it to this pin order rather than the board
-to it, so all three perfboards stay identical.
+**Modules sit in female headers**, not soldered, so a redesign costs the board
+and a few parts rather than the Zero, the driver and the RTC. Socketed modules
+can go in reversed or a row off: mark each socket's GND end on the board, and
+beep with the modules in, from module pin to Zero pin.
 
-| Pin | Signal | Goes to |
-|---|---|---|
-| 1 | 5 V from the feeder's USB | MBRF2045CT, one anode |
-| 2 | 4.5 V from the feeder's batteries | MBRF2045CT, the other anode |
-| 3 | GND | C1 −, the ground star point |
-| 4 | hub microswitch | **1 kΩ**, then GPIO2 |
-| 5 | motor 1 | DRV8833 `Out4` |
-| 6 | motor 2 | DRV8833 `Out3` |
+**The feeder's cable** arrives on one 6-pin header along the bottom edge,
+`F1 … A1`, in the **third feeder's ribbon order**, so its ribbon plugs
+straight in. The matching pair's cables are in another order (5 V, Vbatt, GND,
+switch, motor 1, motor 2) and need re-crimping to this one before either goes
+on this layout.
 
-The driver runs on channel B, `In3`/`In4` → `Out3`/`Out4`: GPIO0 → `In3`,
-GPIO1 → `In4`, GPIO14 → `Ult`. The firmware does not care which channel.
-If the motor turns the wrong way, swap pins 5 and 6 — no firmware change.
+| Pin | Hole | Signal | Goes to |
+|---|---|---|---|
+| 1 | F1 | GND | C1 −, the ground star point |
+| 2 | E1 | Vcc, 5 V from the feeder's USB | MBRF2045CT, one anode |
+| 3 | D1 | Vbatt, 4.5 V from the feeder's batteries | MBRF2045CT, the other anode |
+| 4 | C1 | motor 1 | DRV8833 `Out1` |
+| 5 | B1 | motor 2 | DRV8833 `Out2` |
+| 6 | A1 | hub microswitch | **R1, 1 kΩ**, then GPIO2 |
 
-**The third feeder's ribbon**, as read off it on 2026-09-30, and where each
-conductor goes on the header above. The conductors after the switch are the
-loudspeaker's and are left unconnected.
+The ribbon's conductors after the switch are the loudspeaker's and stay
+unconnected. It has one switch conductor, so the switch's other leg is ground
+inside the feeder — beep ribbon 6 ↔ 1 while turning the hub before fitting: it
+must close once per detent. A switch returning to Vcc instead would put 5 V on
+GPIO2 through R1.
 
-| Ribbon | Signal | Header pin |
-|---|---|---|
-| 1 | GND | 3 |
-| 2 | Vcc, 5 V from USB | 1 |
-| 3 | Vbatt | 2 |
-| 4 | motor 1 | 5 |
-| 5 | motor 2 | 6 |
-| 6 | switch | 4 |
-| 7… | loudspeaker | — |
+The driver runs on channel A: GPIO0 → `In1`, GPIO1 → `In2`, GPIO14 → `Ult`,
+`Out1`/`Out2` to the motor. The firmware does not care which channel. If the
+motor turns the wrong way, swap pins 4 and 5 — no firmware change.
 
-The ribbon has one switch conductor, so the switch's other leg must be ground
-for the pull-up to read it. Beep ribbon 6 ↔ 1 while turning the hub before
-crimping: it must close once per detent. A switch returning to Vcc instead
-would put 5 V on GPIO2 through R1.
+⚠️ **The driver module's middle pins read `Vcc` then `GND`** after
+`In1`/`In2`, and the first draft of this layout had them the other way round.
+Built like that, the DRV8833's supply is reversed: current flows straight
+through its protection diodes, the laptop's port cuts power, and the Zero never
+enumerates — "plugged in and nothing happens". That one survived; check the
+module's silkscreen against H13/H14 before soldering.
+
+**The DS3231 uses its 4-pin passthrough side**, `SCL · SDA · VCC · GND` on
+J6 … J3. The first layout used the 6-pin side because the passthrough's order
+is mirrored against it, and fitting the wrong side lands every pin on its
+mirror — nothing damaged, but nothing answering. **One open I²C line and one
+wrong order look identical** on the console, `rtc: nothing answered; running
+without one`, so beep each module pin to the Zero's: SDA J5 ↔ S10 (GPIO18),
+SCL J6 ↔ R10 (GPIO19).
 
 **The diode-OR.** A dual common-cathode Schottky, **MBRF2045CT** (the part in
-hand is marked `MBRF2045DT`, a vendor variant): anodes on the two supplies,
-cathode — the middle leg — on the rail. Whichever supply is higher feeds the
-board, and neither can push current into the other, so USB can never charge
-the alkaline cells. A plain wire from the battery pin to the rail would.
-Twenty amps is far past anything here. The rail sits a Schottky drop below the
-higher input — roughly 4.7 V on USB, falling with the cells on batteries —
-which the Zero's regulator tolerates to about 3.5 V.
+hand is marked `MBRF2045DT`, a vendor variant), drawn as `Q1` because DIYLC
+has no dual diode: anodes on the two supplies (F3 USB, D3 battery), cathode —
+the middle leg, E3 — on the rail. Whichever supply is higher feeds the board,
+and neither can push current into the other, so USB can never charge the
+alkaline cells. A plain wire from the battery pin to the rail would. Twenty
+amps is far past anything here. The rail sits a Schottky drop below the higher
+input — roughly 4.7 V on USB, falling with the cells on batteries — which the
+Zero's regulator tolerates to about 3.5 V.
 
 **On batteries, estimated rather than measured:** the C6 on Wi-Fi draws
 80–120 mA, so three AAs are roughly a day — a power-cut bridge for the next
 meal or two, not a way to run. The motor turns slower on cells, lengthening
-the detent; the 2.5× jam budget should absorb it, and one feed on batteries
-alone is the test. The unit still cannot tell which supply it is on — *no USB
-detection* stands.
+the detent; the 2.5× jam budget should absorb it. The unit still cannot tell
+which supply it is on — *no USB detection* stands.
 
-**Grounds and 5 V are starred on C1**, not chained along a rail. C1's `+` leg
-is the 5 V node and its `−` leg the ground node, and the header's ground reaches
-`−` before anything leaves it. Then:
+**Grounds and 5 V are starred on C1** (E5 `+`, G5 `−`), not chained along a
+rail. The header's ground reaches `−` before anything leaves it. Then:
 
-- **the DRV8833 gets its own 5 V and its own ground wire to C1**, because the
+- **the DRV8833 gets its own 5 V and its own ground run to C1**, because the
   motor's current flows through it. Shared with the Zero, the return current
   would shift the ground GPIO2 is read against, and the start-up dip would
   reach the Zero's supply;
-- **the Zero gets its own pair**, and the light loads — the DS3231, the BOOT
-  button — hang off the Zero's ground and 3V3 as an ordinary rail. A shared
-  trunk is harmless at tens of milliamps.
+- **the Zero gets its own pair**, and the DS3231 hangs off the Zero's ground
+  and 3V3 as an ordinary rail. A shared trunk is harmless at tens of
+  milliamps.
 
-**Two guards on the switch line, one fitted.** The header is not keyed, and the
-switch pin sits beside motor 1, so a plug reversed or one position off would
-put the motor's 5 V on GPIO2. **R1, 1 kΩ in series**, limits that to a current
-the pin's clamp survives, and changes nothing about reading a switch that pulls
-to ground. A 100 nF from GPIO2 to ground was considered and **left out**: the
-prototype shows the 30 ms debounce and the spacing rule coping with the noise a
+**Two guards on the switch line, one fitted.** The header is not keyed, the
+switch pin sits beside motor 2, and the switch's run along row 17 passes the
+5 V run on row 18. A plug reversed or a position off, or a blob between those
+rows, would put 5 V on GPIO2. **R1, 1 kΩ in series** (J17–M17), limits that to
+a current the pin's clamp survives, and changes nothing about reading a switch
+that pulls to ground. It guards everything on the switch's side of it; the
+GPIO2 side, M17 to R16, still runs beside row 18 and is what the beep test's
+GPIO2 ↔ 5 V line is for. A 100 nF from GPIO2 to ground was considered and
+**left out**: the 30 ms debounce and the spacing rule cope with the noise a
 switch wire picks up in the motor's cable. Fit it only if spurious clicks ever
 appear. Mark pin 1 on the housing and the board either way.
 
-**GPIO9 has no edge pad** — it is on the Zero's back pad row with GPIO8 — so
-both come out on a 2-pin header, and GPIO9 runs to the BOOT button, other leg
-to ground. On a 4-leg tactile switch the two legs on one side are often joined
-inside; if the pair chosen is, GPIO9 sits low forever and **the unit boots into
-download mode every time**. The beep test below catches it. ✅ Verified on
-`9a6ecc`: the unit boots normally with the button fitted, and a press logs
-`reset: BOOT held, …` then `reset: released, network settings kept` — so the
-wire soldered to the back pad under the module reaches GPIO9.
-
-**Before first power, with the continuity beeper**, holes as in the drawing:
+**Before first power, with the continuity beeper**, modules plugged in, holes
+as in the drawing:
 
 | Probes | Expect | Catches |
 |---|---|---|
-| S14 ↔ U14 (C1 + ↔ −) | silence | 5 V shorted to ground |
-| B2 ↔ C2 (Zero 5V ↔ GND) | silence | the same, at the Zero |
-| P7 ↔ P8 (DRV GND ↔ Vcc) | silence | the same, at the driver |
-| R16 ↔ T16 (USB ↔ battery anodes) | silence | a bridge that charges the cells |
-| V18 ↔ W18 (switch ↔ motor 1) | silence | 5 V reaching GPIO2 |
-| D2 ↔ D8 (3V3 ↔ GPIO14) | silence | the 3V3 run and GPIO14 share column D, a hole apart |
-| E2 ↔ P6, F2 ↔ P5 (GPIO0 ↔ `In3`, GPIO1 ↔ `In4`) | beep | the jumpers reaching the driver |
-| M2 ↔ C2 (GPIO9 ↔ GND) | silence, beep **only while BOOT is pressed** | the button's leg pair |
+| E5 ↔ G5 (C1 + ↔ −) | silence | 5 V shorted to ground |
+| W16 ↔ V16 (Zero 5V ↔ GND) | silence | the same, at the Zero |
+| H13 ↔ H14 (DRV Vcc ↔ GND) | silence | the same at the driver — and a shorted driver |
+| U16 ↔ V16 (Zero 3V3 ↔ GND) | silence | 3V3 shorted to ground |
+| E5 ↔ U16 (5 V ↔ 3V3) | silence | 5 V on the 3V3 rail |
+| F3 ↔ D3 (USB ↔ battery anodes) | silence | a bridge that charges the cells |
+| A1 ↔ B1 (switch ↔ motor 2) | silence | a bridge at the header |
+| R16 ↔ W16 (GPIO2 ↔ 5 V) | silence | the row-17 run touching row 18, past R1 |
+| A1 ↔ R16 (switch ↔ GPIO2) | ~1 kΩ on the ohms range | R1 and the D17–F17 jumper in place |
+| H11 ↔ U16 (`In1` ↔ 3V3) | silence | the 3V3 run beside `In1`: a bridge runs the motor on its own |
+| T16 ↔ H11, S16 ↔ H12, U10 ↔ B11 (GPIO0 ↔ `In1`, GPIO1 ↔ `In2`, GPIO14 ↔ `Ult`) | beep | the runs and jumpers reaching the driver |
+| J5 ↔ S10, J6 ↔ R10 (SDA ↔ GPIO18, SCL ↔ GPIO19) | beep | the RTC's lines, module pin to Zero pin |
 
 Then USB alone: ~4.7 V across C1, 3.3 V on the Zero's `3V3`, and
 `./dev/flash.sh --board zero --headless` showing `switch: watching GPIO2`.
 
 The places a stray blob does damage are where two nets meet a hole apart:
-around C1, where the driver's ground passes the 5 V node, and the row-7 3V3
-run, which passes directly beside the Zero's row-8 pins. Solder those with
-care.
+5 V (F8–F14) beside ground (G7–G12) on the way to the driver, `Out1` (D9–D15)
+beside 5 V (E9–E18), the 3V3 run beside `In1` at I10/I11, and rows 17/18.
+Solder those with care.
 
 **Finishing.** An insulating spray on the solder side, **after** the beep test
 and a working power-up — it seals a bridge in rather than fixing it — kept out
-of the header's contacts and the BOOT button. In the case, components face
-outward, where the BOOT pinhole, the USB-C and the RTC's coin cell are
-reachable, and the solder side sits on printed bosses ~3 mm proud of a plate,
-so clipped leads touch nothing. A drop of glue or a cable tie takes the cable's
-pull off the right-angle header's joints.
+of the header's contacts. In the case, components face outward, where the BOOT
+pinhole, the USB-C and the RTC's coin cell are reachable, and the solder side
+sits on printed bosses on the corner mounting holes, ~3 mm proud of a plate, so
+clipped leads touch nothing. A drop of glue or a cable tie takes the cable's
+pull off the header's joints.
 
 ### Motor control (DRV8833)
 
@@ -1441,7 +1437,7 @@ build.rs          injects ap_secret from cfg.toml, and nothing else
 examples/mkrecord.rs
                   host-only: builds a provisioning record for dev/provision.sh
 
-pcb.diy, pcb.png, pcb (mask).png
+pcb.diy
                   the perfboard, in DIY Layout Creator, seen from the
                   component side; see *The perfboard*
 homeassistant/packages/cat_feeder.yaml
@@ -1994,7 +1990,7 @@ points at the section with the detail.
 | Item | Waiting for |
 |---|---|
 | Detent interval measured with a **full** hopper | a full hopper; then set it on the knob's `Detent` |
-| The third feeder (opened, microswitch confirmed, ribbon mapped): the adapter to the 6-pin order crimped, interval and portion ratio measured | unit three on the bench |
+| The third feeder, on `99177c` and the `pcb.diy` layout: detent measured at 5330 ms on USB with an empty hopper. Left: the **full**-hopper figure, and the portion ratio against the other two | a full hopper; a scale or a measuring spoon |
 | Unit two, `9a6ecc`, in its feeder and on the Pi: its meals sent; the detent measured by *Run calibration*, on batteries and on USB | a schedule; a calibration run each way |
 | Unit three: soldered, flashed, provisioned, sent its meals | soldering |
 | Motor direction checked on a real mechanism before bolting anything | each unit, before step 8 |
