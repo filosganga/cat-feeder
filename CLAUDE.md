@@ -329,11 +329,17 @@ rail. The header's ground reaches `−` before anything leaves it. Then:
 three's JST XH is — see above — and R1 stays fitted there too), the
 switch pin sits beside motor 2, and the switch's run along row 17 passes the
 5 V run on row 18. A plug reversed or a position off, or a blob between those
-rows, would put 5 V on GPIO2. **R1, 1 kΩ in series** (J17–M17), limits that to
+rows, would put 5 V on GPIO2. **R1, 1 kΩ in series** (O17–R17), limits that to
 a current the pin's clamp survives, and changes nothing about reading a switch
-that pulls to ground. It guards everything on the switch's side of it; the
-GPIO2 side, M17 to R16, still runs beside row 18 and is what the beep test's
-GPIO2 ↔ 5 V line is for. A 100 nF from GPIO2 to ground was considered and
+that pulls to ground. It guards everything on the switch's side of it, which
+is why it sits at the GPIO2 end: the whole row-17 run, D17 to O17, is behind
+it, and only R17, joined to R16, is unguarded beside 5 V — one pair, R17|R18,
+which is what the beep test's GPIO2 ↔ 5 V line is for.
+
+**Moved 2026-10-01, from J17–M17.** At the header end it left M17–R17, six
+holes, on GPIO2's side and beside row 18; `pcb-check` ranked that
+`5V | GP2 x6`, now `x1`. **`99177c` and `9a6ecc` are built the old way** and
+rely on having passed the beep test; unit three is the first with R1 here. A 100 nF from GPIO2 to ground was considered and
 **left out**: the 30 ms debounce and the spacing rule cope with the noise a
 switch wire picks up in the motor's cable. Fit it only if spurious clicks ever
 appear. Mark pin 1 on the housing and the board either way.
@@ -359,8 +365,8 @@ as in the drawing:
 | E5 ↔ U16 (5 V ↔ 3V3) | silence | 5 V on the 3V3 rail |
 | F3 ↔ D3 (USB ↔ battery anodes) | silence | a bridge that charges the cells |
 | A1 ↔ B1 (switch ↔ motor 2) | silence | a bridge at the header |
-| R16 ↔ W16 (GPIO2 ↔ 5 V) | silence | the row-17 run touching row 18, past R1 |
-| A1 ↔ R16 (switch ↔ GPIO2) | ~1 kΩ on the ohms range | R1 and the D17–F17 jumper in place |
+| R16 ↔ W16 (GPIO2 ↔ 5 V) | silence | R17 touching R18, the one GPIO2 hole beside 5 V |
+| A1 ↔ R16 (switch ↔ GPIO2) | ~1 kΩ on the ohms range | R1, the D17–F17 jumper and the R17–R16 link in place |
 | H11 ↔ U16 (`In1` ↔ 3V3) | silence | the 3V3 run beside `In1`: a bridge runs the motor on its own |
 | T16 ↔ H11, S16 ↔ H12, U10 ↔ B11 (GPIO0 ↔ `In1`, GPIO1 ↔ `In2`, GPIO14 ↔ `Ult`) | beep | the runs and jumpers reaching the driver |
 | J5 ↔ S10, J6 ↔ R10 (SDA ↔ GPIO18, SCL ↔ GPIO19) | beep | the RTC's lines, module pin to Zero pin |

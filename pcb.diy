@@ -1249,8 +1249,8 @@
       </alphaPercent>
       <points>
         <point x="0.9" y="0.6"/>
-        <point x="1.3" y="0.6"/>
-        <point x="1.1" y="0.6"/>
+        <point x="1.8" y="0.6"/>
+        <point x="1.35" y="0.6"/>
       </points>
       <bodyColor hex="ffffff"/>
       <borderColor hex="000000"/>
@@ -1451,30 +1451,6 @@
       <hideShortLeads>false</hideShortLeads>
       <style>SOLID</style>
     </diylc.connectivity.Jumper>
-    <diylc.connectivity.CopperTrace>
-      <id>ba667b4c-0343-4c34-bb2d-20e197aa1324</id>
-      <name>Trace56</name>
-      <alphaPercent>
-        <value>100</value>
-      </alphaPercent>
-      <points>
-        <point x="1.6" y="0.6"/>
-        <point x="2.1" y="0.6"/>
-        <point x="1.85" y="0.6"/>
-      </points>
-      <bodyColor hex="ffffff"/>
-      <borderColor hex="000000"/>
-      <labelColor hex="000000"/>
-      <leadColor hex="c76439"/>
-      <display>NAME</display>
-      <flipStanding>false</flipStanding>
-      <labelOriantation>Directional</labelOriantation>
-      <moveLabel>false</moveLabel>
-      <hideShortLeads>false</hideShortLeads>
-      <thickness value="1.0" unit="mm"/>
-      <layer>_1</layer>
-      <endingStyle>Round</endingStyle>
-    </diylc.connectivity.CopperTrace>
     <diylc.connectivity.CopperTrace>
       <id>37adcba5-6557-4f9a-aaff-4092ab09b7fd</id>
       <name>Trace13</name>
@@ -1837,9 +1813,9 @@
       <length value="7.0" unit="mm"/>
       <width value="2.5" unit="mm"/>
       <points>
-        <point x="1.3" y="0.6"/>
-        <point x="1.6" y="0.6"/>
-        <point x="1.45" y="0.6"/>
+        <point x="1.8" y="0.6"/>
+        <point x="2.1" y="0.6"/>
+        <point x="1.95" y="0.6"/>
       </points>
       <bodyColor hex="e0c68b"/>
       <borderColor hex="a59268"/>
@@ -2201,6 +2177,22 @@
   <groupsEx>
     <group>
       <componentIds>
+        <uuid>fc2b70c3-cb99-4fb0-9ca1-d36ffb8a9081</uuid>
+        <uuid>6a64559a-9e40-41f5-8ab0-2dc72f8127db</uuid>
+        <uuid>4b1f0963-164c-456f-bc2b-c94483fbd5bd</uuid>
+        <uuid>a5354c18-e044-432c-b826-b1eb3f69de27</uuid>
+        <uuid>7856248e-f839-4f9c-8703-d3fcf761b6ab</uuid>
+        <uuid>172fd077-a7d9-4d8c-9e1c-d6ce6de2a406</uuid>
+        <uuid>0e53153b-1774-4ac8-8266-fea77e1a9523</uuid>
+        <uuid>2699e05c-d18f-4c7a-82a3-fa38f073e275</uuid>
+        <uuid>fbc2f222-5278-4f4e-a40b-3ba373854aa6</uuid>
+        <uuid>2973521b-625a-45ad-8fe5-7d0f6ce417bf</uuid>
+        <uuid>adf5392b-7842-4951-877f-2150ccc3303e</uuid>
+      </componentIds>
+      <name>ESP32C6</name>
+    </group>
+    <group>
+      <componentIds>
         <uuid>31168748-07d0-4430-9f2d-793d79be8d20</uuid>
         <uuid>40918e91-e450-4147-a05a-4710a5cbc776</uuid>
         <uuid>5df1262f-55a8-4d6c-95dd-e1d05e268e60</uuid>
@@ -2218,33 +2210,6 @@
     </group>
     <group>
       <componentIds>
-        <uuid>cfa28297-146b-4413-9be2-19f751f152d3</uuid>
-        <uuid>ae8384b9-1a94-4ddc-8739-8349362be0f2</uuid>
-        <uuid>69ac0ac2-5f67-42b2-9d1f-e23740ed5825</uuid>
-        <uuid>b41ce475-3b87-4897-98e9-be5e083b3888</uuid>
-        <uuid>bcb46e0d-2bc2-4cf0-9e37-75af21b685ca</uuid>
-        <uuid>169f9a78-0acd-4ff1-ace1-eb43cbcb102d</uuid>
-      </componentIds>
-      <name>DS3231</name>
-    </group>
-    <group>
-      <componentIds>
-        <uuid>fc2b70c3-cb99-4fb0-9ca1-d36ffb8a9081</uuid>
-        <uuid>6a64559a-9e40-41f5-8ab0-2dc72f8127db</uuid>
-        <uuid>4b1f0963-164c-456f-bc2b-c94483fbd5bd</uuid>
-        <uuid>a5354c18-e044-432c-b826-b1eb3f69de27</uuid>
-        <uuid>7856248e-f839-4f9c-8703-d3fcf761b6ab</uuid>
-        <uuid>172fd077-a7d9-4d8c-9e1c-d6ce6de2a406</uuid>
-        <uuid>0e53153b-1774-4ac8-8266-fea77e1a9523</uuid>
-        <uuid>2699e05c-d18f-4c7a-82a3-fa38f073e275</uuid>
-        <uuid>fbc2f222-5278-4f4e-a40b-3ba373854aa6</uuid>
-        <uuid>2973521b-625a-45ad-8fe5-7d0f6ce417bf</uuid>
-        <uuid>adf5392b-7842-4951-877f-2150ccc3303e</uuid>
-      </componentIds>
-      <name>ESP32C6</name>
-    </group>
-    <group>
-      <componentIds>
         <uuid>1195a192-68ce-41e0-b0f7-481ae5653483</uuid>
         <uuid>2d434d79-039e-4092-a8d4-6b5f3c225ecc</uuid>
         <uuid>5a16513b-edc3-4981-b066-3d0cc3401b4c</uuid>
@@ -2254,6 +2219,17 @@
         <uuid>6ac396ea-ff67-4197-ba18-d3891e1cf809</uuid>
       </componentIds>
       <name>Inlet</name>
+    </group>
+    <group>
+      <componentIds>
+        <uuid>cfa28297-146b-4413-9be2-19f751f152d3</uuid>
+        <uuid>ae8384b9-1a94-4ddc-8739-8349362be0f2</uuid>
+        <uuid>69ac0ac2-5f67-42b2-9d1f-e23740ed5825</uuid>
+        <uuid>b41ce475-3b87-4897-98e9-be5e083b3888</uuid>
+        <uuid>bcb46e0d-2bc2-4cf0-9e37-75af21b685ca</uuid>
+        <uuid>169f9a78-0acd-4ff1-ace1-eb43cbcb102d</uuid>
+      </componentIds>
+      <name>DS3231</name>
     </group>
   </groupsEx>
   <lockedLayers/>
