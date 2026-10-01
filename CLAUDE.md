@@ -1985,8 +1985,9 @@ points at the section with the detail.
 | The admin page in a phone browser | used from a desktop browser (calibration run, page layout); still unseen: *Feed now* turning the motor, *Use this device's time*, the timezone list, and a phone layout | *A second version*, point 5 |
 | Changing a `Meal n` entity from Home Assistant's own UI | built; driven with the payloads HA's platforms send, not from its UI | point 4 |
 | Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
-| Subsets of feeders by HA label | Home Assistant side only; no firmware change | point 6 |
-| Optional "copy this feeder's schedule to those" blueprint | not written; only sensible after point 4 | *What Home Assistant is left doing* |
+| **OTA updates** — a possible enhancement, not decided. Today every firmware change means a USB cable, which once a unit is in its feeder means taking it out | not designed. Wants a partition table with two app slots, and it must keep `nvs` at 0x9000 or every unit loses its record; an upload behind at least the admin page's auth, since it is code execution for anyone on the LAN; and a way back from an image that boots but never reaches the broker | *Flash* |
+| Copy one feeder's schedule to others — every feeder, or by HA label or area — over each target's `feeder/<id>/schedule` | not written. Replaces `script.cat_feeder_send_schedule` and its hard-coded `meals` in the package; Home Assistant side only | point 6 |
+| **Remove `feeder/all/schedule` from the firmware** — `TOPIC_ALL_SCHEDULE` in `mqtt.rs`, and every doc, skill and transcript naming it | decided 2026-10-01, **waiting for the next flash** of the units (no OTA). Only after the copy script above is in the package on the Pi: until then `send_schedule` publishes to this topic | point 6 |
 
 **Seen only in host tests, not yet on the hardware**
 
@@ -2625,7 +2626,21 @@ reserved on every boot. The listener is real: an always-on HTTP server is
 permanent attack surface on the house network, which is the real reason the
 authentication above is not optional.
 
-**6. Synchronising three feeders is an explicit broadcast.** `feeder/all/schedule`,
+**6. Synchronising three feeders is an explicit broadcast.**
+
+⚠️ **Superseded 2026-10-01: syncing is a copy in Home Assistant, and
+`feeder/all/schedule` goes.** Home Assistant finds the target units — every
+feeder, or those with a label or in an area, the same lookup the subsets
+paragraph below describes — reads the source unit's retained
+`feeder/<id>/schedule/state`, and publishes it to each target's own
+`feeder/<id>/schedule`, not retained. One path for *all* and for a subset
+rather than two. Nothing is lost by not broadcasting: unlike `feeder/all/feed`,
+a schedule fires from each unit's own clock at the slot's time, so copies
+arriving milliseconds apart change nothing. `feeder/all/feed` stays. The
+paragraph below is the design this replaces, and stays true of the firmware
+until the topic is removed — see *What is left*.
+
+The design it replaced: `feeder/all/schedule`,
 **not retained**, applied by each unit and echoed into its own per-unit retained
 state. No retained topic races another, because only the per-unit topic is state
 — the same command/state split that already separates `feeder/all/feed` from

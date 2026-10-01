@@ -56,12 +56,14 @@ script:
     fields:
       portions:
         name: Portions
-        description: Portions per feeder.
+        description: >-
+          Portions per feeder. Each unit turns them into clicks at its own
+          portion scale, and caps one request at 16 clicks (MAX_CLICKS).
         default: 1
         selector:
           number:
             min: 1
-            max: 10
+            max: 16
     sequence:
       # Deliberately NOT retained. A retained feed command is replayed on every
       # reconnect, and because manual feeds accumulate, a boot loop would empty
@@ -80,8 +82,9 @@ script:
   #
   # Deliberately a script and not an automation on Home Assistant's start: that
   # would re-send these meals over any a feeder was given some other way, at
-  # every restart. One feeder alone gets its own with
-  # feeder/<id>/schedule, which this package does not need to know about.
+  # every restart. One feeder alone gets its own through its Meal n entities,
+  # its admin page, or feeder/<id>/schedule -- none of which this package
+  # needs to know about.
   #
   # Not retained, and the firmware refuses a retained one: a retained schedule
   # would be handed to every unit that subscribes later.
@@ -104,15 +107,20 @@ automation:
   - id: cat_feeder_publish_time
     alias: "Cat feeder: publish the time"
     description: >-
-      The only thing that tells the feeders what time it is. Every minute,
-      retained, so a feeder that reboots is told again within a minute.
+      The authority on the feeders' clocks while Home Assistant is running.
+      Each unit also keeps time itself -- a DS3231 on a coin cell, and its own
+      timezone for the summer-time change -- so a set RTC arms the schedule at
+      boot with no broker at all. This publish is what corrects that clock,
+      rewrites the RTC when it drifts, and outranks the unit's own timezone;
+      the unit falls back to its zone only after ten minutes without one.
+      Every minute, retained.
 
-      Also answers feeder/time/request. A feeder only arms its schedule on a
-      *live* time, so one that connects just after a tick would otherwise sit
-      idle for up to a full minute; it asks once per MQTT connection and this
-      replies at once. The answer is an ordinary publish, so it still proves
-      Home Assistant is running now, which is the whole point of the live
-      versus retained rule.
+      Also answers feeder/time/request. A retained time never arms a
+      schedule, because it can be any age; only a *live* one does. A unit with
+      no trusted RTC would otherwise sit idle until the next tick, so it asks
+      once per MQTT connection and this replies at once. The answer is an
+      ordinary publish, so it still proves Home Assistant is running now, which
+      is the whole point of the live versus retained rule.
 
       That trigger belongs here rather than in a second automation: two
       automations publishing the same topic is how they drift apart. mode:
@@ -121,10 +129,11 @@ automation:
       is forwarded live to all three subscribers.
 
       Must be now(), never utcnow(). The firmware reads the wall-clock fields
-      and does not apply the offset, because slots are local times and the
-      feeders share a house with the broker. Publishing UTC would still look
-      valid while moving every meal by the offset. The feeder logs the offset
-      it received at startup, which is the only place that mistake shows up.
+      and records the offset without converting away from it, because slots
+      are local times and the feeders share a house with the broker.
+      Publishing UTC would still look valid while moving every meal by the
+      offset. The feeder logs the offset it received at startup, and its
+      panel and admin page show the clock, which is where that mistake shows.
     mode: single
     triggers:
       - trigger: time_pattern
@@ -157,12 +166,17 @@ automation:
       discovered switch, and that is load-bearing: entity service calls skip
       entities that are unavailable, and a feeder that is offline is exactly the
       one whose pause has to be waiting in the broker when it comes back.
+
+      This automation is the authority on pausing. A pause or resume from a
+      unit's knob, or from its switch here, is a temporary override: it lasts
+      until the next Home Assistant start or the next change of the helper,
+      then reverts to what the helper says.
     mode: single
     variables:
       # Every feeder Home Assistant has been told about, found rather than
       # listed. MQTT discovery gives each unit a device whose `model` is this
       # firmware's and whose `identifiers` are ["mqtt", "feeder_<id>"] -- both
-      # from publish_discovery() in src/mqtt.rs, and neither of them changed by
+      # rendered by src/discovery.rs, and neither of them changed by
       # renaming the device in the UI. So a unit added to the broker joins this
       # automation by itself, and no device id is written down anywhere here.
       #
@@ -178,8 +192,17 @@ automation:
         {%- endfor -%}
         {{ ns.ids | unique | list }}
     triggers:
+      # A bare state trigger also fires on attribute-only changes, and an
+      # all-day schedule moves its `next_event` attribute at every midnight
+      # while staying `on` -- which republished OFF and undid every pause set
+      # by hand (issue #2). Naming any of from/not_from/to/not_to makes the
+      # trigger ignore attribute changes; these two also keep a reload of the
+      # helper, through unavailable, from firing it. (`to` and `not_to` are
+      # mutually exclusive, so `to: ~` cannot be combined with `not_to`.)
       - trigger: state
         entity_id: schedule.cat_feeder_active
+        not_from: [unavailable, unknown]
+        not_to: [unavailable, unknown]
       - trigger: homeassistant
         event: start
     actions:
@@ -189,8 +212,9 @@ automation:
             - action: mqtt.publish
               data:
                 topic: "feeder/{{ repeat.item }}/paused"
-                # Retained: there is no flash, so a unit that reboots while
-                # paused must come back paused from the broker alone.
+                # Retained: unlike the schedule, `paused` is not kept in the
+                # unit's flash, so a unit that reboots while paused must come
+                # back paused from the broker alone.
                 retain: true
                 # Pauses only when the helper is explicitly off. If it is
                 # unknown or unavailable the feeders keep running, because the
