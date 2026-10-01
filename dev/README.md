@@ -280,6 +280,9 @@ docker compose logs -f homeassistant
 
 docker compose down                     # stop, keep retained messages
 docker compose down -v                  # stop and wipe every retained message
+
+./dev/ap-password.sh 9a6ecc             # a unit's setup/admin password
+./dev/label.sh 9a6ecc 99177c            # printable labels with a join-Wi-Fi QR
 ```
 
 Publishing by hand, standing in for Home Assistant:

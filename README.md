@@ -230,6 +230,16 @@ station MAC, printed at boot and by `espflash board-info`. Stickers can be made
 before a unit is ever powered on, which is the point of the derivation being
 reproducible off the device.
 
+For a label to print rather than a line to copy, `./dev/label.sh` takes the
+same ids and opens a page of 50 × 30 mm labels: the network name, the password,
+and a QR code a phone scans to join the setup network. The same password logs
+into the unit's admin page. It needs `brew install qrencode`, and the page holds
+the passwords in the clear, so it is written to a temporary file.
+
+```sh
+./dev/label.sh 9a6ecc 99177c
+```
+
 **Then, per unit.**
 
 1. Put the unit into setup mode, in one of two ways. Either forgets the

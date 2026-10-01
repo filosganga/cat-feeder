@@ -5,7 +5,7 @@ description: The conventions every script in this project's dev/ directory follo
 
 # Writing a dev script
 
-Nine scripts in `dev/` are the entire developer interface to this project. They
+The scripts in `dev/` are the entire developer interface to this project. They
 are consistent on purpose: a flag that means one thing in `flash.sh` means the
 same thing in `provision.sh`, so nobody has to read a script to call it.
 
