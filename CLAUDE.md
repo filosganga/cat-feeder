@@ -1552,7 +1552,7 @@ each one.
    driving a real scheduled feed end to end. That verification was of the
    schedule script's first form, which published hard-coded meals; since
    2026-10-01 it copies one feeder's meals to others
-   (`script.cat_feeder_copy_schedule`), which is not yet run against a unit
+   (`script.cat_feeder_copy_schedule`), verified copying between two units
 8. Retire the old PCBs. Per feeder: remove the original LCD/RTC/button board,
    drill one hole in the bottom shell, and route the motor and microswitch
    cables out through the cavity the original USB lead already uses. The
@@ -1990,7 +1990,7 @@ points at the section with the detail.
 | Changing a `Meal n` entity from Home Assistant's own UI | built; driven with the payloads HA's platforms send, not from its UI | point 4 |
 | Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
 | **OTA updates** — a possible enhancement, not decided. Today every firmware change means a USB cable, which once a unit is in its feeder means taking it out | not designed. Wants a partition table with two app slots, and it must keep `nvs` at 0x9000 or every unit loses its record; an upload behind at least the admin page's auth, since it is code execution for anyone on the LAN; and a way back from an image that boots but never reaches the broker | *Flash* |
-| `script.cat_feeder_copy_schedule`: one feeder's meals to others — every feeder, or by device, area, floor or label — over each target's `feeder/<id>/schedule` | written 2026-10-01, replacing `send_schedule` and its hard-coded `meals`. Its templates rendered against a copy of the Pi's registries with faked states, every refusal included; **not yet installed on the Pi or run against a unit** | point 6 |
+| `script.cat_feeder_copy_schedule`: one feeder's meals to others — every feeder, or by device, area, floor or label — over each target's `feeder/<id>/schedule` | written and installed 2026-10-01, replacing `send_schedule` and its hard-coded `meals`. Its templates rendered against a copy of the Pi's registries with faked states, every refusal included, then verified 2026-10-01 on the Pi: `9a6ecc`'s meals copied to `99177c`, whose `Meal 2 time` moved 19:00 → 20:00 from its own echo; and a copy to itself only refused, with nothing published. **Not yet run to a label, an area or a floor** | point 6 |
 | **Remove `feeder/all/schedule` from the firmware** — `TOPIC_ALL_SCHEDULE` in `mqtt.rs`, and every doc, skill and transcript naming it | decided 2026-10-01, **waiting for the next flash** of the units (no OTA). Nothing in the package publishes to it any more, so the order no longer matters once the package on the Pi is updated | point 6 |
 
 **Seen only in host tests, not yet on the hardware**
@@ -2397,7 +2397,7 @@ a different thing from one that degrades to not feeding.
 
 ### A second version: the unit owns its clock and its schedule
 
-**Built**, the Home Assistant half of point 6 written but not yet run — see the status
+**Built** — see the status
 paragraph below. It overturned what used to read *No local RTC, no NTP, no
 flash persistence*, and meant to: that rule is right for a system whose only
 user owns the broker, and wrong for a feeder somebody else is given. What follows is one decision with
@@ -2424,8 +2424,8 @@ one feeder's meals to others rather than holding meals of its own — see
 point 6.
 Point 3 is done by the RTC and the knob. Point 4 is the sixteen `Meal n`
 entities and point 5 the admin page — both below. The Home Assistant half of
-point 6, the copy to every feeder or to a label, area or floor, is written but
-not yet run against a unit.
+point 6, the copy to every feeder or to a label, area or floor, is
+verified 2026-10-01 on the Pi: `9a6ecc`'s meals copied to `99177c`, whose `Meal 2 time` moved 19:00 → 20:00 from its own echo; and a copy to itself only refused, with nothing published.
 
 **Point 5 as built.** `http://<unit>/`, on every configured unit, alongside
 MQTT: a status block (clock, meals a day, paused, next meal, last fed, a jam),

@@ -272,8 +272,8 @@ every other feeder, or pick devices, an area, a floor or a label. The script
 refuses, with a notification saying why, rather than copy from an offline or
 blank source, to an offline target, or to a selection with no feeders in it.
 Each unit logs `schedule: N meals, stored` (or `unchanged`, if it already held
-that one) and echoes it on `feeder/<id>/schedule/state`. The copy script is
-not yet run against a unit. What was verified end to end, when the schedule
+that one) and echoes it on `feeder/<id>/schedule/state`. The copy script was
+first run on the Pi on 2026-10-01, one unit to another. What was verified end to end, when the schedule
 was still a shared retained topic, is the unit's side: a slot published by Home
 Assistant fired at exactly its time, and the unit reported
 `"last_fed":"2026-09-15T19:56:00+02:00"`.

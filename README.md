@@ -41,7 +41,7 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | DS3231 real-time clock: arms the schedule at boot, with no Home Assistant | working, verified on the Zero |
 | The unit owns its schedule, in flash; a new unit starts blank | working, verified on the Zero |
 | Home Assistant: an automation publishing the time | working |
-| Home Assistant: a script copying one feeder's meals to others | written; not yet run against a unit |
+| Home Assistant: a script copying one feeder's meals to others | working; run once to a single device, not yet to a label or an area |
 | Status LED on the onboard WS2812 | working, verified by eye |
 | The knob: turn for info pages, hold for a menu, tap `Feed` to feed | working on a Zero; the info pages are host-tested but not yet seen on the panel |
 | Per-board provisioning from the host (`dev/provision.sh`) | working |
