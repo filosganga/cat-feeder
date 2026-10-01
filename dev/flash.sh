@@ -99,8 +99,11 @@ echo
 # --non-interactive: never prompt, so this works unattended.
 # No --no-reset: it loads a flash stub that halts the application, and the
 # console then shows the bootloader only. That mistake costs a whole run.
+# --erase-data-parts ota: the image lands in ota_0, but the bootloader boots
+# whichever slot otadata names, which after an OTA update is ota_1 (ADR-0022).
 timeout "$((SECONDS_TO_CAPTURE + 60))" espflash flash \
-  --monitor --non-interactive --chip esp32c6 --port "$PORT" "$BIN" \
+  --monitor --non-interactive --chip esp32c6 --port "$PORT" \
+  --erase-data-parts ota "$BIN" \
   >"$LOG" 2>&1 || true
 
 exec "$DEV_DIR/_render.sh" "$LOG" "$FILTER"

@@ -70,8 +70,9 @@ feature too.
 
 - `target = "riscv32imac-unknown-none-elf"` and
   `build-std = ["alloc", "core"]`, so `cargo build` needs no `--target`.
-- `runner = "espflash flash --monitor --chip esp32c6"`, which is what makes
-  `cargo run` flash the board.
+- `runner = "espflash flash --monitor --chip esp32c6 --erase-data-parts ota"`,
+  which is what makes `cargo run` flash the board, and boot what it flashed
+  (ADR-0022).
 - `rustflags = ["-C", "force-frame-pointers"]`, required for `esp-backtrace`
   backtraces.
 - `ESP_LOG="info"`, read at **build time** by `esp-println`'s build script and

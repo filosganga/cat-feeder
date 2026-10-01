@@ -1,0 +1,4 @@
+# Read by espflash from the directory it runs in: the dev scripts and
+# `cargo run` both start at the repo root.
+[idf_format_args]
+partition_table = "partitions.csv"

@@ -143,9 +143,9 @@ means another monitor still holds it. Only one process can own a serial port.
   bootloader. Hold BOOT, tap RESET, release BOOT, then retry.
 - **Wrong chip detected**: pass `--chip esp32c6` explicitly. The `cargo run`
   runner already does.
-- **Binary too large**: the partition table gives the factory app 0x7f0000 of
-  the 8 MB flash, so this is a symptom of a debug build bloating rather than a
-  real limit. `[profile.dev]` already sets `opt-level = "s"` for that reason.
+- **Binary too large**: each OTA slot in `partitions.csv` is 0x1E0000
+  (1.9 MB); a debug build is about 1.1 MB. `espflash save-image` prints
+  `App/part. size`. `[profile.dev]` sets `opt-level = "s"` to keep it there.
 
 ## Flash writes that seem not to stick
 
