@@ -678,8 +678,8 @@ mod tests {
 
     #[test]
     fn a_scaled_unit_turns_further_for_the_same_request() {
-        // The whole point: feeder/all/schedule reaches every unit, so the same "2 portions"
-        // reaches every unit and each turns as far as its own mechanism needs.
+        // The whole point: a schedule copied to every unit carries the same "2 portions"
+        // to each, and each turns as far as its own mechanism needs.
         let mut small_clicks = Feeder::new(Timings::from_detent(REFERENCE_DETENT_MS), 150);
         small_clicks.request(2);
         assert_eq!(small_clicks.pending(), 3);

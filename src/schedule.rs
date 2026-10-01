@@ -629,7 +629,7 @@ pub(crate) fn parse_slot_time(text: &str) -> Result<u16, EditError> {
 /// first edit would vanish without a word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleCommand {
-    /// A whole schedule, from `feeder/<id>/schedule` or `feeder/all/schedule`.
+    /// A whole schedule, from `feeder/<id>/schedule`.
     Replace(Schedule),
     /// One slot, from a `Meal n` entity.
     Edit(SlotEdit),
@@ -660,7 +660,7 @@ pub enum ScheduleError {
 }
 
 /// The feeding schedule. Owned by the unit: kept in flash, replaced by a
-/// `feeder/<id>/schedule` or `feeder/all/schedule` command, and echoed on
+/// `feeder/<id>/schedule` command, and echoed on
 /// `feeder/<id>/schedule/state`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Schedule {

@@ -349,7 +349,6 @@ feeder/<id>/feed           <portions>                manual feed
 feeder/all/feed            <portions>                all units at once
 feeder/<id>/paused         ON | OFF                  retained, pauses the schedule
 feeder/<id>/schedule       [{"time":"08:00","portions":2}]   never retained, this unit's meals
-feeder/all/schedule        [{"time":"08:00","portions":2}]   never retained, every unit's meals
 feeder/<id>/schedule/state [{"time":"08:00","portions":2}]   retained, what the unit holds
 feeder/time                "2026-09-14T08:00:00+02:00"       retained, from HA
 feeder/time/request        <id>                      never retained, to HA

@@ -22,7 +22,6 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 | `feeder/all/feed` | `<portions:u8>` | → all devices | **no** |
 | `feeder/<id>/paused` | `ON` / `OFF` | → device, and device → from the knob's menu | yes |
 | `feeder/<id>/schedule` | `[{"time":"08:00","portions":2}]` | → one device | **no** |
-| `feeder/all/schedule` | `[{"time":"08:00","portions":2}]` | → all devices | **no** |
 | `feeder/<id>/schedule/state` | `[{"time":"08:00","portions":2}]`, `[]` for none | device → | yes |
 | `feeder/<id>/meal/<n>/time` | `08:00:00` (or `08:00`), n = 1..8 | → device, from *Meal n time* | **no** |
 | `feeder/<id>/meal/<n>/portions` | `2`; `0` switches the meal off | → device, from *Meal n portions* | **no** |
@@ -108,7 +107,7 @@ Get this wrong and entities appear unavailable or never appear at all.
    retained replay the subscription triggers carries the new value back rather
    than undoing it.
 4. Subscribe to `feeder/<id>/feed`, `feeder/all/feed`, `feeder/<id>/paused`,
-   `feeder/<id>/schedule`, `feeder/all/schedule`, `feeder/<id>/meal/+/+`,
+   `feeder/<id>/schedule`, `feeder/<id>/meal/+/+`,
    `feeder/time`.
 4a. Publish what the unit holds to `feeder/<id>/schedule/state`, retained — `[]` for
    none — because the broker's copy may be from before a reboot or a factory

@@ -116,8 +116,8 @@ to be a switch. See *Per-unit mechanical timing* for where the number goes.
 
 **Measure what one click actually dispenses** while it is open — by weight, or
 by counting clicks into a measuring spoon — and compare it with the other two.
-`feeder/all/schedule` sends the same `portions: 2` to every unit, so it
-reaches each one identically, and a mechanism that dispenses a different
+`script.cat_feeder_copy_schedule` gives every unit the same `portions: 2`, so
+it reaches each one identically, and a mechanism that dispenses a different
 amount per click needs a per-unit scale. That is built: see *Per-unit portion
 size*. What is needed from the bench is the ratio.
 
@@ -571,7 +571,7 @@ loop {
   line used to read *no local RTC, no NTP, no flash persistence*. The clock is a
   DS3231 on a coin cell, corrected by every live `feeder/time` and settable on
   the knob; no NTP. The schedule is in flash, given by an explicit command
-  (`feeder/<id>/schedule` or `feeder/all/schedule`) and never inherited
+  (`feeder/<id>/schedule`) and never inherited
   from a retained topic, so a new unit starts blank. Offline → keep feeding on
   what it holds. Power-cycled with no broker → feed, if the RTC kept time and a
   schedule is stored; otherwise wait, never guess. See *A second version*.
@@ -934,7 +934,7 @@ portions x133%`.
 
 **Built**, in the same record as the timing above.
 
-`feeder/all/schedule` sends the same schedule to every unit, so a slot saying
+A schedule copied to every unit gives each the same slots, so a slot saying
 `portions: 2` reaches every feeder as the same request. The feeders are
 not all the same model, and a click on one mechanism need not dispense the same
 amount of food as a click on another. Without a per-unit scale one feeder
@@ -1139,7 +1139,6 @@ feeder/<id>/feed           <portions:u8>           cmd, manual feed
 feeder/all/feed            <portions:u8>           cmd, all units at once
 feeder/<id>/paused         ON | OFF                retained, pause the schedule; from HA or from the unit's menu
 feeder/<id>/schedule       [{"time":"08:00","portions":2}, ...]   cmd, NOT retained, this unit's meals
-feeder/all/schedule        [{"time":"08:00","portions":2}, ...]   cmd, NOT retained, every unit's meals
 feeder/<id>/schedule/state [{"time":"08:00","portions":2}, ...]   retained, what the unit holds
 feeder/<id>/meal/<n>/time      08:00:00            cmd, NOT retained, meal n's time (n = 1..8)
 feeder/<id>/meal/<n>/portions  2                   cmd, NOT retained, meal n's portions; 0 switches it off
@@ -1991,7 +1990,7 @@ points at the section with the detail.
 | Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
 | **OTA updates** — a possible enhancement, not decided. Today every firmware change means a USB cable, which once a unit is in its feeder means taking it out | not designed. Wants a partition table with two app slots, and it must keep `nvs` at 0x9000 or every unit loses its record; an upload behind at least the admin page's auth, since it is code execution for anyone on the LAN; and a way back from an image that boots but never reaches the broker | *Flash* |
 | `script.cat_feeder_copy_schedule`: one feeder's meals to others — every feeder, or by device, area, floor or label — over each target's `feeder/<id>/schedule` | written and installed 2026-10-01, replacing `send_schedule` and its hard-coded `meals`. Its templates rendered against a copy of the Pi's registries with faked states, every refusal included, then verified 2026-10-01 on the Pi: `9a6ecc`'s meals copied to `99177c`, whose `Meal 2 time` moved 19:00 → 20:00 from its own echo; and a copy to itself only refused, with nothing published. **Not yet run to a label, an area or a floor** | point 6 |
-| **Remove `feeder/all/schedule` from the firmware** — `TOPIC_ALL_SCHEDULE` in `mqtt.rs`, and every doc, skill and transcript naming it | decided 2026-10-01, **waiting for the next flash** of the units (no OTA). Nothing in the package publishes to it any more, so the order no longer matters once the package on the Pi is updated | point 6 |
+| `feeder/all/schedule` removed from the firmware 2026-10-01 | `9a6ecc` and `99177c` still subscribe to it until their **next flash** (no OTA); unit three ships without it. Harmless meanwhile: nothing publishes to it | point 6 |
 
 **Seen only in host tests, not yet on the hardware**
 
@@ -2645,8 +2644,9 @@ refused), and publishes them to each target's own
 rather than two. Nothing is lost by not broadcasting: unlike `feeder/all/feed`,
 a schedule fires from each unit's own clock at the slot's time, so copies
 arriving milliseconds apart change nothing. `feeder/all/feed` stays. The
-paragraph below is the design this replaces, and stays true of the firmware
-until the topic is removed — see *What is left*.
+paragraph below is the design this replaced. The firmware dropped the topic
+the same day; units flashed before that still accept it until their next
+flash — see *What is left*.
 
 The design it replaced: `feeder/all/schedule`,
 **not retained**, applied by each unit and echoed into its own per-unit retained

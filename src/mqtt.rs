@@ -81,12 +81,6 @@ const PAYLOAD_OFFLINE: &str = "offline";
 /// Broadcast feed. No discovery entity: Home Assistant automations publish here
 /// directly, and it is how three feeders feed at the same instant.
 const TOPIC_ALL_FEED: &str = "feeder/all/feed";
-/// Broadcast schedule: every unit stores it and puts it in force. A command,
-/// **never retained** — see `on_schedule` — and the only way three feeders are
-/// told to eat the same meals. There is deliberately no shared retained
-/// schedule any more: a unit that joins is not handed meals nobody chose for
-/// it, and starts blank.
-const TOPIC_ALL_SCHEDULE: &str = "feeder/all/schedule";
 const TOPIC_TIME: &str = "feeder/time";
 
 /// Asks Home Assistant to publish `feeder/time` now. Carries this unit's id,
@@ -356,7 +350,6 @@ async fn session(
         TOPIC_ALL_FEED,
         topics.paused.as_str(),
         topics.schedule_cmd.as_str(),
-        TOPIC_ALL_SCHEDULE,
         topics.meal_filter.as_str(),
         TOPIC_TIME,
     ] {
@@ -537,7 +530,7 @@ fn on_message(
     } else if topic_name == TOPIC_TIME {
         on_time(payload, retained, bus);
         false
-    } else if topic_name == topics.schedule_cmd.as_str() || topic_name == TOPIC_ALL_SCHEDULE {
+    } else if topic_name == topics.schedule_cmd.as_str() {
         on_schedule(payload, retained, bus);
         false
     } else if let Some(path) = topic_name.strip_prefix(topics.meal_prefix.as_str()) {

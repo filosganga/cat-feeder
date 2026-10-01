@@ -347,7 +347,7 @@ INFO (12207) - mqtt: feeder/time received, 27 bytes, not handled yet    (+37 ms)
 
 That capture predates three things and is kept for the ordering alone: the
 time topic is handled now, `feeder/schedule` is no longer subscribed at all —
-the unit takes `feeder/<id>/schedule` and `feeder/all/schedule`, and echoes
+the unit takes `feeder/<id>/schedule` (and, until 2026-10-01, `feeder/all/schedule`), and echoes
 what it holds on `feeder/<id>/schedule/state` right after subscribing — and `mqtt:
 asked for the time` follows `mqtt: subscribed` — see the Zero capture below for what a current one looks
 like.

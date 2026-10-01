@@ -76,6 +76,6 @@ detent_ms = 1900
 
 # portion_scale_pct: how much this unit dispenses per click, relative to a
 # notional standard portion. 100 changes nothing; 133 means three portions
-# become four clicks. feeder/all/schedule sends the same portions to every
-# unit, so this is what stops one of them quietly over- or under-feeding.
+# become four clicks. A schedule copied to every unit carries the same portions
+# to each, so this is what stops one of them quietly over- or under-feeding.
 portion_scale_pct = 100
