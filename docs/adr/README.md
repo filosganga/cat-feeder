@@ -23,4 +23,5 @@ One file per decision that is hard to reverse, surprising without context, and t
 - [The broker is configured as an IPv4 address](0019-the-broker-is-an-ipv4-address.md)
 - [No sound](0020-no-sound.md)
 - [Headless is a build flag, not a probe](0021-headless-is-a-build-flag.md)
+- [OTA is two app slots, pushed to the admin page, confirmed by the broker](0022-ota-is-two-slots-pushed-to-the-admin-page.md)
 - [The unit is the authority for pause](0023-the-unit-is-the-authority-for-pause.md)
