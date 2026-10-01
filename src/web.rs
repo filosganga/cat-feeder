@@ -36,6 +36,7 @@ use crate::admin::{
     clock_form, feed_from_form, network_from_form, render_page, render_restarting, same_origin,
     schedule_from_form,
 };
+use crate::events::{Event, Source};
 use crate::http;
 use crate::provisioning::{Head, Method, PAGE_LEN};
 use crate::schedule::ScheduleCommand;
@@ -175,6 +176,10 @@ async fn handle(
                 Ok(portions) => match bus.feed.try_send(portions) {
                     Ok(()) => {
                         info!("web: feed {portions}");
+                        bus.report(Event::Manual {
+                            source: Source::Web,
+                            portions,
+                        });
                         let _ = core::fmt::Write::write_fmt(
                             &mut text,
                             format_args!("Feeding {portions}."),

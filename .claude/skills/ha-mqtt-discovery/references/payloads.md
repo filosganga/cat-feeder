@@ -4,6 +4,7 @@
 - [Button: feed](#button-feed)
 - [Switch: paused](#switch-paused)
 - [Binary sensor: jammed](#binary-sensor-jammed)
+- [Event: feeding](#event-feeding)
 - [State payload](#state-payload)
 - [Home Assistant side](#home-assistant-side)
 - [Testing without hardware](#testing-without-hardware)
@@ -141,6 +142,42 @@ Do not write `"value_template": "{{ value_json.jammed }}"`. A JSON `true`
 reaches the template engine as a Python `True` and renders as the string
 `True`, which equals neither the default `payload_on` (`ON`) nor `payload_off`
 (`OFF`), so the entity sticks at unknown.
+
+## Event: feeding
+
+Topic: `homeassistant/event/feeder_<id>/feeding/config`, retained. Rendered
+from `events::EVENT_TYPES`, so the list cannot drift from what is sent.
+
+```json
+{
+  "name": "Feeding",
+  "unique_id": "feeder_<id>_feeding",
+  "state_topic": "feeder/<id>/event",
+  "event_types": ["scheduled", "skipped", "manual", "jammed"],
+  "availability_topic": "feeder/<id>/availability",
+  "device": { "...": "the shared block" }
+}
+```
+
+No `value_template`: the payload on `feeder/<id>/event` is already the event
+platform's shape, an `event_type` plus attributes. Published **not retained**,
+so a reconnect never replays an old meal into the log. Home Assistant drops
+an event whose `event_type` is not in the config's list.
+
+```json
+{"event_type":"scheduled","portions":2,"slot":"08:00","at":"2026-10-01T08:00:00+02:00"}
+{"event_type":"skipped","slot":"19:00","reason":"paused","at":"..."}
+{"event_type":"skipped","slot":"19:00","reason":"late","at":"..."}
+{"event_type":"manual","portions":1,"source":"knob","at":"..."}
+{"event_type":"manual","portions":3,"source":"web","at":"..."}
+{"event_type":"jammed","at":"..."}
+```
+
+`at` is the unit's trusted time when it happened, and is left out when it has
+none. An event raised while the broker is down waits in a queue of eight and
+arrives late, stamped by Home Assistant with its arrival; `at` is the real
+time. A feed sent *from* Home Assistant raises no event — Activity already
+has the button press. `src/events.rs` is the source of truth.
 
 ## Meal n: time and portions
 

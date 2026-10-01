@@ -24,7 +24,7 @@ use core::net::Ipv4Addr;
 use core::num::NonZero;
 use core::str::FromStr as _;
 
-use embassy_futures::select::{Either4, select4};
+use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
@@ -109,6 +109,8 @@ type FeederClient<'c, N> = Client<'c, N, AllocBuffer, 8, 2, 2, 2>;
 struct Topics {
     availability: String<TOPIC_LEN>,
     state: String<TOPIC_LEN>,
+    /// `feeder/<id>/event`: not retained, what the `Feeding` entity reads.
+    event: String<TOPIC_LEN>,
     feed: String<TOPIC_LEN>,
     paused: String<TOPIC_LEN>,
     /// `feeder/<id>/schedule`: a schedule for this unit alone.
@@ -131,6 +133,9 @@ impl Topics {
         let mut state = String::new();
         let _ = write!(state, "feeder/{id}/state");
 
+        let mut event = String::new();
+        let _ = write!(event, "feeder/{id}/event");
+
         let mut feed = String::new();
         let _ = write!(feed, "feeder/{id}/feed");
 
@@ -152,6 +157,7 @@ impl Topics {
         Self {
             availability,
             state,
+            event,
             feed,
             paused,
             schedule_cmd,
@@ -391,12 +397,13 @@ async fn session(
         // to completion with nothing racing it.
         //
         // `Signal::wait` is cancel-safe as well: it only takes the value when
-        // it resolves, so losing the race to a header leaves it pending.
+        // it resolves, so losing the race to a header leaves it pending. So is
+        // `Channel::receive`, which takes an event only when it returns one.
         let next = select4(
             client.poll_header(),
             Timer::at(next_state),
             bus.pause_request.wait(),
-            bus.schedule_changed.wait(),
+            select(bus.schedule_changed.wait(), bus.events.receive()),
         )
         .await;
 
@@ -429,10 +436,22 @@ async fn session(
                 }
             }
 
-            Either4::Fourth(()) => {
+            Either4::Fourth(Either::First(())) => {
                 publish_schedule(&mut client, topics, bus).await?;
                 // `meals` in the state payload changed too.
                 next_state = Instant::now();
+            }
+
+            // Not retained: an event is something that happened once, and a
+            // retained one would be replayed into the log on every reconnect.
+            //
+            // Taken off the queue before the publish, so a publish that fails
+            // loses this one event; the session then ends and reconnects, and
+            // the rest of the queue waits for it.
+            Either4::Fourth(Either::Second((event, at))) => {
+                let payload = event.to_json(at);
+                publish(&mut client, &topics.event, payload.as_bytes(), false).await?;
+                info!("mqtt: event {}", event.event_type());
             }
 
             Either4::Third(paused) => {

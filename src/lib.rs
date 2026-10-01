@@ -31,6 +31,7 @@ pub mod discovery;
 pub mod display;
 pub mod ds3231;
 pub mod encoder;
+pub mod events;
 pub mod feeder;
 pub mod indicator;
 pub mod menu;

@@ -13,6 +13,7 @@
 //! | Feed | `button` | | `feeder/<id>/feed` |
 //! | Paused | `switch` | `feeder/<id>/state` | `feeder/<id>/paused`, retained |
 //! | Jammed | `binary_sensor` | `feeder/<id>/state` | |
+//! | Feeding | `event` | `feeder/<id>/event` | |
 //! | Meal *n* time, ×8 | `time` | `feeder/<id>/schedule/state` | `feeder/<id>/meal/<n>/time` |
 //! | Meal *n* portions, ×8 | `number` | `feeder/<id>/schedule/state` | `feeder/<id>/meal/<n>/portions` |
 //!
@@ -32,6 +33,7 @@ use core::fmt::Write as _;
 
 use heapless::String;
 
+use crate::events::EVENT_TYPES;
 use crate::portions::MAX_CLICKS;
 use crate::schedule::MAX_SLOTS;
 
@@ -49,6 +51,10 @@ pub enum Entity {
     Feed,
     Paused,
     Jammed,
+    /// What the unit did by itself — a meal served or skipped, a feed at the
+    /// knob or the admin page, a jam — as lines in Home Assistant's Activity.
+    /// The payloads are `events.rs`'s.
+    Feeding,
     /// Zero-based slot. Shown and addressed one-based.
     MealTime(u8),
     MealPortions(u8),
@@ -68,9 +74,14 @@ impl From<core::fmt::Error> for TooLong {
 /// Every entity, in the order they are announced.
 pub fn entities() -> impl Iterator<Item = Entity> {
     let meals = (0..MAX_SLOTS as u8).flat_map(|i| [Entity::MealTime(i), Entity::MealPortions(i)]);
-    [Entity::Feed, Entity::Paused, Entity::Jammed]
-        .into_iter()
-        .chain(meals)
+    [
+        Entity::Feed,
+        Entity::Paused,
+        Entity::Jammed,
+        Entity::Feeding,
+    ]
+    .into_iter()
+    .chain(meals)
 }
 
 /// Repeated verbatim in every payload, closing it. `identifiers` is what
@@ -109,6 +120,7 @@ impl Entity {
             Self::Feed => "button",
             Self::Paused => "switch",
             Self::Jammed => "binary_sensor",
+            Self::Feeding => "event",
             Self::MealTime(_) => "time",
             Self::MealPortions(_) => "number",
         }
@@ -131,10 +143,11 @@ impl Entity {
 
         let component = self.component();
         match self {
-            Self::Feed | Self::Paused | Self::Jammed => {
+            Self::Feed | Self::Paused | Self::Jammed | Self::Feeding => {
                 let object = match self {
                     Self::Feed => "feed",
                     Self::Paused => "paused",
+                    Self::Feeding => "feeding",
                     _ => "jammed",
                 };
                 write!(
@@ -203,6 +216,28 @@ impl Entity {
                 ),
                 id = id,
             )?,
+
+            // No `value_template`: the payload is already the event platform's
+            // shape, `event_type` plus attributes. Published not retained, so
+            // a reconnect never replays an old meal into the log.
+            Self::Feeding => {
+                write!(
+                    payload,
+                    concat!(
+                        r#"{{"name":"Feeding","unique_id":"feeder_{id}_feeding","#,
+                        r#""state_topic":"feeder/{id}/event","event_types":["#,
+                    ),
+                    id = id,
+                )?;
+                for (i, event_type) in EVENT_TYPES.iter().enumerate() {
+                    let comma = if i == 0 { "" } else { "," };
+                    write!(payload, r#"{comma}"{event_type}""#)?;
+                }
+                write!(
+                    payload,
+                    r#"],"availability_topic":"feeder/{id}/availability","#
+                )?;
+            }
 
             // Home Assistant sends `HH:MM:SS`; the unit drops the seconds.
             Self::MealTime(i) => write!(
@@ -275,7 +310,27 @@ mod tests {
 
     #[test]
     fn every_config_fits_and_is_json() {
-        assert_eq!(rendered().len(), 3 + 2 * MAX_SLOTS);
+        assert_eq!(rendered().len(), 4 + 2 * MAX_SLOTS);
+    }
+
+    /// Home Assistant drops an event whose type the config did not announce,
+    /// so the list must be exactly the one `events.rs` sends from.
+    #[test]
+    fn the_feeding_entity_announces_every_event_type() {
+        let all = rendered();
+        let (_, topic, json) = all
+            .iter()
+            .find(|(e, _, _)| *e == Entity::Feeding)
+            .expect("announced");
+        assert_eq!(topic, "homeassistant/event/feeder_99177c/feeding/config");
+        assert_eq!(json["state_topic"], "feeder/99177c/event");
+        let announced: Vec<_> = json["event_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(announced, EVENT_TYPES);
     }
 
     #[test]

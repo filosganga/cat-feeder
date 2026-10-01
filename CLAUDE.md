@@ -1141,6 +1141,7 @@ feeder/<id>/meal/<n>/portions  2                   cmd, NOT retained, meal n's p
 feeder/time                2026-09-14T08:00:00+02:00             retained, from HA, every minute
 feeder/time/request        <id>                    cmd to HA, NOT retained
 feeder/<id>/state          {"feeding":bool,"jammed":bool,"paused":bool,"meals":n,"last_fed":"..."}
+feeder/<id>/event          {"event_type":"scheduled","portions":2,"slot":"08:00","at":"..."}   NOT retained
 ```
 
 Three different limits apply, and they are easy to confuse because two of them
@@ -1187,13 +1188,22 @@ the offset. That is why the offset is kept and printed at startup
 (`clock: live time 2026-09-18T00:07:18+02:00, schedule armed`) rather than
 dropped: it turns a silent hour-long error into the first line on the console.
 
+**What the unit did reaches Home Assistant's Activity** through the `event`
+entity, *Feeding*, on `feeder/<id>/event`: `scheduled` when a slot is queued,
+`skipped` when one passes paused or too late, `manual` for a feed at the knob
+or the admin page, `jammed`. Feeds sent *from* Home Assistant raise nothing,
+because Activity already has the press. Each carries the unit's trusted time
+as `at`, since one raised with the broker down is queued and arrives late.
+`events.rs` has the table.
+
 `last_fed` is reported the same way, local with the published offset, and
 covers scheduled feeds only — a manual feed reaches the feeder task, which has
 no clock, and Home Assistant already records button presses in its own history.
 
 Home Assistant MQTT discovery: on connect, publish **retained** config to
 `homeassistant/<component>/feeder_<id>/<object>/config` for: a `button`
-(feed), a `switch` (paused), a `binary_sensor` (jammed), and eight `time` plus
+(feed), a `switch` (paused), a `binary_sensor` (jammed), an `event` (feeding),
+and eight `time` plus
 eight `number` entities, *Meal n time* and *Meal n portions* — the schedule
 editor, v2's point 4. All share the same `device` block so HA groups them into
 one device. Then publish `online`. The payloads are rendered by `discovery.rs`,
@@ -1397,6 +1407,8 @@ src/
   led.rs          the WS2812 itself, over RMT. Colours in, bits out
   discovery.rs    pure logic: the Home Assistant entities and their retained
                   discovery configs, JSON-checked on the host
+  events.rs       pure logic: what goes on feeder/<id>/event for Activity —
+                  meals served or skipped, feeds at the unit, jams
   tz.rs           pure logic: a timezone's POSIX rule, the offset at an
                   instant, and the stored zone
   display.rs      pure logic: the six lines the screen shows — home, info

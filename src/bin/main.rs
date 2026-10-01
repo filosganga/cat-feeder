@@ -23,6 +23,7 @@ use cat_feeder::config::{AP_SECRET, Config, DEVICE_ID_LEN, device_id};
 use cat_feeder::display::{self, Fed, Net, Screen, SetupInfo, UnitInfo, View};
 use cat_feeder::ds3231::Reading as RtcReading;
 use cat_feeder::encoder::Decoder;
+use cat_feeder::events::{Event, Source};
 use cat_feeder::feeder::{Action, ClickOutcome, Feeder, Timings};
 use cat_feeder::i2c::Bus as I2cBus;
 use cat_feeder::indicator::{Indicator, Rgb, Status};
@@ -822,7 +823,13 @@ fn on_menu(outcome: MenuOutcome) {
         MenuOutcome::Woke => info!("menu: woke the screen"),
         MenuOutcome::Moved(mode) => log_moved(mode),
         MenuOutcome::Feed => match BUS.feed.try_send(1) {
-            Ok(()) => info!("menu: feed 1"),
+            Ok(()) => {
+                info!("menu: feed 1");
+                BUS.report(Event::Manual {
+                    source: Source::Knob,
+                    portions: 1,
+                });
+            }
             Err(_) => warn!("menu: feed queue full, portion dropped"),
         },
         MenuOutcome::TogglePause => toggle_pause(),
@@ -1286,6 +1293,7 @@ async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
                         // to claim and not the `jam_timeout_ms` above, which is
                         // whatever was *left* when the wait started.
                         log_jam(cfg.timings.jam_timeout_ms);
+                        BUS.report(Event::Jammed);
                     }
                 }
             }
@@ -1646,11 +1654,20 @@ fn resolve(scheduler: &mut Scheduler, now: Wall) {
                 Ok(()) => {
                     BUS.last_fed.set(now, portions);
                     log_due(minute_of_day, portions);
+                    BUS.report(Event::Scheduled {
+                        minute_of_day,
+                        portions,
+                    });
                 }
                 Err(_) => warn!("schedule: feed queue full, slot dropped"),
             }
         }
-        Due::Consumed { minute_of_day, why } => log_skipped(minute_of_day, why),
+        Due::Consumed { minute_of_day, why } => {
+            log_skipped(minute_of_day, why);
+            if let Some(event) = Event::skipped(minute_of_day, why) {
+                BUS.report(event);
+            }
+        }
     }
 }
 

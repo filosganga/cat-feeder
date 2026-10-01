@@ -1,6 +1,6 @@
 ---
 name: ha-mqtt-discovery
-description: Supplies this project's MQTT topic contract and the exact Home Assistant discovery payloads for the feed button, the paused switch, the jammed binary sensor and the Meal n time/portions entities, so they are copied rather than reconstructed. Use when writing or reviewing mqtt.rs, changing a topic or payload, adding an entity, debugging an entity that does not appear in Home Assistant or shows as unavailable, or writing the Home Assistant side that publishes the time and sends the schedule.
+description: Supplies this project's MQTT topic contract and the exact Home Assistant discovery payloads for the feed button, the paused switch, the jammed binary sensor, the Feeding event and the Meal n time/portions entities, so they are copied rather than reconstructed. Use when writing or reviewing mqtt.rs, changing a topic or payload, adding an entity, debugging an entity that does not appear in Home Assistant or shows as unavailable, or writing the Home Assistant side that publishes the time and sends the schedule.
 ---
 
 # Home Assistant MQTT discovery for cat-feeder
@@ -29,6 +29,7 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 | `feeder/time` | `"2026-09-14T08:00:00+02:00"` | HA → all, each minute | yes |
 | `feeder/time/request` | `<id>` | device → HA | **no** |
 | `feeder/<id>/state` | `{"feeding":bool,"jammed":bool,"paused":bool,"meals":n,"last_fed":"..."}` | device → | yes |
+| `feeder/<id>/event` | `{"event_type":"scheduled","portions":2,"slot":"08:00","at":"..."}` | device → | **no** |
 
 The unit owns its schedule and keeps it in flash (its own sector, `FDS1`), and
 keeps its time in a DS3231. What stays broker state is the time — retained so
@@ -141,6 +142,7 @@ Topics used:
 | `button` | `homeassistant/button/feeder_<id>/feed/config` | feed one portion |
 | `switch` | `homeassistant/switch/feeder_<id>/paused/config` | pause the schedule |
 | `binary_sensor` | `homeassistant/binary_sensor/feeder_<id>/jammed/config` | jam alarm |
+| `event` | `homeassistant/event/feeder_<id>/feeding/config` | meals served or skipped, feeds at the unit, jams — Activity |
 | `time` ×8 | `homeassistant/time/feeder_<id>/meal_<n>_time/config` | meal *n*'s time |
 | `number` ×8 | `homeassistant/number/feeder_<id>/meal_<n>_portions/config` | meal *n*'s portions, 0–16 |
 

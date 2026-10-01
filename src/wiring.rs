@@ -7,6 +7,10 @@
 //! ```text
 //!   mqtt      --feed-->  feeder          (portion requests)
 //!   schedule  --feed-->  feeder
+//!   ui, web   --feed-->  feeder
+//!   schedule  --events-> mqtt            (a meal served or skipped)
+//!   ui, web   --events-> mqtt            (a feed at the unit)
+//!   feeder    --events-> mqtt            (a jam)
 //!   feeder    --status-> mqtt            (feeding, jammed)
 //!   mqtt      --paused-> schedule
 //!   mqtt      --time---> schedule
@@ -35,7 +39,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::{Channel, Sender};
 use embassy_sync::signal::Signal;
 
+use log::warn;
+
 use crate::calibrate::{Failure, Measurement, Progress};
+use crate::events::Event;
 use crate::indicator::Health;
 use crate::menu::{Calibration, Mode};
 use crate::schedule::{Schedule, ScheduleCommand, Slot, TimeSource, Wall};
@@ -50,6 +57,11 @@ use crate::tz::Zone;
 /// Bounded on purpose: producers use `try_send`, so a stuck automation can
 /// never block the MQTT or schedule task waiting for room.
 pub const FEED_DEPTH: usize = 8;
+
+/// How many events can wait for the broker. Eight covers a day's meals and a
+/// jam through an outage of several hours; past that the newest are dropped,
+/// which costs a line in Home Assistant's Activity and nothing else.
+pub const EVENT_DEPTH: usize = 8;
 
 /// Portion requests, from every producer to the one task that owns the motor.
 pub type FeedChannel = Channel<CriticalSectionRawMutex, u8, FEED_DEPTH>;
@@ -375,8 +387,17 @@ impl Held<Schedule> {
 
 /// Everything the tasks share.
 pub struct Bus {
-    /// Portion requests. Written by `mqtt` and `schedule`, drained by `feeder`.
+    /// Portion requests. Written by `mqtt`, `schedule`, `ui` and `web`,
+    /// drained by `feeder`.
     pub feed: FeedChannel,
+    /// Things worth a line in Home Assistant's Activity, each with the trusted
+    /// time it happened at, if any. Written through [`Bus::report`] by
+    /// `schedule`, `ui`, `web` and `feeder`; drained by `mqtt` onto
+    /// `feeder/<id>/event`.
+    ///
+    /// A queue, not a [`Signal`]: two meals or a meal and its jam are two
+    /// lines, both wanted. It keeps them while the broker is unreachable.
+    pub events: Channel<CriticalSectionRawMutex, (Event, Option<Wall>), EVENT_DEPTH>,
     /// Written by `feeder`, read by `mqtt`.
     pub status: FeederStatus,
     /// Written by `mqtt` from the retained `paused` topic, read by `schedule`.
@@ -487,9 +508,19 @@ impl Default for Bus {
 }
 
 impl Bus {
+    /// Queues `event` for Home Assistant, stamped with the trusted time now.
+    /// Never blocks: a full queue drops it with a warning, because no feed or
+    /// jam may wait on the broker.
+    pub fn report(&self, event: Event) {
+        if self.events.try_send((event, self.now.get())).is_err() {
+            warn!("events: queue full, {} dropped", event.event_type());
+        }
+    }
+
     pub const fn new() -> Self {
         Self {
             feed: Channel::new(),
+            events: Channel::new(),
             status: FeederStatus::new(),
             paused: AtomicBool::new(false),
             time: Signal::new(),
