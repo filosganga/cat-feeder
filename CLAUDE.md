@@ -328,6 +328,15 @@ GPIO2 ↔ 5 V line is for. A 100 nF from GPIO2 to ground was considered and
 switch wire picks up in the motor's cable. Fit it only if spurious clicks ever
 appear. Mark pin 1 on the housing and the board either way.
 
+**Before soldering, `./dev/pcb-check.sh`.** It reads `pcb.diy` and fails on a
+header whose pin names disagree with the part's silkscreen (`dev/pinouts.toml`),
+a supply joined to ground, a label on the wrong pin, or a pin left unconnected
+that is not listed as meant to be — and ranks every pair of neighbouring holes
+on different nets, which is where the care below goes. Run against the first
+draft of this layout, it fails on both of that draft's real faults: the
+driver's reversed supply and the switch line one jumper short of GPIO2. The
+`pcb-review` skill says how to read it and what it cannot see.
+
 **Before first power, with the continuity beeper**, modules plugged in, holes
 as in the drawing:
 
@@ -1326,6 +1335,8 @@ firmware change, which is why `led.rs` sends 24 bits and not 48.
   they pin the right port and avoid `--no-reset`, which halts the application
   so only the bootloader prints.
 - `cargo run` = build + `espflash` + interactive monitor, for driving by hand.
+- `./dev/pcb-check.sh` = check `pcb.diy` after every edit and before soldering;
+  see *The perfboard*.
 - `espflash board-info` verifies the board/cable.
 - Tests of pure logic (portion accounting, schedule evaluation, double-feed
   guard) live behind `#[cfg(test)]` in modules that do **not** touch esp-hal,

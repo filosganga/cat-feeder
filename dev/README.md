@@ -283,6 +283,7 @@ docker compose down -v                  # stop and wipe every retained message
 
 ./dev/ap-password.sh 9a6ecc             # a unit's setup/admin password
 ./dev/label.sh 9a6ecc 99177c            # printable labels with a join-Wi-Fi QR
+./dev/pcb-check.sh                      # check pcb.diy before soldering; see the pcb-review skill
 ```
 
 Publishing by hand, standing in for Home Assistant:

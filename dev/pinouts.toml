@@ -1,0 +1,57 @@
+# The real pin order of every pin row on the perfboard, read off each part's
+# silkscreen — not off the drawing. `dev/pcb-check.sh` compares each header in
+# pcb.diy against its entry here.
+#
+# This file exists because a drawing can be perfectly self-consistent and
+# still wrong: the first draft of the double-sided layout named the DRV8833's
+# middle pins `GND, Vcc` where the module reads `VCC, GND`. Every trace went
+# where the names said, the netlist was flawless, and the driver's supply was
+# reversed on first power. Only the part itself knows its order, so it is
+# written down here, once, from the part.
+#
+# Keyed by the header's `name` in DIY Layout Creator. `pins` runs in the same
+# direction as the header's pins in the drawing; a row that matches backwards
+# is accepted, since the module may sit either way round, but every row of one
+# `module` must match in the same direction. Names compare case-insensitively.
+# Copy a new part's row from its silkscreen, never from the drawing.
+#
+# `unused` is the other half, and the one part of this file that is about the
+# design rather than the part: the pins this layout leaves unconnected on
+# purpose. Any other pin connected to nothing fails the check, which is how a
+# signal that never arrives — a switch line one jumper short of GPIO2 — is
+# caught before power rather than on the console.
+
+["ESP32C6-L"]
+module = "ESP32-C6-Zero"
+pins = ["5V", "GND", "3V3", "GP0", "GP1", "GP2", "GP3", "GP4", "GP5"]
+# GP3-GP5 are the knob's, and this is the headless build.
+unused = ["GP3", "GP4", "GP5"]
+
+["ESP32C6-R"]
+module = "ESP32-C6-Zero"
+pins = ["TX", "RX", "GP14", "GP15", "GP18", "GP19", "GP20", "GP21", "GP22"]
+unused = ["TX", "RX", "GP15", "GP20", "GP21", "GP22"]
+
+["DRV8833-L"]
+module = "DRV8833"
+pins = ["IN1", "IN2", "VCC", "GND", "IN3", "IN4"]
+# Channel A drives the motor; channel B is spare.
+unused = ["IN3", "IN4"]
+
+["DRV8833-R"]
+module = "DRV8833"
+pins = ["ULT", "OUT4", "OUT3", "OUT2", "OUT1", "EEP"]
+unused = ["OUT4", "OUT3", "EEP"]
+
+# The 4-pin passthrough side. The 6-pin side reads 32K, SQW, SCL, SDA, VCC,
+# GND, mirrored against this one — fitting the wrong side puts every pin on
+# its mirror.
+["DS3231"]
+module = "DS3231"
+pins = ["SCL", "SDA", "VCC", "GND"]
+
+# Not a module: the third feeder's ribbon, as crimped. The other two feeders'
+# cables arrive in another order and are re-crimped to this one.
+["In"]
+module = "feeder cable"
+pins = ["GND", "VCC", "VBATT", "MOT1", "MOT2", "SWITCH"]

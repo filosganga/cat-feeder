@@ -23,6 +23,8 @@
       "Bash(./dev/watch.sh *)",
       "Bash(./dev/capture.sh *)",
       "Bash(./dev/ap-password.sh *)",
+      "Bash(./dev/pcb-check.sh)",
+      "Bash(./dev/pcb-check.sh *)",
       "Bash(python3 -)",
       "Edit(/.claude/skills//**)",
       "Bash(git add *)",
