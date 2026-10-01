@@ -255,6 +255,15 @@ straight in. The matching pair's cables are in another order (5 V, Vbatt, GND,
 switch, motor 1, motor 2) and need re-crimping to this one before either goes
 on this layout.
 
+**Unit three, the clone of `99177c` for a matching-pair feeder, uses a JST XH
+connector** (decided 2026-10-01): an XH header in `F1 … A1` and the feeder's
+cable crimped into an XH housing, in the order in the table below — the
+re-crimp above, done once. XH is 2.5 mm pitch, close enough to the board's
+2.54 mm to sit in a row (about 0.2 mm over six pins). **JST PH is 2.0 mm and
+does not fit.** XH is keyed, which takes away the reversed plug in *Two guards
+on the switch line*; a housing crimped in the wrong order is not something a
+key can catch, so beep the cable end to end before plugging it in.
+
 | Pin | Hole | Signal | Goes to |
 |---|---|---|---|
 | 1 | F1 | GND | C1 −, the ground star point |
@@ -316,7 +325,8 @@ rail. The header's ground reaches `−` before anything leaves it. Then:
   and 3V3 as an ordinary rail. A shared trunk is harmless at tens of
   milliamps.
 
-**Two guards on the switch line, one fitted.** The header is not keyed, the
+**Two guards on the switch line, one fitted.** The header is not keyed (unit
+three's JST XH is — see above — and R1 stays fitted there too), the
 switch pin sits beside motor 2, and the switch's run along row 17 passes the
 5 V run on row 18. A plug reversed or a position off, or a blob between those
 rows, would put 5 V on GPIO2. **R1, 1 kΩ in series** (J17–M17), limits that to
