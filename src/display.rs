@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn every_failure_says_why_and_fits() {
         for (failure, line) in [
-            (Failure::Jammed, "no click in 10s"),
+            (Failure::Jammed, "no click in 15s"),
             (
                 Failure::Inconsistent {
                     fastest_ms: 2_000,
@@ -1312,7 +1312,7 @@ mod tests {
             ),
             (Failure::TooFast { slowest_ms: 50 }, "too fast: bouncing?"),
             (
-                Failure::TooSlow { slowest_ms: 5_200 },
+                Failure::TooSlow { slowest_ms: 10_200 },
                 "too slow: stalling?",
             ),
         ] {
@@ -1328,11 +1328,11 @@ mod tests {
     #[test]
     fn the_widest_calibration_numbers_fit() {
         let screen = render(&in_mode(Mode::Calibrated(Ok(Measurement {
-            detent_ms: 5_000,
-            fastest_ms: 4_000,
-            slowest_ms: 4_999,
+            detent_ms: crate::provisioning::MAX_DETENT_MS,
+            fastest_ms: 8_000,
+            slowest_ms: 9_999,
         }))));
-        assert_eq!(screen.lines[2], "gaps 4000-4999ms");
+        assert_eq!(screen.lines[2], "gaps 8000-9999ms");
         assert_fits(&screen);
     }
 
@@ -1690,7 +1690,7 @@ mod tests {
                     Mode::ConfirmReset { erase: true },
                     Mode::Editing {
                         field: Field::Detent,
-                        value: 5_000,
+                        value: crate::provisioning::MAX_DETENT_MS,
                     },
                 ])
             {

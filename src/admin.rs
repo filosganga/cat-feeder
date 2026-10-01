@@ -383,7 +383,7 @@ pub fn calibration_from_form(
         detent_ms: read(
             "detent_ms",
             Field::Detent,
-            "The detent interval must be 200 to 5000 ms, in steps of 10.",
+            "The detent interval must be 200 to 10000 ms, in steps of 10.",
         )?,
         portion_scale_pct: read(
             "portion_scale",
@@ -1116,7 +1116,7 @@ mod tests {
     fn calibration_is_held_to_the_knobs_ranges_and_steps() {
         for bad in [
             "detent_ms=190",
-            "detent_ms=5010",
+            "detent_ms=10010",
             "detent_ms=2145",
             "detent_ms=",
             "portion_scale=20",

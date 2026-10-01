@@ -36,7 +36,7 @@
 
 use crate::button::{Button, Event};
 use crate::calibrate::{Failure, Measurement};
-use crate::provisioning::MIN_DETENT_MS;
+use crate::provisioning::{MAX_DETENT_MS, MIN_DETENT_MS};
 use crate::schedule::{Date, Wall};
 
 /// The pages a locked unit steps through, in order.
@@ -126,7 +126,7 @@ impl Field {
     pub const fn range(self) -> (u16, u16, u16) {
         match self {
             Field::PortionScale => (25, 300, 5),
-            Field::Detent => (MIN_DETENT_MS, 5_000, 10),
+            Field::Detent => (MIN_DETENT_MS, MAX_DETENT_MS, 10),
         }
     }
 

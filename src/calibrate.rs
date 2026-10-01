@@ -29,24 +29,22 @@
 
 use heapless::Vec;
 
-use crate::provisioning::MIN_DETENT_MS;
+use crate::provisioning::{MAX_DETENT_MS, MIN_DETENT_MS};
 
 /// Clicks in a run, and so portions dispensed by it. Five gives four clean
-/// gaps in about ten seconds.
+/// gaps in about ten seconds on a 2 s mechanism, twenty-five on the slow one.
 pub const DETENTS: usize = 5;
 
 /// How long a run waits for any click before calling the mechanism stuck.
 ///
 /// Fixed rather than taken from the current calibration, which is the very
-/// figure being measured and may be badly wrong.
-pub const JAM_MS: u64 = 10_000;
+/// figure being measured and may be badly wrong. Half as long again as the
+/// slowest detent that can be stored, so a run on a mechanism that slow
+/// reports it as [`Failure::TooSlow`] rather than as a jam.
+pub const JAM_MS: u64 = MAX_DETENT_MS as u64 * 3 / 2;
 
 /// The slowest gap may be at most this percentage of the fastest.
 pub const MAX_SPREAD_PCT: u64 = 125;
-
-/// The largest detent the knob can store; a measurement above it is refused
-/// rather than clamped, because clamping would save a figure nobody measured.
-pub const MAX_DETENT_MS: u64 = 5_000;
 
 /// What a good run measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +55,9 @@ pub struct Measurement {
     pub slowest_ms: u64,
 }
 
-/// Why a run cannot be saved.
+/// Why a run cannot be saved. A measurement above [`MAX_DETENT_MS`] is
+/// refused rather than clamped, because clamping would save a figure nobody
+/// measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     /// No click within [`JAM_MS`].
@@ -128,7 +128,7 @@ impl Run {
         }
 
         let detent_ms = slowest_ms.div_ceil(10) * 10;
-        if detent_ms > MAX_DETENT_MS {
+        if detent_ms > MAX_DETENT_MS as u64 {
             return Err(Failure::TooSlow { slowest_ms });
         }
 
@@ -231,9 +231,22 @@ mod tests {
     #[test]
     fn a_nearly_stalled_mechanism_is_refused_not_clamped() {
         assert!(matches!(
-            spaced(&[5_200; 4]).result(),
+            spaced(&[MAX_DETENT_MS as u64 + 200; 4]).result(),
             Err(Failure::TooSlow { .. })
         ));
+    }
+
+    /// The third feeder's mechanism, as measured on USB.
+    #[test]
+    fn the_slow_mechanism_is_stored() {
+        assert_eq!(spaced(&[5_297; 4]).result().map(|m| m.detent_ms), Ok(5_300));
+    }
+
+    /// A run on the slowest storable mechanism must see its clicks before it
+    /// gives up waiting for them.
+    #[test]
+    fn the_run_waits_longer_than_the_slowest_detent() {
+        assert!(JAM_MS > MAX_DETENT_MS as u64);
     }
 
     /// The limits here are the knob's: whatever a run saves, the detent editor
@@ -242,7 +255,7 @@ mod tests {
     fn the_limits_agree_with_the_detent_editor() {
         let (min, max, _) = crate::menu::Field::Detent.range();
         assert_eq!(MIN_DETENT_MS, min);
-        assert_eq!(MAX_DETENT_MS, max as u64);
+        assert_eq!(MAX_DETENT_MS, max);
     }
 
     #[test]

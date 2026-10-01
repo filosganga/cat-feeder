@@ -77,8 +77,24 @@ on USB.
 ### The third feeder is a different brand
 
 Two of the three units are the same model. The third is a different brand,
-similar-looking but **not yet opened**, and the mechanical figures in the table
-above were measured on the matching pair only.
+similar-looking, and the mechanical figures in the table above were measured on
+the matching pair only.
+
+**Opened 2026-09-30: the same mechanism with cheaper parts.** Its hub sensor
+is a **microswitch**, clicking **four times per full turn**, so the firmware's
+shape holds unchanged. The motor is an **HC 180-15180, 5 V**, a 180-size motor
+in its own reduction gearbox — a different part from the DRF-W500CA, same
+voltage, same driver. **Neither brand fits a suppression capacitor** across the
+motor terminals, and the matching pair has never shown a spurious click
+without one; add 100 nF there only if this unit does. Its wiring leaves on a
+**flat ribbon cable** instead of separate wires, in a different order — the
+mapping is under the header table in *The perfboard*. **It is
+much slower**: 5297 ms between clicks, measured by *Run calibration* on USB
+with 4.7 V across the motor — so the driver is passing the full rail, and the
+slowness is the mechanism. That was past the old 5000 ms ceiling, which is
+why `provisioning::MAX_DETENT_MS` is now 10 000 and is the one place it lives.
+Still to measure: the interval with a full hopper, and what one click
+dispenses.
 
 Three things matter, and only one of them is a number:
 
@@ -151,9 +167,9 @@ What this changes, and each is worth chasing down where it is written:
   figures — 1 click = 1 portion, and the detent interval — are unaffected:
   they are about the hub, not about where the board lives.
 
-What it does **not** change: the third feeder still has to be opened, still has
-to have its detent interval measured, and still has to be confirmed to have a
-microswitch rather than an optical sensor. Those are in the mechanism.
+What it does **not** change: the third feeder still has to have its detent
+interval measured. That is in the mechanism. (Its switch is confirmed a
+microswitch — see *The third feeder is a different brand*.)
 
 ### Which pins are usable
 
@@ -203,7 +219,11 @@ extra pin and no firmware change. See roadmap step 10.
 second Zero. Verified on it: the beep test (5 V to ground reads megohms — C1
 charging and the chips' leakage, not a short), the headless build joining
 Wi-Fi and the broker and reaching `led: Healthy` in 6.8 s, and one `feed 1`
-running the motor, counting a click through R1 and braking. The DS3231 answers
+running the motor, counting a click through R1 and braking. The same day it
+went **into its feeder, on batteries alone**, reporting to the always-on Home
+Assistant: it reconnected by itself, and a `feed 1` sent through that broker
+turned the real mechanism a quarter and dispensed, with no jam — so the slower
+motor on cells still clicks inside the jam budget. The DS3231 answers
 too, and the schedule arms from it 1.4 s after power-on — after two lessons
 worth keeping for unit three:
 
@@ -235,7 +255,9 @@ left", which is exactly the count that flips when the board is turned over.
 
 **The feeder's cable** arrives on one 6-pin DuPont header, right-angle, on the
 board edge (row 18). The order is the cable's, crimped on the matching pair of
-feeders; the third, different-brand unit is still unopened and may not match.
+feeders. The third, different-brand unit brings its wiring out on a flat
+ribbon cable in another order; adapt it to this pin order rather than the board
+to it, so all three perfboards stay identical.
 
 | Pin | Signal | Goes to |
 |---|---|---|
@@ -249,6 +271,25 @@ feeders; the third, different-brand unit is still unopened and may not match.
 The driver runs on channel B, `In3`/`In4` → `Out3`/`Out4`: GPIO0 → `In3`,
 GPIO1 → `In4`, GPIO14 → `Ult`. The firmware does not care which channel.
 If the motor turns the wrong way, swap pins 5 and 6 — no firmware change.
+
+**The third feeder's ribbon**, as read off it on 2026-09-30, and where each
+conductor goes on the header above. The conductors after the switch are the
+loudspeaker's and are left unconnected.
+
+| Ribbon | Signal | Header pin |
+|---|---|---|
+| 1 | GND | 3 |
+| 2 | Vcc, 5 V from USB | 1 |
+| 3 | Vbatt | 2 |
+| 4 | motor 1 | 5 |
+| 5 | motor 2 | 6 |
+| 6 | switch | 4 |
+| 7… | loudspeaker | — |
+
+The ribbon has one switch conductor, so the switch's other leg must be ground
+for the pull-up to read it. Beep ribbon 6 ↔ 1 while turning the hub before
+crimping: it must close once per detent. A switch returning to Vcc instead
+would put 5 V on GPIO2 through R1.
 
 **The diode-OR.** A dual common-cathode Schottky, **MBRF2045CT** (the part in
 hand is marked `MBRF2045DT`, a vendor variant): anodes on the two supplies,
@@ -424,7 +465,7 @@ Real contact chatter lasts milliseconds; a real detent takes the interval this
 unit was calibrated for. Anything in between cannot occur while the motor
 drives, so the threshold sits in the empty middle rather than close to either
 edge — and `feeder.rs` has tests asserting it stays there for every interval
-from 1 ms to 5 s, rather than only for the mechanism on the bench.
+from 1 ms to 10 s, rather than only for the mechanism on the bench.
 
 ### The feeder task owns the motor
 
@@ -853,7 +894,7 @@ what the working mechanism already implies. Deriving also keeps the property
 that matters — the spacing threshold has to sit in the empty middle between
 contact bounce (milliseconds) and a real detent — automatically, at any speed,
 instead of needing to be re-reasoned per unit. `feeder.rs` pins both halves of
-that over every interval from 1 ms to 5 s: never within 4× the debounce, and
+that over every interval from 1 ms to 10 s: never within 4× the debounce, and
 never so wide that a real detent is rejected.
 
 Both have floors for a hypothetically fast mechanism, expressed against
@@ -976,7 +1017,7 @@ timings from the old record`, and `provision.sh` put it back online.
 
 The menu is `Feed one portion`, `Pause schedule` (or `Resume schedule`),
 `Settings` and `Lock`. **Settings** holds this unit's calibration — `Portion`
-(the portion scale, 25–300% in 5% steps) and `Detent` (200–5000 ms in 10 ms
+(the portion scale, 25–300% in 5% steps) and `Detent` (200–10000 ms in 10 ms
 steps) — then `Factory reset` and `Back`.
 
 - **Saving does not restart.** `Store::update` rewrites the record with
@@ -1941,12 +1982,12 @@ points at the section with the detail.
 | Item | Waiting for |
 |---|---|
 | Detent interval measured with a **full** hopper | a full hopper; then set it on the knob's `Detent` |
-| The third feeder opened: switch confirmed, interval and portion ratio measured | opening it |
-| Unit two, `9a6ecc`, on the perfboard: its meals sent | a schedule |
+| The third feeder (opened, microswitch confirmed, ribbon mapped): the adapter to the 6-pin order crimped, interval and portion ratio measured | unit three on the bench |
+| Unit two, `9a6ecc`, in its feeder and on the Pi: its meals sent; the detent measured by *Run calibration*, on batteries and on USB | a schedule; a calibration run each way |
 | Unit three: soldered, flashed, provisioned, sent its meals | soldering |
 | Motor direction checked on a real mechanism before bolting anything | each unit, before step 8 |
 | The printed enclosure, then retiring the old PCBs (step 8) | CAD |
-| Deploying to the Pi (step 11): package installed, units repointed, **meals sent** | the package on the Pi |
+| Deploying to the Pi (step 11): the package is installed and publishing, and `9a6ecc` and `99177c` are repointed. Left: **meals sent** to every unit from the Pi | a schedule from the Pi |
 | LED palette tuned in a real kitchen; an external WS2812 on GPIO8 | a unit in its place |
 
 ### What is waiting on what
@@ -1955,7 +1996,7 @@ points at the section with the detail.
 |---|---|
 | 3, the detent interval | **nothing — the bridge is wired and driving**; it needs the motor on a real mechanism |
 | 6, flashing the three Zeros | **nothing — the boards have arrived**, jumpers to be soldered |
-| 8, retiring the PCBs | 3, the third feeder being opened, **and an enclosure designed and printed** |
+| 8, retiring the PCBs | 3, the third feeder's interval measured, **and an enclosure designed and printed** |
 | 11, deploying | an always-on Home Assistant with the package installed, then the schedule sent to each unit; the checklist in step 11 is the whole of it |
 | a display | **nothing** — a 0.96" 128×64 SSD1315 is on the bench, working, and is the production part |
 | the enclosure | v1.5 being settled, since the panel and any knob are most of what it holds |

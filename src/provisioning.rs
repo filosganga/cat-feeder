@@ -76,6 +76,12 @@ pub const DEFAULT_DETENT_MS: u16 = 1_900;
 /// debounce in `switch.rs` and start rejecting real clicks.
 pub const MIN_DETENT_MS: u16 = 200;
 
+/// The slowest detent anything will store: the knob, the admin page, a
+/// calibration run and `mkrecord`. The matching pair of feeders take about
+/// 2 s; the third, a cheaper mechanism, measured 5.3 s at 4.7 V, and turns
+/// slower still on batteries or with a full hopper. Twice that, with room over.
+pub const MAX_DETENT_MS: u16 = 10_000;
+
 /// Everything a unit needs to reach the network and to run its own mechanism.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {

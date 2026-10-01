@@ -34,7 +34,9 @@
 use std::process::ExitCode;
 
 use cat_feeder::portions::SCALE_UNCHANGED;
-use cat_feeder::provisioning::{DEFAULT_DETENT_MS, MAX_RECORD_LEN, MIN_DETENT_MS, Record};
+use cat_feeder::provisioning::{
+    DEFAULT_DETENT_MS, MAX_DETENT_MS, MAX_RECORD_LEN, MIN_DETENT_MS, Record,
+};
 
 const USAGE: &str = "\
 usage: mkrecord [options]
@@ -129,6 +131,12 @@ fn build(config: &toml::Table, args: &Args) -> Result<Record, String> {
         return Err(format!(
             "detent_ms {detent_ms} is below the {MIN_DETENT_MS} ms floor; \
              the derived click spacing would start rejecting real clicks"
+        ));
+    }
+    if detent_ms > MAX_DETENT_MS {
+        return Err(format!(
+            "detent_ms {detent_ms} is above the {MAX_DETENT_MS} ms ceiling; \
+             the knob and the admin page could not show or edit it"
         ));
     }
 
