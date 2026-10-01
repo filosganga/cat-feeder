@@ -1248,7 +1248,7 @@ therefore the one place that needs to know which units exist. It derives them
 from the device registry — discovery gives every feeder a device whose `model`
 is this firmware's and whose `identifiers` are `feeder_<id>` — so no device id
 is written down in `cat_feeder.yaml` and a new unit joins by itself. `model` is
-consequently a contract between `mqtt.rs` and the package: change it in one
+consequently a contract between `discovery.rs` and the package: change it in one
 place and pause silently stops matching anything.
 
 **It publishes to the topic rather than calling `switch.turn_on` on the
@@ -1547,10 +1547,12 @@ each one.
    whole gesture chain works — hold to arm, LED cyan, tap to feed. Two units
    still to build.
 7. ✅ Home Assistant: an automation publishing time (every minute), a script
-   sending the schedule to `feeder/all/schedule` when run by hand, the pause
-   helper and a feed-all script, in
-   `homeassistant/packages/cat_feeder.yaml`, verified driving a real scheduled
-   feed end to end
+   giving the units their meals when run by hand, the pause helper and a
+   feed-all script, in `homeassistant/packages/cat_feeder.yaml`, verified
+   driving a real scheduled feed end to end. That verification was of the
+   schedule script's first form, which published hard-coded meals; since
+   2026-10-01 it copies one feeder's meals to others
+   (`script.cat_feeder_copy_schedule`), which is not yet run against a unit
 8. Retire the old PCBs. Per feeder: remove the original LCD/RTC/button board,
    drill one hole in the bottom shell, and route the motor and microswitch
    cables out through the cavity the original USB lead already uses. The
@@ -1954,9 +1956,11 @@ complete, or should reset the DHCP socket when it is.
     **Then give each unit its meals — the package alone no longer does it.** A
     unit owns its schedule, and a new or factory-reset one starts blank
     (`NO MEALS SET` on the panel, `"meals":0` in its state). Once
-    `feeder/<id>/availability` reads `online`, run
-    `script.cat_feeder_send_schedule` from Home Assistant, which publishes the
-    package's `meals` to `feeder/all/schedule`, not retained. Check that
+    `feeder/<id>/availability` reads `online`, set one unit's meals on its
+    device page (the `Meal n` entities) or its admin page, then run
+    `script.cat_feeder_copy_schedule` from Home Assistant with that unit as the
+    source, which publishes them to each other unit's `feeder/<id>/schedule`,
+    not retained. Check that
     `feeder/<id>/schedule/state` echoes it and that the state payload's `"meals"` is
     above zero; until both are true the unit is healthy and will never feed.
 
@@ -1986,8 +1990,8 @@ points at the section with the detail.
 | Changing a `Meal n` entity from Home Assistant's own UI | built; driven with the payloads HA's platforms send, not from its UI | point 4 |
 | Wi-Fi and broker entry on the knob (character picker) | parked, deliberately | *Version 1.5: the knob* |
 | **OTA updates** — a possible enhancement, not decided. Today every firmware change means a USB cable, which once a unit is in its feeder means taking it out | not designed. Wants a partition table with two app slots, and it must keep `nvs` at 0x9000 or every unit loses its record; an upload behind at least the admin page's auth, since it is code execution for anyone on the LAN; and a way back from an image that boots but never reaches the broker | *Flash* |
-| Copy one feeder's schedule to others — every feeder, or by HA label or area — over each target's `feeder/<id>/schedule` | not written. Replaces `script.cat_feeder_send_schedule` and its hard-coded `meals` in the package; Home Assistant side only | point 6 |
-| **Remove `feeder/all/schedule` from the firmware** — `TOPIC_ALL_SCHEDULE` in `mqtt.rs`, and every doc, skill and transcript naming it | decided 2026-10-01, **waiting for the next flash** of the units (no OTA). Only after the copy script above is in the package on the Pi: until then `send_schedule` publishes to this topic | point 6 |
+| `script.cat_feeder_copy_schedule`: one feeder's meals to others — every feeder, or by device, area, floor or label — over each target's `feeder/<id>/schedule` | written 2026-10-01, replacing `send_schedule` and its hard-coded `meals`. Its templates rendered against a copy of the Pi's registries with faked states, every refusal included; **not yet installed on the Pi or run against a unit** | point 6 |
+| **Remove `feeder/all/schedule` from the firmware** — `TOPIC_ALL_SCHEDULE` in `mqtt.rs`, and every doc, skill and transcript naming it | decided 2026-10-01, **waiting for the next flash** of the units (no OTA). Nothing in the package publishes to it any more, so the order no longer matters once the package on the Pi is updated | point 6 |
 
 **Seen only in host tests, not yet on the hardware**
 
@@ -2393,7 +2397,7 @@ a different thing from one that degrades to not feeding.
 
 ### A second version: the unit owns its clock and its schedule
 
-**Built, all but the Home Assistant half of point 6** — see the status
+**Built**, the Home Assistant half of point 6 written but not yet run — see the status
 paragraph below. It overturned what used to read *No local RTC, no NTP, no
 flash persistence*, and meant to: that rule is right for a system whose only
 user owns the broker, and wrong for a feeder somebody else is given. What follows is one decision with
@@ -2415,11 +2419,13 @@ reboot brings it back from flash; a *retained* command replayed at subscribe
 time is refused, which is what stops a new unit inheriting meals; the unit
 echoes what it holds on `feeder/<id>/schedule/state`, and `"meals"` in the state
 payload and `NO MEALS SET` on the panel make blank visible. The package's
-schedule automation became a script, *send the schedule to every feeder*,
-publishing `feeder/all/schedule` — no longer on every Home Assistant start.
+schedule automation became a script, and since 2026-10-01 that script copies
+one feeder's meals to others rather than holding meals of its own — see
+point 6.
 Point 3 is done by the RTC and the knob. Point 4 is the sixteen `Meal n`
-entities and point 5 the admin page — both below. Subsets by label, in point 6,
-are still Home Assistant's business and unbuilt.
+entities and point 5 the admin page — both below. The Home Assistant half of
+point 6, the copy to every feeder or to a label, area or floor, is written but
+not yet run against a unit.
 
 **Point 5 as built.** `http://<unit>/`, on every configured unit, alongside
 MQTT: a status block (clock, meals a day, paused, next meal, last fed, a jam),
@@ -2631,8 +2637,10 @@ authentication above is not optional.
 ⚠️ **Superseded 2026-10-01: syncing is a copy in Home Assistant, and
 `feeder/all/schedule` goes.** Home Assistant finds the target units — every
 feeder, or those with a label or in an area, the same lookup the subsets
-paragraph below describes — reads the source unit's retained
-`feeder/<id>/schedule/state`, and publishes it to each target's own
+paragraph below describes — reads the source unit's meals from its `Meal n`
+entities (which show its retained `feeder/<id>/schedule/state`, and go
+`unavailable` when it is offline, which is how a copy from an offline unit is
+refused), and publishes them to each target's own
 `feeder/<id>/schedule`, not retained. One path for *all* and for a subset
 rather than two. Nothing is lost by not broadcasting: unlike `feeder/all/feed`,
 a schedule fires from each unit's own clock at the slot's time, so copies
@@ -2686,8 +2694,9 @@ fact; it sees three units' worth of entities.
 
 **What Home Assistant is left doing**, and it is worth having: the button, the
 pause switch, the jam sensor, history, and *optionally* a "copy this feeder's
-schedule to those feeders" automation. **That is where a blueprint finally
-fits** — one automation, no helpers to create, and, crucially, not load-bearing:
+schedule to those feeders" step — built 2026-10-01 as a script in the package,
+`script.cat_feeder_copy_schedule`, rather than as a blueprint. **A blueprint
+would still fit it** — one script, no helpers to create, and, crucially, not load-bearing:
 a recipient who never imports it sets three schedules on the feeders' own pages
 and they still feed. The present package is the opposite, which is why shipping *it* as a
 blueprint was the wrong idea. Blueprints cannot define helpers or bundle three
@@ -2698,8 +2707,8 @@ offered `input_datetime` and `input_number` helpers as the near-term editor,
 needing no firmware change. The firmware half of v2 has since landed (points 1,
 2, 6 and 7 above), so there is no old design left to extend. Today a person
 changes one feeder's times on its own device page, through the `Meal n`
-entities, or all three at once by editing `meals` in the package and running
-*send the schedule to every feeder*.
+entities or its admin page, and makes others match it with *copy one feeder's
+meals to others*.
 
 Pausing already finds its units rather than being told them — see *Pause stops
 the schedule, not the feeder*. That one was cheap enough to do immediately, and

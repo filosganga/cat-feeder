@@ -2,16 +2,14 @@
 #
 # Each feeder owns its schedule and keeps it in flash, and keeps its clock on
 # a battery-backed RTC. This file publishes the time every minute, which is
-# what corrects that clock, and gives the feeders their meals when you run
-# "Cat feeder: send the schedule" — a command, never retained, because being
-# given a schedule is a deliberate act: a feeder that joins the broker is not
-# handed meals nobody chose for it. If Home Assistant stops, the feeders keep
-# feeding on what they hold.
+# what corrects that clock. If Home Assistant stops, the feeders keep feeding
+# on what they hold.
 #
-# The script is for giving all of them the same meals at once. One feeder's
-# meals can also be changed on its own device page, through the "Meal n time"
-# and "Meal n portions" entities it announces by itself — nothing in this file
-# is needed for those.
+# Meals are set on a feeder, never here: on its device page, through the
+# "Meal n time" and "Meal n portions" entities it announces by itself, or on
+# its own admin page. "Cat feeder: copy one feeder's meals to others" then
+# makes others match it. Being given a schedule is a deliberate act, so a
+# feeder that joins the broker is not handed meals nobody chose for it.
 #
 # Install: see "Home Assistant automations" in dev/README.md. The same file goes
 # to the local Docker stack and to any deployed instance, unchanged — nothing in
@@ -19,10 +17,10 @@
 #
 # ---------------------------------------------------------------------------
 # NO DEVICE ID APPEARS IN THIS FILE, and adding a feeder needs no edit here.
-# Time is a shared retained topic; feed and schedule are broadcasts; and pause,
-# the one command with no broadcast topic, finds its units in the device
-# registry by the `model` that MQTT discovery published. See the `units`
-# variable in "Cat feeder: pause the schedule when away".
+# Time is a shared retained topic and feed is a broadcast. Pause and the
+# schedule copy publish to each unit's own topic, and find their units in the
+# device registry by the `model` that MQTT discovery published -- see the
+# `units` variable in "Cat feeder: pause the schedule when away".
 # ---------------------------------------------------------------------------
 
 # Whether the automatic schedule should run at all. Drag the blocks in the UI
@@ -74,34 +72,174 @@ script:
           retain: false
           payload: "{{ portions | int(1) }}"
 
-  # Gives every feeder these meals. Each stores them in flash and echoes what
-  # it holds on feeder/<id>/schedule/state, so the result can be checked per unit.
+  # Makes other feeders eat what one feeder eats: reads the source's meals
+  # from its "Meal n" entities and publishes them, as a whole schedule, to
+  # each target's own feeder/<id>/schedule. Each target stores them in flash
+  # and echoes what it holds on feeder/<id>/schedule/state, which is what its
+  # own Meal n entities then show.
   #
-  # Edit `meals` and run it. Up to 8 slots; a longer list is rejected by the
-  # firmware whole rather than truncated, and each unit keeps what it had.
+  # Per unit rather than one broadcast, so *every feeder* and *the ones with
+  # this label* are the same loop. Nothing is lost by not broadcasting: a meal
+  # fires from each unit's own clock at its slot's time, so copies landing
+  # milliseconds apart change nothing. See point 6 of "A second version" in
+  # CLAUDE.md.
   #
-  # Deliberately a script and not an automation on Home Assistant's start: that
-  # would re-send these meals over any a feeder was given some other way, at
-  # every restart. One feeder alone gets its own through its Meal n entities,
-  # its admin page, or feeder/<id>/schedule -- none of which this package
-  # needs to know about.
+  # Refuses rather than half-copies:
+  #   - a source that is offline: its entities are unavailable, and reading
+  #     them as "no meals" would wipe every target;
+  #   - a source whose Meal n entity ids were renamed, so cannot be found;
+  #   - a source with no meals: copying blank is not a copy anyone means;
+  #   - a target that is offline: the command is not retained, so it would
+  #     miss it and silently disagree with the rest;
+  #   - a selection with no feeders in it, rather than falling back to all.
   #
   # Not retained, and the firmware refuses a retained one: a retained schedule
   # would be handed to every unit that subscribes later.
-  cat_feeder_send_schedule:
-    alias: "Cat feeder: send the schedule to every feeder"
-    icon: mdi:calendar-clock
+  cat_feeder_copy_schedule:
+    alias: "Cat feeder: copy one feeder's meals to others"
+    icon: mdi:content-copy
     mode: single
-    variables:
-      meals: >-
-        [{"time":"08:00","portions":2},
-         {"time":"19:00","portions":2}]
+    fields:
+      source:
+        name: From
+        description: The feeder whose meals are copied.
+        required: true
+        selector:
+          device:
+            filter:
+              - integration: mqtt
+                model: cat-feeder ESP32-C6
+      to:
+        name: To
+        description: >-
+          Feeders, an area, a floor or a label. Leave empty for every other
+          feeder. Devices that are not feeders are ignored.
+        required: false
+        selector:
+          target:
+            device:
+              - integration: mqtt
+                model: cat-feeder ESP32-C6
     sequence:
-      - action: mqtt.publish
+      - variables:
+          # Every feeder's device id, found the same way as pause's `units`.
+          # `model` is a contract with src/discovery.rs.
+          feeders: >-
+            {{ integration_entities('mqtt') | map('device_id') | reject('none')
+               | unique | select('is_device_attr', 'model', 'cat-feeder ESP32-C6')
+               | list }}
+          # What `to` names, expanded to device ids.
+          picked: >-
+            {%- set t = to if to is mapping else {} -%}
+            {%- set ns = namespace(d=[]) -%}
+            {%- for key in ['device_id', 'area_id', 'floor_id', 'label_id', 'entity_id'] -%}
+              {%- set v = t.get(key, []) -%}
+              {%- for x in ([v] if v is string else v) -%}
+                {%- if key == 'device_id' -%}
+                  {%- set ns.d = ns.d + [x] -%}
+                {%- elif key == 'area_id' -%}
+                  {%- set ns.d = ns.d + area_devices(x) -%}
+                {%- elif key == 'floor_id' -%}
+                  {%- for a in floor_areas(x) -%}
+                    {%- set ns.d = ns.d + area_devices(a) -%}
+                  {%- endfor -%}
+                {%- elif key == 'label_id' -%}
+                  {%- set ns.d = ns.d + label_devices(x) -%}
+                {%- else -%}
+                  {%- set ns.d = ns.d + [device_id(x)] -%}
+                {%- endif -%}
+              {%- endfor -%}
+            {%- endfor -%}
+            {{ ns.d | reject('none') | unique | list }}
+          # Whether anything was picked at all. Tested on `to` itself, not on
+          # `picked`: a label or area with no devices in it expands to nothing,
+          # and must be refused rather than read as "every feeder".
+          chose: >-
+            {{ to is mapping and to.values() | select | list | count > 0 }}
+          targets: >-
+            {{ (picked if chose else feeders)
+               | select('in', feeders) | reject('eq', source) | unique | list }}
+          # Targets that are offline, by name. A unit's availability_topic is
+          # shared by all of its entities, so any unavailable one means down.
+          down: >-
+            {%- set ns = namespace(n=[]) -%}
+            {%- for d in targets -%}
+              {%- if device_entities(d) | select('is_state', 'unavailable') | list | count > 0 -%}
+                {%- set ns.n = ns.n + [device_attr(d, 'name_by_user') or device_attr(d, 'name')] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ ns.n }}
+          # Found by entity id, as `<domain>.<anything>_meal_<n>_<time|portions>`,
+          # so renaming the device keeps working; renaming those entity ids
+          # does not, and is reported as such rather than as "offline".
+          found: >-
+            {{ device_entities(source) | select('match', 'time\\..*_meal_1_time$')
+               | list | count > 0 }}
+          # The source's meals, from its Meal n entities, in position order.
+          # Positions past the end of its schedule read `unknown`, so the
+          # first one ends the list. A switched-off meal (0 portions) is
+          # copied as it is, keeping every later meal's number.
+          meals: >-
+            {%- set ents = device_entities(source) -%}
+            {%- set ns = namespace(m=[], done=false, bad=false) -%}
+            {%- for n in range(1, 9) -%}
+              {%- if ns.done -%}{%- continue -%}{%- endif -%}
+              {%- set t = ents | select('match', 'time\\..*_meal_' ~ n ~ '_time$') | first | default(none) -%}
+              {%- set p = ents | select('match', 'number\\..*_meal_' ~ n ~ '_portions$') | first | default(none) -%}
+              {%- set ts = states(t) if t else 'unavailable' -%}
+              {%- set ps = states(p) if p else 'unavailable' -%}
+              {%- if ts == 'unavailable' or ps == 'unavailable' -%}
+                {%- set ns.bad = true -%}{%- set ns.done = true -%}
+              {%- elif ts == 'unknown' -%}
+                {%- set ns.done = true -%}
+              {%- elif ps == 'unknown' -%}
+                {#- Both come from the one echo, so this should not happen;
+                    copying it as 0 would switch a meal off in silence. -#}
+                {%- set ns.bad = true -%}{%- set ns.done = true -%}
+              {%- else -%}
+                {%- set ns.m = ns.m + [{'time': ts[:5], 'portions': ps | float(0) | int}] -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ none if ns.bad else ns.m }}
+      - variables:
+          source_name: "{{ device_attr(source, 'name_by_user') or device_attr(source, 'name') }}"
+          problem: >-
+            {%- if not found -%}
+              {{ source_name }} has no Meal n entities named as this script expects (time.…_meal_1_time). Were their entity ids renamed?
+            {%- elif meals is none -%}
+              {{ source_name }}'s meals cannot be read: it is offline, or its Meal n entities disagree.
+            {%- elif meals | count == 0 -%}
+              {{ source_name }} has no meals to copy. Set them on its device page first.
+            {%- elif targets | count == 0 -%}
+              No other feeder is in that selection.
+            {%- elif down | count > 0 -%}
+              {{ down | join(', ') }} {{ 'is' if down | count == 1 else 'are' }} offline and would miss the copy. Pick the others, or try again once it is back.
+            {%- endif -%}
+      # `stop` takes no template, so the reason goes in a notification.
+      - if: "{{ problem | length > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              notification_id: cat_feeder_copy_schedule
+              title: "Cat feeder: meals not copied"
+              message: "{{ problem }} Nothing was copied."
+          - stop: "Meals not copied; see the notification for why."
+            error: true
+      - action: persistent_notification.dismiss
         data:
-          topic: feeder/all/schedule
-          retain: false
-          payload: "{{ meals | from_json | to_json }}"
+          notification_id: cat_feeder_copy_schedule
+      - repeat:
+          for_each: "{{ targets }}"
+          sequence:
+            - action: mqtt.publish
+              data:
+                topic: >-
+                  {%- set ids = device_attr(repeat.item, 'identifiers') | list
+                       | selectattr(0, 'eq', 'mqtt') | map(attribute=1)
+                       | select('match', 'feeder_') | list -%}
+                  feeder/{{ ids[0] | replace('feeder_', '') }}/schedule
+                retain: false
+                payload: "{{ meals | to_json }}"
 
 automation:
   - id: cat_feeder_publish_time
@@ -180,7 +318,7 @@ automation:
       # renaming the device in the UI. So a unit added to the broker joins this
       # automation by itself, and no device id is written down anywhere here.
       #
-      # `model` is a contract with the firmware: change it in mqtt.rs and this
+      # `model` is a contract with the firmware: change it in discovery.rs and this
       # silently stops matching anything.
       units: >-
         {%- set ns = namespace(ids=[]) -%}

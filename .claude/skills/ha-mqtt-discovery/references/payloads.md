@@ -302,20 +302,28 @@ mistake is visible on the console, but nothing rejects it.
 
 Not applying the offset is also what makes daylight saving free — in October
 `now()` simply starts rendering `+01:00` and the wall-clock fields shift with
-it, with no timezone rules on the device.
+it. The unit's own timezone (`tz.rs`) only takes over after ten minutes
+without a live time.
 
 `now().isoformat()` renders a bare ISO 8601 string with microseconds,
 `2026-09-14T08:00:00.123456+02:00`, not a quoted JSON string. The firmware
 accepts that, a quoted string, a trailing `Z`, `+HHMM`, and no offset at all.
 
+`script.cat_feeder_copy_schedule` is the Home Assistant side: it reads one
+feeder's `Meal n` entities and publishes them, per target, as:
+
 ```yaml
-# script.cat_feeder_send_schedule — run by hand, whenever the meals change
 - action: mqtt.publish
   data:
-    topic: feeder/all/schedule
+    topic: feeder/<id>/schedule        # one publish per target unit
     retain: false
     payload: '[{"time":"08:00","portions":2},{"time":"19:00","portions":2}]'
 ```
+
+The `Meal n time` state is `HH:MM:SS` and the firmware takes exactly `HH:MM`,
+so the script cuts it to five characters. `feeder/all/schedule` still exists
+in the firmware but is being removed (CLAUDE.md, v2 point 6); do not publish
+to it.
 
 **Never retained.** A retained schedule command would hand meals to every unit
 that subscribes later; the firmware refuses one replayed at subscribe time

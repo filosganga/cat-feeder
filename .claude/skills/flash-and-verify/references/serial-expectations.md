@@ -705,9 +705,9 @@ ids.
 Status: observed on one unit. The three-unit check below still needs the Zeros.
 
 Home Assistant's half lives in `homeassistant/packages/cat_feeder.yaml`;
-`dev/README.md` covers installing it. Once it is running, run
-`script.cat_feeder_send_schedule` — nothing sends the schedule by itself any
-more — and the console shows it arriving from Home Assistant rather than from a
+`dev/README.md` covers installing it. Once it is running, set one unit's meals
+on its device page and run `script.cat_feeder_copy_schedule` from it — nothing
+sends the schedule by itself — and the console shows it arriving from Home Assistant rather than from a
 hand publish (`, unchanged` instead of `, stored` if the unit already held it),
 and slots firing at their real times:
 

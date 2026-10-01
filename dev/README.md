@@ -148,9 +148,11 @@ confirm the broker starts filling up, which takes at most a minute:
 feeder/time 2026-09-15T19:51:00.489888+02:00
 ```
 
-`feeder/<id>/schedule/state` stays silent until the schedule is sent: run
-*Cat feeder: send the schedule to every feeder* (`script.cat_feeder_send_schedule`)
-from Home Assistant, and each connected unit stores it and echoes what it holds:
+`feeder/<id>/schedule/state` stays silent until the unit is given meals: set
+them on one unit's device page (its `Meal n` entities) or admin page, then run
+*Cat feeder: copy one feeder's meals to others* (`script.cat_feeder_copy_schedule`)
+from Home Assistant with that unit as the source. Each unit stores what it is
+sent and echoes what it holds:
 
 ```
 feeder/99177c/schedule/state [{"time":"08:00","portions":2},{"time":"19:00","portions":2}]
@@ -230,7 +232,7 @@ What the package sets up:
 | Automation or script | When | Publishes |
 |---|---|---|
 | publish the time | every minute, on restart, and on `feeder/time/request` | `feeder/time`, retained |
-| `script.cat_feeder_send_schedule` | run by hand, never on restart | `feeder/all/schedule`, **not** retained |
+| `script.cat_feeder_copy_schedule` | run by hand, never on restart | `feeder/<id>/schedule` per target unit, **not** retained |
 | pause when away | `schedule.cat_feeder_active` changes | `feeder/<id>/paused` per unit, retained |
 
 Plus `script.cat_feeder_feed_all`, which publishes one `feeder/all/feed` so all
@@ -246,27 +248,35 @@ hand, which is most of the time, so the notification would fire on the normal
 case and be trained away. It is worth adding for the opposite pattern — a
 feeder that normally runs unattended, where a pause really is an accident.
 
-**`TZ: Europe/Rome` in `compose.yaml` is load-bearing.** Home Assistant owns the
-clock, the firmware reads the wall-clock fields and does not apply the offset,
-and the container defaults to UTC. Without that variable every meal lands an
-hour or two out while everything still looks healthy. The feeder prints the
-offset it received at startup — `clock: live time 2026-09-18T00:07:18+02:00,
-schedule armed` — which is the only place the mistake shows.
+**`TZ: Europe/Rome` in `compose.yaml` is load-bearing.** Home Assistant's live
+time outranks the unit's own clock and timezone, the firmware reads its
+wall-clock fields without converting the offset away, and the container
+defaults to UTC. Without that variable every meal lands an hour or two out
+while everything still looks healthy. The feeder prints the offset it received
+at startup — `clock: live time 2026-09-18T00:07:18+02:00, schedule armed` —
+and its panel and admin page show the clock, which is where the mistake shows.
 
 **The `mqtt` trigger on `feeder/time/request` is what makes a feeder start
-quickly.** A unit only arms its schedule on a live time, and asks for one as the
-last step of connecting; without that trigger it waits for the next minute
-boundary instead, which is up to a minute of a boot spent doing nothing. Nothing
+quickly.** A unit whose RTC cannot be trusted arms its schedule only on a live
+time, and asks for one as the last step of connecting; without that trigger it
+waits for the next minute boundary instead, which is up to a minute of a boot
+spent doing nothing. A unit with a set RTC arms from it at boot either way. Nothing
 breaks without it — see *Asking for the time instead of waiting for it* in
 CLAUDE.md — but a unit repointed at a Home Assistant that has not got the
 package gets the slow path back.
 
-To change feeding times, edit `meals` in the package, copy it in again,
-restart or reload it, **then run `script.cat_feeder_send_schedule`** — nothing
-sends the schedule by itself any more. Each unit logs `schedule: N meals,
-stored` (or `unchanged`, if it already held that one) and echoes it on
-`feeder/<id>/schedule/state`. Verified end to end, when the schedule was still a
-shared retained topic: a slot published this way fired at exactly its time, and the unit reported `"last_fed":"2026-09-15T19:56:00+02:00"`.
+To change feeding times, change one feeder's `Meal n` entities on its device
+page (or its admin page), **then run `script.cat_feeder_copy_schedule`** with it
+as the source — nothing copies the schedule by itself. Leave *To* empty for
+every other feeder, or pick devices, an area, a floor or a label. The script
+refuses, with a notification saying why, rather than copy from an offline or
+blank source, to an offline target, or to a selection with no feeders in it.
+Each unit logs `schedule: N meals, stored` (or `unchanged`, if it already held
+that one) and echoes it on `feeder/<id>/schedule/state`. The copy script is
+not yet run against a unit. What was verified end to end, when the schedule
+was still a shared retained topic, is the unit's side: a slot published by Home
+Assistant fired at exactly its time, and the unit reported
+`"last_fed":"2026-09-15T19:56:00+02:00"`.
 
 ## Everyday commands
 

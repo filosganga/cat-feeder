@@ -101,7 +101,8 @@ if [ -z "$last_schedule" ]; then
   echo "    unknown: no schedule line in this log"
 elif echo "$last_schedule" | grep -qE 'none stored|unreadable| 0 slots'; then
   echo "    NO. This unit holds no meals, so it was never going to feed."
-  echo "    Run script.cat_feeder_send_schedule in Home Assistant."
+  echo "    Set its meals on its device page, or copy another feeder's with"
+  echo "    script.cat_feeder_copy_schedule in Home Assistant."
   echo "$last_schedule" | sed 's/^/    /'
 else
   echo "$last_schedule" | sed 's/^/    /'

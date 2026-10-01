@@ -40,7 +40,8 @@ Firmware is partway through the roadmap in [CLAUDE.md](CLAUDE.md).
 | Schedule, clock, double-feed guard | working |
 | DS3231 real-time clock: arms the schedule at boot, with no Home Assistant | working, verified on the Zero |
 | The unit owns its schedule, in flash; a new unit starts blank | working, verified on the Zero |
-| Home Assistant: an automation publishing the time, a script sending the schedule | working |
+| Home Assistant: an automation publishing the time | working |
+| Home Assistant: a script copying one feeder's meals to others | written; not yet run against a unit |
 | Status LED on the onboard WS2812 | working, verified by eye |
 | The knob: turn for info pages, hold for a menu, tap `Feed` to feed | working on a Zero; the info pages are host-tested but not yet seen on the panel |
 | Per-board provisioning from the host (`dev/provision.sh`) | working |
@@ -193,7 +194,7 @@ To watch what the firmware is saying:
 ```
 
 The local stack, including the three different addresses the broker answers on
-and the Home Assistant package that publishes the time and sends the schedule, is
+and the Home Assistant package that publishes the time and copies meals between feeders, is
 documented in [dev/README.md](dev/README.md).
 
 ## Setting up a feeder
@@ -408,7 +409,7 @@ src/
 
 build.rs          reads cfg.toml into the build
 dev/              local Mosquitto and Home Assistant, plus the scripts
-homeassistant/    the package that publishes the time and sends the schedule
+homeassistant/    the package that publishes the time and copies meals between feeders
 CLAUDE.md         design decisions and the contract the firmware implements
 ```
 
