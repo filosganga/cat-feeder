@@ -144,8 +144,11 @@ means another monitor still holds it. Only one process can own a serial port.
 - **Wrong chip detected**: pass `--chip esp32c6` explicitly. The `cargo run`
   runner already does.
 - **Binary too large**: each OTA slot in `partitions.csv` is 0x1E0000
-  (1.9 MB); a debug build is about 1.1 MB. `espflash save-image` prints
-  `App/part. size`. `[profile.dev]` sets `opt-level = "s"` to keep it there.
+  (1.9 MB); a dev-kit debug build is about 1.08 MB, a release build for a
+  headless Zero about 850 KB (`debug!`/`trace!` are compiled out of release).
+  `espflash save-image` prints `App/part. size`. `[profile.dev]` sets
+  `opt-level = "s"` to keep debug builds there. About 344 KB of any image is
+  Espressif's prebuilt Wi-Fi libraries, which nothing here can shrink.
 
 ## Flash writes that seem not to stick
 

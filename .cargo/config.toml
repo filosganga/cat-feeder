@@ -2,6 +2,9 @@
 runner = "espflash flash --monitor --chip esp32c6 --erase-data-parts ota"
 
 [env]
+# Read at build time, not run time. Raising it shows more only in a dev build:
+# release builds compile `debug!` and `trace!` out (`log`'s
+# `release_max_level_info`, Cargo.toml).
 ESP_LOG="info"
 
 # No serial port is pinned here: the path is per machine and per board. The

@@ -35,7 +35,10 @@ headless     = []
 # modules can be tested with `cargo test`.
 [dependencies]
 heapless = "0.9"
-log      = "0.4.27"
+# `debug!` and `trace!` are compiled out of release builds, every crate's
+# included. They could never print there: ESP_LOG (.cargo/config.toml) is read
+# at build time and says `info`. Dev builds keep them, for raising ESP_LOG.
+log = { version = "0.4.27", features = ["release_max_level_info"] }
 
 # Everything that only exists on the board. Target-gated so a host test build
 # does not try to compile esp-hal and friends for macOS or Linux; gating the
@@ -124,18 +127,13 @@ esp-radio = { version = "0.18.0", features = [
   "unstable",
   "wifi",
 ] }
+# Direct only for `smoltcp::time::Duration` (the DHCP retry in main.rs);
+# embassy-net enables the protocols and sockets it uses. Each feature here adds
+# its socket kind to every packet's dispatch, so none is listed that the code
+# does not use: no DNS (ADR-0019), no ICMP, no raw sockets, no multicast.
 smoltcp = { version = "0.13.0", default-features = false, features = [
-  "log",
   "medium-ethernet",
-  "multicast",
-  "proto-dhcpv4",
-  "proto-dns",
   "proto-ipv4",
-  "socket-dns",
-  "socket-icmp",
-  "socket-raw",
-  "socket-tcp",
-  "socket-udp",
 ] }
 
 critical-section = "1.2.0"

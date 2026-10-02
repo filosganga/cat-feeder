@@ -1868,7 +1868,6 @@ dependencies = [
  "byteorder",
  "cfg-if",
  "heapless 0.9.3",
- "log",
  "managed",
 ]
 
