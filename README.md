@@ -134,6 +134,20 @@ the label is the only way to learn its password** short of a serial cable —
 print it before the unit goes into a case. `./dev/ap-password.sh <id>` prints
 the same thing as text.
 
+**Updating a unit that is already in its feeder** goes over the network, once
+it has been flashed over USB with a version that supports it:
+
+```sh
+./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero --headless
+```
+
+`--address` is the unit's own IP: its device page in Home Assistant links to
+it, and a unit with a panel shows it. The unit checks the image before switching to
+it, including that it was built with the same `ap_secret`, and restarts into
+it. A new image that cannot reach the broker within about two minutes
+(`CONFIRM_SECS`) is undone by the unit itself, so a bad update costs those
+minutes, not a trip to the feeder.
+
 ## Setting up a feeder
 
 A unit with no configuration raises its own Wi-Fi network and waits.

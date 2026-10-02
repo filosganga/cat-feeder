@@ -117,6 +117,12 @@ impl Store {
         Ok(Self { flash, offset, len })
     }
 
+    /// The flash itself, for the OTA slots (`firmware.rs`), which live
+    /// outside `nvs` but share the one `FlashStorage`.
+    pub fn flash(&mut self) -> &mut FlashStorage<'static> {
+        &mut self.flash
+    }
+
     /// Where the record lives, for the log line that says so once at boot.
     pub fn location(&self) -> (u32, u32) {
         (self.offset, self.len)

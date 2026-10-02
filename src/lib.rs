@@ -41,12 +41,15 @@ pub mod reset;
 pub mod schedule;
 pub mod sha256;
 pub mod tz;
+pub mod update;
 
 // Hardware. Only built for the board.
 #[cfg(target_os = "none")]
 pub mod board;
 #[cfg(target_os = "none")]
 pub mod config;
+#[cfg(target_os = "none")]
+pub mod firmware;
 #[cfg(target_os = "none")]
 pub mod http;
 #[cfg(target_os = "none")]

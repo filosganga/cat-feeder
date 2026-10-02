@@ -491,6 +491,13 @@ pub struct Bus {
     /// The BOOT button is being held towards a reset. Written by `reset`,
     /// read by `indicator`.
     pub reset_held: AtomicBool,
+    /// An upload is writing the idle app slot. Written by `web`; `feeder`
+    /// starts no turn while it is set, because a flash erase stalls whatever
+    /// runs from flash and a click could be acted on late (ADR-0022).
+    pub flash_busy: AtomicBool,
+    /// `feeder` is owed portions it did not start because of `flash_busy`.
+    /// Read by `web`, which restarts into new firmware only once they ran.
+    pub feed_held: AtomicBool,
 }
 
 impl Default for Bus {
@@ -543,6 +550,8 @@ impl Bus {
             setup: AtomicBool::new(false),
             reset_held: AtomicBool::new(false),
             button_armed: AtomicBool::new(false),
+            flash_busy: AtomicBool::new(false),
+            feed_held: AtomicBool::new(false),
         }
     }
 

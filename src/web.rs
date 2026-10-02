@@ -17,6 +17,7 @@
 //! | `POST /calibration` | the detent and portion scale, into flash and in force |
 //! | `POST /calibrate` | start a calibration run; the page follows it |
 //! | `POST /network` | Wi-Fi and broker, into flash, then a restart |
+//! | `POST /update` | a firmware image into the idle slot, then a restart (ADR-0022) |
 //! | a `POST` from another site | `403` |
 //! | any other path | `404` |
 //!
@@ -37,13 +38,21 @@ use crate::admin::{
     clock_form, feed_from_form, network_from_form, pause_from_form, render_page, render_restarting,
     same_origin, schedule_from_form,
 };
+use crate::config::AP_SECRET;
 use crate::events::{Event, Source};
+use crate::firmware::{self, SECTOR, Target};
 use crate::http;
 use crate::provisioning::{Head, Method, PAGE_LEN};
 use crate::schedule::ScheduleCommand;
 use crate::store::SharedStore;
 use crate::tz::Zone;
+use crate::update::{ImageCheck, ImageError, MARK_PREFIX, Sectors, secret_mark};
 use crate::wiring::Bus;
+
+use core::sync::atomic::Ordering;
+
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
 
 /// What the page needs that is fixed for the life of the process.
 #[derive(Clone, Copy)]
@@ -61,6 +70,15 @@ pub struct Unit {
 /// before answering. It drains its queue once a second, so this is generous;
 /// past it the page says so rather than showing the old meals as saved.
 const APPLY_WAIT: Duration = Duration::from_secs(3);
+
+/// This build's `ap_secret`, marked, so an upload can be checked for it and so
+/// this image itself carries it for the next one (`update.rs`). A `static`
+/// referenced at run time, so the bytes are in the image exactly once.
+static SECRET_MARK: [u8; MARK_PREFIX.len() + AP_SECRET.len()] = secret_mark(AP_SECRET);
+
+/// The sector an upload is assembled in. Behind a lock that is only ever
+/// tried, never waited on: holding it is what makes an upload the only one.
+static SECTORS: Mutex<CriticalSectionRawMutex, Sectors<SECTOR>> = Mutex::new(Sectors::new());
 
 /// Serves the admin page forever.
 pub async fn run(
@@ -110,8 +128,29 @@ async fn connection(
             continue;
         }
 
-        if let Some((head, body)) = http::read_request("web", slot, &mut socket, request).await {
-            let restart = handle(slot, &mut socket, &head, body, page, store, unit, bus).await;
+        if let Some((head, filled)) = http::read_head("web", slot, &mut socket, request).await {
+            // An image is far larger than a request buffer, so it is streamed
+            // from the socket rather than read whole.
+            let restart = if head.method == Method::Post && head.path == "/update" {
+                upload(
+                    slot,
+                    &mut socket,
+                    &head,
+                    request,
+                    filled,
+                    page,
+                    store,
+                    unit,
+                    bus,
+                )
+                .await
+            } else if let Some(body) =
+                http::read_body("web", slot, &mut socket, request, &head, filled).await
+            {
+                handle(slot, &mut socket, &head, body, page, store, unit, bus).await
+            } else {
+                false
+            };
             if restart {
                 // The browser is told before the unit disappears. Without the
                 // flush the reset races the last segment and the browser shows
@@ -119,7 +158,7 @@ async fn connection(
                 socket.close();
                 let _ = socket.flush().await;
                 Timer::after(Duration::from_millis(250)).await;
-                info!("web: network saved, restarting");
+                info!("web: restarting");
                 esp_hal::system::software_reset()
             }
         }
@@ -128,17 +167,14 @@ async fn connection(
     }
 }
 
-/// Answers one request. `true` means a new record is in flash: restart.
-#[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
-async fn handle(
+/// The password, then the `Origin` of a `POST` (ADR-0017). `false` means the
+/// refusal has been sent.
+async fn admit(
     slot: u8,
     socket: &mut TcpSocket<'_>,
     head: &Head,
-    body: &str,
     page: &mut String<PAGE_LEN>,
-    store: &'static SharedStore,
     unit: Unit,
-    bus: &'static Bus,
 ) -> bool {
     if !authorized(&head.authorization, unit.password) {
         // Not logged per request: a browser's first request always lands here,
@@ -156,6 +192,24 @@ async fn handle(
         page.clear();
         let _ = page.push_str("Refused: this form was sent from another site.");
         http::send("web", socket, "403 Forbidden", "", page).await;
+        return false;
+    }
+    true
+}
+
+/// Answers one request. `true` means a new record is in flash: restart.
+#[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
+async fn handle(
+    slot: u8,
+    socket: &mut TcpSocket<'_>,
+    head: &Head,
+    body: &str,
+    page: &mut String<PAGE_LEN>,
+    store: &'static SharedStore,
+    unit: Unit,
+    bus: &'static Bus,
+) -> bool {
+    if !admit(slot, socket, head, page, unit).await {
         return false;
     }
 
@@ -525,4 +579,231 @@ fn network_step(store: &mut crate::store::Store, body: &str, page: &mut String<P
             )
         }
     }
+}
+
+/// Answers a plain-text result to an upload: `curl` is the client, not a
+/// browser, so there is no page to draw.
+async fn reply(socket: &mut TcpSocket<'_>, page: &mut String<PAGE_LEN>, status: &str, text: &str) {
+    page.clear();
+    let _ = page.push_str(text);
+    http::send("web", socket, status, "", page).await;
+}
+
+/// `POST /update`: a firmware image, written into the idle slot as it
+/// arrives, checked, then selected for the next boot (ADR-0022). `true` means
+/// it is selected: restart into it.
+///
+/// Nothing is selected unless the whole image arrived and passed
+/// [`ImageCheck`]; a failed upload leaves a half-written idle slot, which
+/// nothing boots.
+#[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
+async fn upload(
+    slot: u8,
+    socket: &mut TcpSocket<'_>,
+    head: &Head,
+    request: &mut [u8; http::REQUEST_LEN],
+    filled: usize,
+    page: &mut String<PAGE_LEN>,
+    store: &'static SharedStore,
+    unit: Unit,
+    bus: &'static Bus,
+) -> bool {
+    if !admit(slot, socket, head, page, unit).await {
+        return false;
+    }
+
+    let Ok(mut sectors) = SECTORS.try_lock() else {
+        reply(
+            socket,
+            page,
+            "409 Conflict",
+            "Another update is in progress.",
+        )
+        .await;
+        return false;
+    };
+    sectors.reset();
+
+    let target = match firmware::idle_slot(&mut *store.lock().await) {
+        Ok(target) => target,
+        Err(e) => {
+            warn!("web: [{slot}] update refused: {e:?}");
+            reply(socket, page, "500 Internal Server Error", e.message()).await;
+            return false;
+        }
+    };
+    let mut check = match ImageCheck::new(head.content_length, target.len as usize, &SECRET_MARK) {
+        Ok(check) => check,
+        Err(e) => {
+            warn!("web: [{slot}] update refused: {e:?}");
+            reply(socket, page, "400 Bad Request", e.message()).await;
+            return false;
+        }
+    };
+
+    // Checked and claimed with no await between, so a turn cannot start in
+    // the gap: the feeder starts one only from its own loop, and checks the
+    // claim synchronously just before it does.
+    if bus.status.feeding() {
+        reply(
+            socket,
+            page,
+            "409 Conflict",
+            "Feeding now; try again when it stops.",
+        )
+        .await;
+        return false;
+    }
+    let busy = FlashBusy::claim(bus);
+
+    info!(
+        "web: [{slot}] update: {} bytes into {:?} at {:#x}",
+        head.content_length, target.slot, target.offset
+    );
+    let started = Instant::now();
+    let written = receive(
+        socket,
+        head,
+        request,
+        filled,
+        &mut check,
+        &mut sectors,
+        store,
+        target,
+    )
+    .await;
+
+    let outcome = match written {
+        Ok(()) => check.finish().map_err(Refusal::Image),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = outcome {
+        drop(busy);
+        warn!("web: [{slot}] update failed: {e:?}");
+        let (status, text) = match e {
+            Refusal::Image(e) => ("400 Bad Request", e.message()),
+            Refusal::Flash(e) => ("500 Internal Server Error", e.message()),
+        };
+        reply(socket, page, status, text).await;
+        return false;
+    }
+
+    // `otadata` is flash too, so the claim lasts until it is written.
+    let selected = firmware::select(&mut *store.lock().await, target);
+    drop(busy);
+    if let Err(e) = selected {
+        warn!("web: [{slot}] update written but not selected: {e:?}");
+        reply(socket, page, "500 Internal Server Error", e.message()).await;
+        return false;
+    }
+    info!(
+        "web: [{slot}] update: {:?} selected after {} ms",
+        target.slot,
+        started.elapsed().as_millis()
+    );
+
+    reply(
+        socket,
+        page,
+        "200 OK",
+        "Updated. Restarting into the new firmware; if it cannot reach the broker \
+         it goes back to this one by itself.",
+    )
+    .await;
+
+    // Feeds held during the write run now, on this firmware, before the
+    // restart drops anything still queued. No deadline: a turn always ends,
+    // at its last click or at the jam timeout, and cutting one short would
+    // lose a meal already marked consumed.
+    while !idle(bus) {
+        Timer::after(Duration::from_millis(200)).await;
+    }
+    true
+}
+
+/// Nothing turning, queued or held: a restart now loses no feed.
+pub fn idle(bus: &Bus) -> bool {
+    !bus.status.feeding() && bus.feed.is_empty() && !bus.feed_held.load(Ordering::Relaxed)
+}
+
+/// [`Bus::flash_busy`] for as long as this lives, on every way out of an
+/// upload, including the connection dropping mid-write.
+struct FlashBusy(&'static Bus);
+
+impl FlashBusy {
+    fn claim(bus: &'static Bus) -> Self {
+        bus.flash_busy.store(true, Ordering::Relaxed);
+        Self(bus)
+    }
+}
+
+impl Drop for FlashBusy {
+    fn drop(&mut self) {
+        self.0.flash_busy.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Why an upload stopped.
+#[derive(Debug)]
+enum Refusal {
+    Image(ImageError),
+    Flash(firmware::FirmwareError),
+}
+
+/// Streams the body into the target slot, a sector at a time. The store is
+/// locked per sector, not for the whole upload, so a schedule save is delayed
+/// by one sector's erase at most.
+#[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
+async fn receive(
+    socket: &mut TcpSocket<'_>,
+    head: &Head,
+    request: &mut [u8; http::REQUEST_LEN],
+    filled: usize,
+    check: &mut ImageCheck<'_>,
+    sectors: &mut Sectors<SECTOR>,
+    store: &'static SharedStore,
+    target: Target,
+) -> Result<(), Refusal> {
+    // What came with the head first; then the request buffer is free to read
+    // into.
+    let first = filled.min(head.body_at + head.content_length);
+    let mut got = first - head.body_at;
+    take(&request[head.body_at..first], check, sectors, store, target).await?;
+
+    while got < head.content_length {
+        let want = (head.content_length - got).min(request.len());
+        match socket.read(&mut request[..want]).await {
+            Ok(0) | Err(_) => return Err(Refusal::Image(ImageError::Truncated)),
+            Ok(n) => {
+                got += n;
+                take(&request[..n], check, sectors, store, target).await?;
+            }
+        }
+    }
+
+    if let Some((at, bytes)) = sectors.rest() {
+        firmware::write_sector(&mut *store.lock().await, target, at, bytes)
+            .map_err(Refusal::Flash)?;
+    }
+    Ok(())
+}
+
+/// Checks the bytes, then writes every sector they complete.
+async fn take(
+    mut bytes: &[u8],
+    check: &mut ImageCheck<'_>,
+    sectors: &mut Sectors<SECTOR>,
+    store: &'static SharedStore,
+    target: Target,
+) -> Result<(), Refusal> {
+    check.feed(bytes).map_err(Refusal::Image)?;
+    while !bytes.is_empty() {
+        let (took, full) = sectors.push(bytes);
+        if let Some((at, sector)) = full {
+            firmware::write_sector(&mut *store.lock().await, target, at, sector)
+                .map_err(Refusal::Flash)?;
+        }
+        bytes = &bytes[took..];
+    }
+    Ok(())
 }

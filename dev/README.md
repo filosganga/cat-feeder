@@ -288,6 +288,7 @@ docker compose down -v                  # stop and wipe every retained message
 ./dev/ap-password.sh a1b2c3             # a unit's setup/admin password
 ./dev/label.sh a1b2c3 d4e5f6            # printable labels with a join-Wi-Fi QR
 ./dev/pcb-check.sh                      # check pcb.diy before soldering; see the pcb-review skill
+./dev/ota.sh --address <ip> --id <id> --board zero --headless   # build and send firmware over the network
 ./dev/bootloader.sh                     # rebuild bootloader/bootloader.bin in Docker (ADR-0024); rarely
 ```
 

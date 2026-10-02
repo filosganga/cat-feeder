@@ -148,7 +148,9 @@ async fn main(spawner: Spawner) -> ! {
 
     // First of all, so a hang anywhere after this point resets the chip —
     // including in setup mode, which never returns.
-    spawner.spawn(watchdog_task(LowPower::new(peripherals.LPWR)).expect("failed to create watchdog task"));
+    spawner.spawn(
+        watchdog_task(LowPower::new(peripherals.LPWR)).expect("failed to create watchdog task"),
+    );
 
     let id = mk_static!(heapless::String<DEVICE_ID_LEN>, device_id());
     info!("board: {}, id={id}", cat_feeder::board::NAME);
@@ -309,10 +311,14 @@ async fn main(spawner: Spawner) -> ! {
     // a schedule command is stored before it is put in force. The meals are
     // read here, once, before either task can write.
     let mut store = store;
+    let pending = log_firmware(&mut store);
     let meals = load_schedule(&mut store);
     BUS.zone.set(load_zone(&mut store));
     BUS.seed_paused(load_paused(&mut store));
     let store = mk_static!(SharedStore, SharedStore::new(store));
+    if pending {
+        spawner.spawn(confirm_task(store).expect("failed to create confirm task"));
+    }
     let calibration = Calibration {
         portion_scale_pct: cfg.portion_scale_pct,
         detent_ms: cfg.detent_ms,
@@ -552,12 +558,53 @@ fn stored_config(store: &mut Store) -> Option<Config> {
     }
 }
 
-/// The BOOT button's reset: five seconds held, and the network settings go.
-///
-/// Sampled every 50 ms; the rules are `reset.rs`'s. The record is rewritten by
-/// `Record::without_network` — the power-on gesture's forgetting, not the
-/// menu's factory reset — so the unit comes back in setup mode with its meals,
-/// calibration and timezone.
+/// Returns once no upload is writing the idle app slot. A flash erase stalls
+/// whatever runs from flash for tens of milliseconds, so a turn started during
+/// one could act on a click late; the upload refuses to start mid-turn, and
+/// the feeder starts none while it writes (ADR-0022).
+async fn hold_for_flash() {
+    while BUS.flash_busy.load(Ordering::Relaxed) {
+        Timer::after(Duration::from_millis(100)).await;
+    }
+}
+
+/// Out of line, like [`log_calibration`]: inline, the `info!` lands in
+/// `feeder_task`'s frame and puts it over the stack budget.
+#[inline(never)]
+fn log_hold() {
+    info!("feed: holding while the firmware is written");
+}
+
+/// How long a new image has to reach the broker before it counts as failed.
+/// A cold boot reaches it in about 5 s on a Zero and 12 s on the dev kit's
+/// slower join; the margin is for a mesh node being slow, never for a broker
+/// that is down — then the old image comes back, which is the point.
+const CONFIRM_SECS: u64 = 120;
+
+/// Confirms a new image once it has reached the broker, or resets so the
+/// bootloader goes back to the previous one (ADR-0024). Spawned only when the
+/// bootloader is waiting on this image.
+#[embassy_executor::task]
+async fn confirm_task(store: &'static SharedStore) {
+    for _ in 0..CONFIRM_SECS {
+        if BUS.net.broker() {
+            match cat_feeder::firmware::confirm(&mut *store.lock().await) {
+                Ok(_) => info!("firmware: reached the broker, image confirmed"),
+                Err(e) => error!("firmware: could not confirm the image: {e:?}"),
+            }
+            return;
+        }
+        Timer::after(Duration::from_secs(1)).await;
+    }
+    warn!("firmware: no broker within {CONFIRM_SECS} s; restarting to roll back");
+    // Never mid-turn: a meal is marked consumed when it is sent, so one cut
+    // short here would not be served again by the image rolled back to.
+    while !cat_feeder::web::idle(&BUS) {
+        Timer::after(Duration::from_millis(200)).await;
+    }
+    esp_hal::system::software_reset()
+}
+
 /// How long the executor may go without running the watchdog task before the
 /// chip resets. Long enough for the slowest blocking call (a flash sector erase
 /// is tens of milliseconds); short because a panic mid-turn leaves the motor
@@ -587,6 +634,12 @@ async fn watchdog_task(mut low_power: LowPower<'static>) {
     }
 }
 
+/// The BOOT button's reset: five seconds held, and the network settings go.
+///
+/// Sampled every 50 ms; the rules are `reset.rs`'s. The record is rewritten by
+/// `Record::without_network` — the power-on gesture's forgetting, not the
+/// menu's factory reset — so the unit comes back in setup mode with its meals,
+/// calibration and timezone.
 #[embassy_executor::task]
 async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
     let mut hold = HoldToReset::new();
@@ -1223,6 +1276,31 @@ fn log_setup_switch_level(switch: &Switch<'static>) {
     );
 }
 
+/// Which slot is running, once at boot. `true` means the bootloader is waiting
+/// for this image to prove itself.
+#[inline(never)]
+fn log_firmware(store: &mut Store) -> bool {
+    match cat_feeder::firmware::running(store) {
+        Ok(running) => {
+            info!(
+                "firmware: {} running {:?}, otadata selects {:?} ({:?})",
+                env!("CARGO_PKG_VERSION"),
+                running.booted,
+                running.selected,
+                running.state
+            );
+            if running.pending() {
+                info!("firmware: new image, confirming once the broker answers");
+            }
+            running.pending()
+        }
+        Err(e) => {
+            warn!("firmware: slots unreadable ({e:?})");
+            false
+        }
+    }
+}
+
 #[inline(never)]
 fn log_indicator(status: Option<Status>) {
     if let Some(status) = status {
@@ -1259,22 +1337,46 @@ async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
                 // it means the hub was turned by hand — possible, but it takes
                 // real effort against the gear reduction — or that the switch
                 // is noisy. Either is worth seeing.
-                let portions =
-                    match select3(BUS.feed.receive(), CLICKS.receive(), BUS.calibrate.wait()).await
-                    {
-                        Either3::First(portions) => portions,
-                        Either3::Second(()) => {
-                            info!("feed: click while idle, nothing was feeding");
+                //
+                // While an upload writes the firmware, no turn starts
+                // (ADR-0022). The check that decides it is synchronous, just
+                // before `start` below, because a request can arrive after this
+                // select began. Portions it held are owed here (`owed`); the
+                // feed branch then returns as soon as the write is done rather
+                // than waiting for another request. Cancel-safe: nothing is
+                // received during a hold, and owed portions stay in `feeder`.
+                let owed = feeder.pending() > 0;
+                let portions = match select3(
+                    async {
+                        hold_for_flash().await;
+                        if owed { 0 } else { BUS.feed.receive().await }
+                    },
+                    CLICKS.receive(),
+                    async {
+                        hold_for_flash().await;
+                        BUS.calibrate.wait().await
+                    },
+                )
+                .await
+                {
+                    Either3::First(portions) => portions,
+                    Either3::Second(()) => {
+                        info!("feed: click while idle, nothing was feeding");
+                        continue;
+                    }
+                    // Only ever started from idle, so a run never shares the
+                    // motor with a meal. Feed requests arriving meanwhile wait
+                    // in the queue and run after it.
+                    Either3::Third(()) => {
+                        // Asked for during a write: put back, taken after it.
+                        if BUS.flash_busy.load(Ordering::Relaxed) {
+                            BUS.calibrate.signal(());
                             continue;
                         }
-                        // Only ever started from idle, so a run never shares the
-                        // motor with a meal. Feed requests arriving meanwhile wait
-                        // in the queue and run after it.
-                        Either3::Third(()) => {
-                            calibrate(&mut motor, feeder.is_jammed()).await;
-                            continue;
-                        }
-                    };
+                        calibrate(&mut motor, feeder.is_jammed()).await;
+                        continue;
+                    }
+                };
 
                 // Before the request, so a meal asked for after the knob saved a
                 // new scale is counted at it. Idle here, so it always applies.
@@ -1291,6 +1393,12 @@ async fn feeder_task(mut motor: Drv8833<'static>, cfg: Config) {
                 if feeder.pending() == 0 {
                     continue;
                 }
+                if BUS.flash_busy.load(Ordering::Relaxed) {
+                    BUS.feed_held.store(true, Ordering::Relaxed);
+                    log_hold();
+                    continue;
+                }
+                BUS.feed_held.store(false, Ordering::Relaxed);
 
                 let pressed = SWITCH_PRESSED.load(Ordering::Relaxed);
                 feeder.start(now_ms(), pressed);

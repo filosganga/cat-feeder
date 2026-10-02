@@ -1121,3 +1121,46 @@ To prove it, add a temporary task that waits 20 s and then spins
 broker instead of the console: `docker compose logs mosquitto` shows the unit
 connecting every 24–25 s (20 s plus the 5 s timeout). Remove the task after.
 
+## OTA update
+
+Status: done and observed, on a Zero.
+
+Action: `./dev/ota.sh --address <ip> --id <id> --board zero --headless`.
+It answers `Updated. Restarting into the new firmware...`; the unit's side:
+
+```
+INFO (6154) - web: [0] Post /update
+INFO (6156) - web: [0] update: 926576 bytes into Ota0 at 0x20000
+INFO (18551) - web: [0] update: Ota0 selected after 12394 ms
+INFO (23661) - web: restarting
+...
+INFO (318) - firmware: 0.1.0 running Ota0, otadata selects Ota0 (Some(PendingVerify))
+INFO (318) - firmware: new image, confirming once the broker answers
+INFO (5811) - firmware: reached the broker, image confirmed
+```
+
+A boot that is not a fresh update says `otadata selects` the slot it runs,
+`Some(Valid)`. After a rollback it runs the old slot and `otadata selects` the
+failed one:
+
+```
+INFO (303) - firmware: 0.1.0 running Ota1, otadata selects Ota0 (Some(Aborted))
+```
+
+**Do not reset the unit inside the confirm window** (`CONFIRM_SECS`):
+`capture.sh`, `flash.sh`, `read-flash` and `write-bin` all reset it, and a
+reset while the image is `PendingVerify` is what rolls it back. Watch the
+broker instead (`docker compose logs mosquitto`, or `./dev/watch.sh`), and
+capture after the window.
+
+To prove the rollback: stop the broker, send an image, wait `CONFIRM_SECS`
+plus half a minute, start the broker, capture. To prove the interlock: a feed sent during an upload logs
+`feed: holding while the firmware is written`, starts the moment the image is
+selected, and `web: restarting` comes only after the turn ends. Send the feed
+after the unit logs `mqtt: subscribed` — commands are not retained, and one
+sent earlier is simply lost.
+
+`capture.sh` prints its filtered view only when it ends. A script that waits
+on a line must poll the raw log it names (`cat-feeder-capture.*` under
+`$TMPDIR`), which is written live.
+

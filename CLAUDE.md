@@ -154,7 +154,14 @@ both serve over `http.rs`; the pure halves are `provisioning.rs` and
   port and user — **never from passwords**.
 - Admin page rules (ADR-0017): Basic auth with the derived password; foreign
   `Origin` on POST → 403; stored passwords never rendered, empty = keep;
-  network changes restart, nothing else does.
+  network changes and `/update` restart, nothing else does.
+- `POST /update` (ADR-0022) streams an image into the slot not running
+  (`firmware.rs`) and selects it only if `update::ImageCheck` passes: magic,
+  trailing SHA-256, and `web::SECRET_MARK` — this build's `ap_secret`, so an
+  image from another `cfg.toml` is refused. Refused mid-turn; while it writes
+  (`Bus::flash_busy`, until `otadata` is written) no turn starts, and the
+  restart waits for held feeds.
+  A new image confirms itself on the broker or resets after `CONFIRM_SECS`.
 - `CONNECTIONS = 3`: browsers open several sockets; one socket gets the real
   request RST'd.
 - `display_task` is spawned **before** `setup::run`, which never returns.
@@ -300,10 +307,12 @@ discovery.rs     Home Assistant discovery configs, JSON-checked
 ds3231.rs        DS3231 registers
 provisioning.rs  flash record, setup identity, form, minimal HTTP parsing
 admin.rs         admin page: auth, forms, rendering
+update.rs        checking an uploaded firmware image as it streams in
 dhcp.rs sha256.rs
 -- hardware --
 motor.rs switch.rs led.rs oled.rs rtc.rs i2c.rs store.rs
 mqtt.rs setup.rs http.rs web.rs
+firmware.rs      the OTA slots and otadata: idle slot, write, select, confirm
 wiring.rs        the Bus static: every shared handle and who writes it
 config.rs        Config from the flash record
 examples/mkrecord.rs  host-only record builder for provision.sh
@@ -313,6 +322,7 @@ pcb.diy          the perfboard (component side); docs/hardware.md
 
 Tasks: `net`, `mqtt`, `switch`, `feeder`, `schedule` (1 s tick), `rtc`,
 `encoder`, `ui`, `display`, `indicator`, `web`, `reset`, `watchdog` (feeds the
-RTC watchdog; a stall or panic resets the chip in 5 s). `encoder`, `ui` and
+RTC watchdog; a stall or panic resets the chip in 5 s), `confirm` (only on a
+new image's first boot). `encoder`, `ui` and
 `display` are left out of headless builds. They communicate only through
 `wiring::Bus`.

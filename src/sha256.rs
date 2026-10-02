@@ -93,33 +93,83 @@ const K: [u32; 64] = [
 
 /// The digest of `input`.
 pub fn sha256(input: &[u8]) -> [u8; 32] {
-    let mut state = H0;
+    let mut hasher = Sha256::new();
+    hasher.update(input);
+    hasher.finish()
+}
 
-    let (blocks, remainder) = input.as_chunks::<64>();
-    for block in blocks {
-        compress(&mut state, block);
+/// SHA-256 fed in pieces, for input that never sits in memory whole: a
+/// firmware image arriving over TCP a few hundred bytes at a time.
+pub struct Sha256 {
+    state: [u32; 8],
+    /// Bytes waiting for a full block.
+    block: [u8; 64],
+    filled: usize,
+    len: u64,
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256 {
+    pub const fn new() -> Self {
+        Self {
+            state: H0,
+            block: [0; 64],
+            filled: 0,
+            len: 0,
+        }
     }
 
-    // The tail is the leftover bytes, a 1 bit, zeros, and the length in bits.
-    // That needs one more block, or two when the leftover leaves no room for
-    // the nine bytes of marker and length.
-    let mut tail = [0u8; 128];
-    tail[..remainder.len()].copy_from_slice(remainder);
-    tail[remainder.len()] = 0x80;
+    pub fn update(&mut self, mut input: &[u8]) {
+        self.len = self.len.wrapping_add(input.len() as u64);
 
-    let tail_len = if remainder.len() + 9 <= 64 { 64 } else { 128 };
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    tail[tail_len - 8..tail_len].copy_from_slice(&bit_len.to_be_bytes());
+        if self.filled > 0 {
+            let take = input.len().min(64 - self.filled);
+            self.block[self.filled..self.filled + take].copy_from_slice(&input[..take]);
+            self.filled += take;
+            input = &input[take..];
+            if self.filled < 64 {
+                return;
+            }
+            let block = self.block;
+            compress(&mut self.state, &block);
+            self.filled = 0;
+        }
 
-    for block in tail[..tail_len].as_chunks::<64>().0 {
-        compress(&mut state, block);
+        let (blocks, remainder) = input.as_chunks::<64>();
+        for block in blocks {
+            compress(&mut self.state, block);
+        }
+        self.block[..remainder.len()].copy_from_slice(remainder);
+        self.filled = remainder.len();
     }
 
-    let mut digest = [0u8; 32];
-    for (word, out) in state.iter().zip(digest.as_chunks_mut::<4>().0) {
-        *out = word.to_be_bytes();
+    pub fn finish(mut self) -> [u8; 32] {
+        // The tail is the leftover bytes, a 1 bit, zeros, and the length in
+        // bits. That needs one more block, or two when the leftover leaves no
+        // room for the nine bytes of marker and length.
+        let mut tail = [0u8; 128];
+        tail[..self.filled].copy_from_slice(&self.block[..self.filled]);
+        tail[self.filled] = 0x80;
+
+        let tail_len = if self.filled + 9 <= 64 { 64 } else { 128 };
+        let bit_len = self.len.wrapping_mul(8);
+        tail[tail_len - 8..tail_len].copy_from_slice(&bit_len.to_be_bytes());
+
+        for block in tail[..tail_len].as_chunks::<64>().0 {
+            compress(&mut self.state, block);
+        }
+
+        let mut digest = [0u8; 32];
+        for (word, out) in self.state.iter().zip(digest.as_chunks_mut::<4>().0) {
+            *out = word.to_be_bytes();
+        }
+        digest
     }
-    digest
 }
 
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
@@ -248,6 +298,27 @@ mod tests {
         for (len, digest) in expected {
             let input = std::vec![b'a'; len];
             assert_eq!(hex(sha256(&input)), digest, "length {len}");
+        }
+    }
+
+    #[test]
+    fn fed_in_pieces_it_matches_the_whole() {
+        // Every split point, and every piece size, across three blocks: the
+        // carry between `update` calls is where streaming goes wrong.
+        let input: std::vec::Vec<u8> = (0..200u32).map(|i| (i * 7 + 3) as u8).collect();
+        let whole = sha256(&input);
+        for piece in 1..=input.len() {
+            let mut hasher = Sha256::new();
+            for chunk in input.chunks(piece) {
+                hasher.update(chunk);
+            }
+            assert_eq!(hasher.finish(), whole, "pieces of {piece}");
+        }
+        for split in 0..=input.len() {
+            let mut hasher = Sha256::new();
+            hasher.update(&input[..split]);
+            hasher.update(&input[split..]);
+            assert_eq!(hasher.finish(), whole, "split at {split}");
         }
     }
 }

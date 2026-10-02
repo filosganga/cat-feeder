@@ -126,13 +126,29 @@ pub async fn read_request<'b>(
     socket: &mut TcpSocket<'_>,
     request: &'b mut [u8; REQUEST_LEN],
 ) -> Option<(Head, &'b str)> {
+    let (head, filled) = read_head(tag, slot, socket, request).await?;
+    let body = read_body(tag, slot, socket, request, &head, filled).await?;
+    Some((head, body))
+}
+
+/// Reads until the head parses. Returns it and how much of `request` is
+/// filled: the head and whatever of the body came with it.
+///
+/// For a body too large for [`REQUEST_LEN`] — a firmware image — the caller
+/// stops here and streams the rest from the socket itself.
+pub async fn read_head(
+    tag: &str,
+    slot: u8,
+    socket: &mut TcpSocket<'_>,
+    request: &mut [u8; REQUEST_LEN],
+) -> Option<(Head, usize)> {
     let mut filled = 0;
 
-    let head = loop {
+    loop {
         // Parse before reading: the first read usually carries the whole head,
         // and a `GET` has no body to wait for.
         match parse_head(&request[..filled]) {
-            Ok(Some(head)) => break head,
+            Ok(Some(head)) => return Some((head, filled)),
             Ok(None) => {}
             Err(e) => {
                 warn!("{tag}: [{slot}] bad request ({e:?})");
@@ -155,8 +171,18 @@ pub async fn read_request<'b>(
                 return None;
             }
         }
-    };
+    }
+}
 
+/// Reads the rest of a body that fits in `request`, after [`read_head`].
+pub async fn read_body<'b>(
+    tag: &str,
+    slot: u8,
+    socket: &mut TcpSocket<'_>,
+    request: &'b mut [u8; REQUEST_LEN],
+    head: &Head,
+    mut filled: usize,
+) -> Option<&'b str> {
     let want = head.body_at.checked_add(head.content_length)?;
     if want > request.len() {
         warn!(
@@ -180,8 +206,7 @@ pub async fn read_request<'b>(
         }
     }
 
-    let body = core::str::from_utf8(&request[head.body_at..want]).ok()?;
-    Some((head, body))
+    core::str::from_utf8(&request[head.body_at..want]).ok()
 }
 
 /// Writes a response, headers and all. `extra` is more header lines, each
