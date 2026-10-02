@@ -114,7 +114,9 @@ clicks at all, and bounce not postponing the jam. Keep them.
 `partitions.csv` (via `espflash.toml`): `nvs` 24 KB at 0x9000, which `espflash`
 never rewrites, so configuration survives a reflash; two 1.9 MB app slots and
 `otadata` (ADR-0022). Every USB flash passes `--erase-data-parts ota`, or the
-bootloader boots the slot `otadata` names, not the one just written.
+bootloader boots the slot `otadata` names, not the one just written. The
+bootloader is ours, with rollback (ADR-0024): `bootloader/bootloader.bin`,
+rebuilt only by `dev/bootloader.sh`.
 (esp-radio's `NVS` symbol is an unrelated RAM array.)
 
 | Offset | Magic | Holds |

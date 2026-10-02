@@ -2,3 +2,5 @@
 # `cargo run` both start at the repo root.
 [idf_format_args]
 partition_table = "partitions.csv"
+# Rollback enabled (ADR-0024); rebuilt only by dev/bootloader.sh.
+bootloader = "bootloader/bootloader.bin"

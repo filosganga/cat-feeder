@@ -44,3 +44,9 @@ soak/
 
 # The provisioning record: holds the Wi-Fi password in the clear.
 record.bin
+
+# ESP-IDF output from dev/bootloader.sh; only bootloader/bootloader.bin is kept
+bootloader/build/
+bootloader/sdkconfig
+bootloader/sdkconfig.old
+bootloader/dependencies.lock

@@ -1,5 +1,8 @@
 # OTA is two app slots, pushed to the admin page, confirmed by the broker
 
+Amended by [ADR-0024](0024-our-own-bootloader-rolls-back.md): the bootloader, not
+the image, is what goes back to the old slot.
+
 A unit closed inside a feeder can only be reflashed by opening it, so it updates
 itself: the ESP-IDF scheme `esp-bootloader-esp-idf` already implements. The
 running image writes the other slot, points `otadata` at it, and reboots; a

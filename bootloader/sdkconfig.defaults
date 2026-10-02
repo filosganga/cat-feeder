@@ -1,0 +1,10 @@
+CONFIG_IDF_TARGET="esp32c6"
+# A New image gets one boot; if it resets before marking itself valid, the
+# bootloader aborts it and boots the last valid slot (ADR-0024).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# partitions.csv reaches 0x3E0000. A header claiming 2 MB, the default, could
+# refuse ota_1; every Zero has at least 4 MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# No build date or host paths in the binary, so a rebuild from the same
+# defaults and ESP-IDF version is byte-identical to the committed one.
+CONFIG_APP_REPRODUCIBLE_BUILD=y
