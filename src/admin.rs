@@ -22,8 +22,9 @@
 //!   page submits to this address, so a POST carrying an `Origin` that is not
 //!   this unit is turned away. No `Origin` at all is a non-browser client —
 //!   `curl` — which has to present the password itself.
-//! - **Feeding, the clock and the calibration act at once, like the knob.**
-//!   A feed is one more producer on the feed queue, a clock set here goes in
+//! - **Feeding, pausing, the clock and the calibration act at once, like the
+//!   knob.** A feed is one more producer on the feed queue, a pause is stored
+//!   and in force the way the knob's is (ADR-0023), a clock set here goes in
 //!   as a hand-set time exactly as the knob's does, and a calibration saved
 //!   here is written to the record and applied at the feeder's next idle
 //!   moment — the same path as the knob's `Detent` and `Portion`.
@@ -286,6 +287,18 @@ pub fn feed_from_form(body: &str) -> Result<u8, &'static str> {
         .ok_or("Portions must be a whole number from 1 to 16.")
 }
 
+/// What `POST /pause` asks for: `paused=on` pauses, `paused=off` resumes.
+///
+/// The state wanted, not a toggle, so a form sent twice — a double tap, a
+/// browser resubmitting on reload — leaves the unit where it was asked to be.
+pub fn pause_from_form(body: &str) -> Result<bool, &'static str> {
+    match field::<4>(body, "paused").ok().flatten().as_deref() {
+        Some("on") => Ok(true),
+        Some("off") => Ok(false),
+        _ => Err("Pause or resume?"),
+    }
+}
+
 /// The time `POST /clock` sets: `YYYY-MM-DDTHH:MM`, or with `:SS`, which is
 /// what a `datetime-local` input sends. Local wall-clock, no offset — the same
 /// as the knob's clock, and for the same reason: the schedule is written in
@@ -492,6 +505,7 @@ pub fn render_page(
 
     render_status(page, status, schedule);
     render_feed(page);
+    render_pause(page, status.paused);
     render_schedule(page, schedule);
     render_clock(page, status.zone);
     render_calibration(page, status.calibration, status.progress);
@@ -599,6 +613,26 @@ fn render_feed(page: &mut String<PAGE_LEN>) {
         "<h2>Feed</h2><form method=post action=/feed>\
          <input type=number name=portions min=1 max={MAX_CLICKS} value=1> \
          <button type=submit>Feed now</button></form>"
+    );
+}
+
+fn render_pause(page: &mut String<PAGE_LEN>, paused: bool) {
+    let (state, value, button) = if paused {
+        (
+            "Paused: no meal is served until it is resumed.",
+            "off",
+            "Resume",
+        )
+    } else {
+        ("Running.", "on", "Pause")
+    };
+    let _ = write!(
+        page,
+        "<h2>Schedule</h2><p>{state}</p><form method=post action=/pause>\
+         <input type=hidden name=paused value={value}>\
+         <button type=submit>{button}</button></form>\
+         <p class=hint>Meals that fall while paused are skipped, not served late. \
+         Feeding by hand still works.</p>"
     );
 }
 
@@ -1043,7 +1077,30 @@ mod tests {
         );
     }
 
-    // ---- feed, clock, calibration ----
+    // ---- feed, pause, clock, calibration ----
+
+    #[test]
+    fn a_pause_is_the_state_wanted() {
+        assert_eq!(pause_from_form("paused=on"), Ok(true));
+        assert_eq!(pause_from_form("paused=off"), Ok(false));
+        for bad in ["paused=", "paused=1", "paused=toggle", ""] {
+            assert!(pause_from_form(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_page_offers_the_opposite_of_the_pause_in_force() {
+        let mut page = String::new();
+        render_page(&mut page, &status(), None, &network(), "", None);
+        assert!(page.contains("name=paused value=on>"));
+        let paused = Status {
+            paused: true,
+            ..status()
+        };
+        render_page(&mut page, &paused, None, &network(), "", None);
+        assert!(page.contains("name=paused value=off>"));
+        assert!(page.contains(">Resume<"));
+    }
 
     #[test]
     fn a_feed_is_one_to_the_cap() {
@@ -1202,7 +1259,7 @@ mod tests {
         };
         render_page(&mut page, &failed, None, &network(), "", None);
         assert!(page.contains("the gaps disagreed (2000–4000 ms)"));
-        assert!(!page.contains("type=hidden"));
+        assert!(!page.contains("type=hidden name=detent_ms"));
     }
 
     /// Centred, with its own icon, so the browser never asks for

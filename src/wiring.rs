@@ -12,7 +12,7 @@
 //!   ui, web   --events-> mqtt            (a feed at the unit)
 //!   feeder    --events-> mqtt            (a jam)
 //!   feeder    --status-> mqtt            (feeding, jammed)
-//!   mqtt      --paused-> schedule
+//!   ui, web, mqtt --paused-> schedule (stored first: the unit owns it)
 //!   mqtt      --time---> schedule
 //!   rtc       --time---> schedule     (at boot, if the DS3231 kept time)
 //!   ui        --time---> schedule     (set by hand on the knob)
@@ -27,7 +27,7 @@
 //!   ui        --pressed> display      (wakes the panel)
 //!   ui        --mode---> display      (which page, or the menu)
 //!   ui        --redraw-> display      (now, not at the next tick)
-//!   ui        --pause--> mqtt         (publish the retained flag)
+//!   ui, web, mqtt --pause_changed> mqtt (publish the state now)
 //!   main      --ip-----> display
 //! ```
 
@@ -46,6 +46,7 @@ use crate::events::Event;
 use crate::indicator::Health;
 use crate::menu::{Calibration, Mode};
 use crate::schedule::{Schedule, ScheduleCommand, Slot, TimeSource, Wall};
+use crate::store::{Store, StoreError};
 use crate::tz::Zone;
 
 /// How many unread feed **requests** can be waiting before producers drop them.
@@ -400,12 +401,11 @@ pub struct Bus {
     pub events: Channel<CriticalSectionRawMutex, (Event, Option<Wall>), EVENT_DEPTH>,
     /// Written by `feeder`, read by `mqtt`.
     pub status: FeederStatus,
-    /// Written by `mqtt` from the retained `paused` topic, read by `schedule`.
-    ///
-    /// It outlives a broker connection on purpose: the retained flag is replayed
-    /// on every reconnect, but until it arrives the last value this unit acted
-    /// on is a better answer than `false`.
-    pub paused: AtomicBool,
+    /// Whether the schedule is paused. Seeded by `main` from flash, then
+    /// changed only through [`Bus::set_pause`], by `ui`, `web` and a live
+    /// command on `mqtt`; read by `schedule`. The unit is the authority
+    /// (ADR-0023), so nothing from the broker overrides it on reconnect.
+    paused: AtomicBool,
     /// The latest time for the schedule's clock: `feeder/time` from `mqtt`,
     /// the DS3231 from `rtc` at boot, or a hand-set time from `ui`. Each
     /// carries its [`TimeSource`](crate::schedule::TimeSource), which decides
@@ -450,18 +450,10 @@ pub struct Bus {
     /// Redraw now. Signalled by `ui` after every input, so the screen follows
     /// the knob rather than lagging it by up to a second.
     pub redraw: Signal<CriticalSectionRawMutex, ()>,
-    /// The menu asked for the schedule to be paused (`true`) or resumed.
-    /// Signalled by `ui`, taken by `mqtt`.
-    ///
-    /// The flag's home is the retained `feeder/<id>/paused` topic, so a change
-    /// made at the feeder has to be *published* there. Setting [`Bus::paused`]
-    /// alone would be undone by the retained value replayed on the next
-    /// reconnect, and Home Assistant's switch would disagree in the meantime.
-    ///
-    /// A [`Signal`] because only the latest wish matters, and because it keeps
-    /// that wish while the broker is unreachable: `mqtt` publishes a pending
-    /// one before subscribing, so the replay then carries it back unchanged.
-    pub pause_request: Signal<CriticalSectionRawMutex, bool>,
+    /// The pause changed: [`Bus::set_pause`] to `mqtt`, which publishes the
+    /// state payload now rather than at the next interval, so Home Assistant's
+    /// switch — not optimistic — follows at once.
+    pub pause_changed: Signal<CriticalSectionRawMutex, ()>,
     /// This unit's address, once DHCP has handed one out. Written by `main`,
     /// read by `display`.
     pub ip: Shared<Option<[u8; 4]>>,
@@ -536,7 +528,7 @@ impl Bus {
                 page: crate::menu::Page::Home,
             }),
             redraw: Signal::new(),
-            pause_request: Signal::new(),
+            pause_changed: Signal::new(),
             ip: Shared::new(None),
             now: Shared::new(None),
             calibrate: Signal::new(),
@@ -595,7 +587,23 @@ impl Bus {
         self.paused.load(Ordering::Relaxed)
     }
 
-    pub fn set_paused(&self, paused: bool) {
+    /// The pause as read from flash at boot. Nothing is written or published.
+    pub fn seed_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// Pauses or resumes the schedule, from whichever control asked.
+    ///
+    /// Flash first, then in force, so nothing claims a pause the unit would
+    /// forget on a reboot; a failed write changes nothing. An unchanged value
+    /// is not rewritten. `Ok(true)` when it changed.
+    pub fn set_pause(&self, store: &mut Store, paused: bool) -> Result<bool, StoreError> {
+        if self.is_paused() == paused {
+            return Ok(false);
+        }
+        store.save_paused(paused)?;
+        self.paused.store(paused, Ordering::Relaxed);
+        self.pause_changed.signal(());
+        Ok(true)
     }
 }

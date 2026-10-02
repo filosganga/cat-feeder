@@ -367,6 +367,11 @@ INFO (12111) - mqtt: paused = OFF                                        (+1 ms)
 INFO (12736) - clock: live time 2026-09-18T00:07:18+02:00, schedule armed (+625 ms)
 ```
 
+Both captures predate ADR-0023: their `mqtt: paused = OFF` is the broker's
+retained flag being applied. Current firmware acts on no retained pause — it
+logs nothing there, or `mqtt: ignored a retained paused command` while an old
+flag is still on the broker (clear it with `mosquitto_pub -r -n`).
+
 Check the seconds field on that time: the periodic publishes land on the minute
 at `:00`, so anything else is an answer to the request. Without one, the same
 boot waits up to a full minute for the next tick.
@@ -545,9 +550,9 @@ INFO - feed: start, portions=2, needs aligning
 INFO - clock: aligned, drift=71972s                  # step to the next day
 INFO - schedule: slot 08:00 due, feeding 1           # a new day re-arms slots
 
-INFO - mqtt: paused = ON
+INFO - mqtt: schedule paused
 INFO - schedule: slot 12:00 due but paused, marking consumed
-INFO - mqtt: paused = OFF
+INFO - mqtt: schedule resumed
                                                      # nothing: no replay
 INFO - schedule: slot 08:00 missed by 30m, not catching up
 ```
@@ -630,7 +635,7 @@ A manual feed while paused must still work — the check most likely to be built
 backwards, because treating pause as a global disable feels tidier:
 
 ```sh
-pub -r -t 'feeder/<id>/paused' -m 'ON'
+pub -t 'feeder/<id>/paused' -m 'ON'
 pub -t 'feeder/<id>/feed' -m '1'
 ```
 
@@ -658,10 +663,19 @@ rather than guessing a time:
 INFO - clock: no trusted time yet, schedule holding
 ```
 
-Finally, power-cycle while paused. The unit must come back paused from the
-retained topic alone, since `paused` is not stored in flash. One that comes back
-running has a retain flag missing on the command, or is publishing its first
-state payload before the retained flag arrives.
+Finally, pause from the admin page with the broker **stopped**, and
+power-cycle. The pause is in flash (ADR-0023), so the unit must come back
+paused with no network at all:
+
+```
+INFO - web: schedule paused
+...
+INFO - schedule: paused, from flash
+```
+
+Then start the broker: the first state payload says `"paused":true`, and a
+retained `ON`/`OFF` published with `-r` is refused with `mqtt: ignored a
+retained paused command`, changing nothing.
 
 Most of this logic is host-testable, and `schedule.rs`'s host tests cover it. Use the console to
 verify the wiring between the pure logic and the tasks, not the logic itself.

@@ -19,20 +19,21 @@
 //! and leaves this one alone, which is what makes `cargo run` bearable once a
 //! unit is set up: it keeps its credentials across every rebuild.
 //!
-//! ## Three records, three sectors
+//! ## Four records, four sectors
 //!
 //! | Offset in `nvs` | Record | Written by |
 //! |---|---|---|
 //! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the knob's settings, the admin page, both reset gestures (`Record::without_network`) |
 //! | `0x1000` | the schedule, `FDS1` | a schedule command, a `Meal n` entity, the admin page |
 //! | `0x2000` | the timezone, `FDZ1` | the admin page |
+//! | `0x3000` | the pause, `FDP1` | the knob, the admin page, a live `feeder/<id>/paused` |
 //!
-//! A sector each, so writing one never rewrites the other, and neither format
-//! has to change for the other. It also means `provision.sh`, which erases
-//! only the first sector before writing, keeps a unit's meals across a
-//! re-provision — as does the boot-button reset, which is for re-entering
+//! A sector each, so writing one never rewrites another, and no format has to
+//! change for another. It also means `provision.sh`, which erases
+//! only the first sector before writing, keeps a unit's meals and pause across
+//! a re-provision — as does the boot-button reset, which is for re-entering
 //! Wi-Fi details, not for forgetting the cats' schedule. The menu's factory
-//! reset erases all three.
+//! reset erases all four.
 
 use embedded_storage::{ReadStorage, Storage};
 use esp_bootloader_esp_idf::partitions::{
@@ -42,11 +43,17 @@ use esp_hal::peripherals::FLASH;
 use esp_storage::FlashStorage;
 
 use crate::provisioning::{DecodeError, MAX_RECORD_LEN, Record};
-use crate::schedule::{SCHEDULE_RECORD_LEN, Schedule, ScheduleRecordError};
+use crate::schedule::{
+    PAUSE_RECORD_LEN, SCHEDULE_RECORD_LEN, Schedule, ScheduleRecordError, decode_paused,
+    encode_paused,
+};
 use crate::tz::{ZONE_RECORD_LEN, Zone, ZoneRecordError};
 
 /// Where the timezone record starts: the sector after the schedule's.
 const ZONE_OFFSET: u32 = 0x2000;
+
+/// Where the pause record starts: the sector after the timezone's.
+const PAUSE_OFFSET: u32 = 0x3000;
 
 /// Where the schedule record starts, from the start of the partition. One
 /// flash sector after the credentials.
@@ -102,7 +109,7 @@ impl Store {
             .ok_or(StoreError::NoPartition)?;
 
         let (offset, len) = (entry.offset(), entry.len());
-        if (len as usize) < SCHEDULE_OFFSET as usize + SCHEDULE_RECORD_LEN {
+        if (len as usize) < PAUSE_OFFSET as usize + PAUSE_RECORD_LEN {
             return Err(StoreError::NoPartition);
         }
 
@@ -196,8 +203,26 @@ impl Store {
             .map_err(|_| StoreError::Flash)
     }
 
-    /// Throws away every record: credentials, calibration, meals and the
-    /// timezone. The menu's factory reset.
+    /// The stored pause, `None` for a sector with no pause record in it.
+    #[inline(never)]
+    pub fn load_paused(&mut self) -> Result<Option<bool>, StoreError> {
+        let mut buffer = [0u8; PAUSE_RECORD_LEN];
+        self.flash
+            .read(self.offset + PAUSE_OFFSET, &mut buffer)
+            .map_err(|_| StoreError::Flash)?;
+        Ok(decode_paused(&buffer))
+    }
+
+    /// Writes the pause, replacing whatever was there.
+    #[inline(never)]
+    pub fn save_paused(&mut self, paused: bool) -> Result<(), StoreError> {
+        self.flash
+            .write(self.offset + PAUSE_OFFSET, &encode_paused(paused))
+            .map_err(|_| StoreError::Flash)
+    }
+
+    /// Throws away every record: credentials, calibration, meals, the
+    /// timezone and the pause. The menu's factory reset.
     #[inline(never)]
     pub fn erase_all(&mut self) -> Result<(), StoreError> {
         self.erase()?;
@@ -205,7 +230,10 @@ impl Store {
         self.flash
             .write(self.offset + SCHEDULE_OFFSET, &blank)
             .map_err(|_| StoreError::Flash)?;
-        self.save_zone(None)
+        self.save_zone(None)?;
+        self.flash
+            .write(self.offset + PAUSE_OFFSET, &[0xFFu8; PAUSE_RECORD_LEN])
+            .map_err(|_| StoreError::Flash)
     }
 
     /// Forgets the network and keeps the calibration: the record rewritten by

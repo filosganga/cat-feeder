@@ -167,6 +167,7 @@ Log in with any username and the label's password.
 It shows the clock, the next meal and the last feed, and lets you:
 
 - feed now;
+- pause or resume the schedule (kept across a reboot);
 - set the eight meals;
 - set the clock (one button takes your phone's time) and the timezone, so the
   unit keeps summer time on its own when Home Assistant is not around;
@@ -190,8 +191,9 @@ Stored passwords are never shown; leave a password box empty to keep it.
 
 You need:
 
-- **Mosquitto** with a user for the feeders and `persistence true` (without
-  it, a broker restart loses each unit's pause flag).
+- **Mosquitto** with a user for the feeders. `persistence true` is
+  recommended, though nothing depends on it: each unit republishes what it
+  owns on every reconnect.
 - **Home Assistant on the right timezone.** It publishes local time with its
   offset, and the feeders use the wall-clock fields as they arrive. An
   instance left on UTC moves every meal by the offset while everything looks
@@ -228,14 +230,17 @@ The package adds:
 - **`script.cat_feeder_feed_all`** — one broadcast, so every feeder turns at
   the same instant.
 - **`schedule.cat_feeder_active`** — a weekly schedule helper. When it turns
-  off, every feeder is paused; when it turns on, they resume. Drag its blocks
-  for a holiday at home.
+  off, every online feeder is paused; when it turns on, they resume. Drag its
+  blocks for a holiday at home.
 
 No feeder id appears in the package: units are found in the device registry,
 so a new one joins by itself.
 
-**Home Assistant is the authority on pausing.** A pause set at the unit lasts
-until Home Assistant next restarts or its schedule helper changes.
+**The unit is the authority on pausing.** It keeps its pause in flash, so it
+survives a reboot, and the knob's menu and the admin page pause and resume it
+with no Home Assistant at all. Home Assistant's Paused switch and helper send
+a command when used; a feeder that is offline at that moment misses it and
+keeps what it holds — the switch shows which.
 
 A paused feeder is the one state where the cats do not eat and nothing alarms.
 If yours normally runs unattended, add an automation that warns when
@@ -317,8 +322,8 @@ meals. It asks `Keep` or `Erase` first.
 | red ×3 that lasts | no trusted time: the RTC lost power (flat or missing coin cell) **and** Home Assistant is not publishing the time. Install the package; check the coin cell |
 | console: `clock: started, … (retained; waiting for a live time)` and nothing more | the broker is up but Home Assistant is not publishing `feeder/time` |
 | online, dark LED, never feeds; `NO MEALS SET` | the unit has no meals. Set them, or copy them from another feeder |
-| amber ×1 | paused — check the Paused switch and `schedule.cat_feeder_active` |
-| resumed by hand, paused again later | Home Assistant re-applied its pause helper; that is by design |
+| amber ×1 | paused — resume it from the admin page, the knob or the Paused switch |
+| console: `ignored a retained paused command` at every connect | a retained flag left on the broker by an older firmware or package. Clear it once: `mosquitto_pub -r -n -t feeder/<id>/paused`. A unit that was paused that way comes back **running** after the upgrade — pause it again from the admin page, the knob or the switch |
 | every meal an hour or two out | Home Assistant's timezone is wrong (check the offset on `feeder/time`) |
 | solid red | jammed — see [Recovering from a jam](#recovering-from-a-jam). Repeated false jams with a full hopper: recalibrate with it full |
 | `rtc: nothing answered; running without one` | an open I²C line, or the DS3231 fitted on the wrong side. Beep SDA and SCL module pin to Zero pin |

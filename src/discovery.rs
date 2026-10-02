@@ -11,7 +11,7 @@
 //! | Entity | Component | Reads | Writes |
 //! |---|---|---|---|
 //! | Feed | `button` | | `feeder/<id>/feed` |
-//! | Paused | `switch` | `feeder/<id>/state` | `feeder/<id>/paused`, retained |
+//! | Paused | `switch` | `feeder/<id>/state` | `feeder/<id>/paused` |
 //! | Jammed | `binary_sensor` | `feeder/<id>/state` | |
 //! | Feeding | `event` | `feeder/<id>/event` | |
 //! | Meal *n* time, ×8 | `time` | `feeder/<id>/schedule/state` | `feeder/<id>/meal/<n>/time` |
@@ -182,10 +182,9 @@ impl Entity {
                 id = id,
             )?,
 
-            // `"retain": true` makes Home Assistant publish the command
-            // retained, which is the whole persistence story for pause: it is
-            // not in flash, so a unit that reboots comes back paused only
-            // because the broker remembers.
+            // Not retained, like every command here: the unit keeps its pause
+            // in flash and refuses a retained one (ADR-0023), so the switch
+            // works while the unit is online and changes nothing it is not.
             //
             // Not optimistic: the switch moves when the unit echoes `paused` in
             // its state, so a switch that springs back means the command never
@@ -196,7 +195,7 @@ impl Entity {
                     r#"{{"name":"Paused","unique_id":"feeder_{id}_paused","#,
                     r#""command_topic":"feeder/{id}/paused","state_topic":"feeder/{id}/state","#,
                     r#""value_template":"{{{{ 'ON' if value_json.paused else 'OFF' }}}}","#,
-                    r#""retain":true,"optimistic":false,"#,
+                    r#""optimistic":false,"#,
                     r#""availability_topic":"feeder/{id}/availability","#,
                 ),
                 id = id,
@@ -398,6 +397,13 @@ mod tests {
         assert_eq!(portions["min"], 0);
         assert_eq!(portions["max"], MAX_CLICKS);
         assert!(portions.get("retain").is_none());
+
+        let (_, _, paused) = all.iter().find(|(e, _, _)| *e == Entity::Paused).unwrap();
+        assert_eq!(paused["command_topic"], "feeder/a1b2c3/paused");
+        assert!(
+            paused.get("retain").is_none(),
+            "the unit owns its pause; a retained command is refused"
+        );
     }
 
     /// The command topics the entities publish to are the ones the unit

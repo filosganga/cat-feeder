@@ -120,6 +120,7 @@ an unrelated RAM array.)
 | nvs+0x0000 | `FDR2` | network, broker, detent interval, portion scale |
 | nvs+0x1000 | `FDS1` | the schedule |
 | nvs+0x2000 | `FDZ1` | the timezone name and rule |
+| nvs+0x3000 | `FDP1` | the pause (ADR-0023) |
 
 Each record has a magic and a CRC-32, so erased flash and an interrupted write
 read as *unconfigured*. A missing `nvs` partition is a loud error.
@@ -162,7 +163,7 @@ Details and exact discovery payloads: the `ha-mqtt-discovery` skill.
 feeder/<id>/availability       online | offline        retained, LWT offline
 feeder/<id>/feed               <portions:u8>           cmd
 feeder/all/feed                <portions:u8>           cmd, every unit
-feeder/<id>/paused             ON | OFF                retained (ADR-0014)
+feeder/<id>/paused             ON | OFF                cmd (ADR-0023)
 feeder/<id>/schedule           [{"time":"08:00","portions":2}, ...]  cmd
 feeder/<id>/schedule/state     same shape               retained echo
 feeder/<id>/meal/<n>/time      08:00:00                cmd, n = 1..8
@@ -177,10 +178,9 @@ feeder/<id>/event              {"event_type","portions","slot","at"}  not retain
   time is refused (schedule, meal edits); one forwarded live is acted on.
 - The subscription leaves `retain_as_published` off — that is what makes
   live vs retained time distinguishable.
-- Connect sequence: connect, discovery (retained), `online`, publish a pending
-  knob pause **before** subscribing, subscribe, echo the schedule, then
-  `feeder/time/request` once — after subscribing, or the answer is missed. TCP connect and
-  CONNACK each time out after 10 s.
+- Connect sequence: connect, discovery (retained), `online`, subscribe, echo
+  the schedule, then `feeder/time/request` once — after subscribing, or the
+  answer is missed. TCP connect and CONNACK each time out after 10 s.
 - `discovery.rs`'s device `model` is a contract with the Home Assistant
   package, which finds units by it.
 - `last_fed` and events are in **portions as requested**. Feeds sent *from*
@@ -201,8 +201,8 @@ Pure logic: `button.rs` (holds, taps), `menu.rs` (pages and menu), `encoder.rs`,
 - Hold `button::ARM_HOLD_MS` toggles locked/unlocked; tap acts; turning never
   dispenses. Unlock always lands on `Feed`; 10 s idle locks. A lock needs a
   different press from the unlock. Waking shows home.
-- Pause from the menu goes through `Bus::pause_request` and is published
-  retained, not just applied.
+- **The unit owns its pause** (ADR-0023): the menu, the admin page and a live
+  `paused` command all go through `Bus::set_pause` — flash, then in force.
 - The menu reads `Bus::calibration` before every input, so a web save is not
   overwritten by a stale copy.
 - Hold hints come from `display::hold_hint_for`, rounded **up**.

@@ -304,6 +304,7 @@ async fn main(spawner: Spawner) -> ! {
     let mut store = store;
     let meals = load_schedule(&mut store);
     BUS.zone.set(load_zone(&mut store));
+    BUS.seed_paused(load_paused(&mut store));
     let store = mk_static!(SharedStore, SharedStore::new(store));
     let calibration = Calibration {
         portion_scale_pct: cfg.portion_scale_pct,
@@ -409,7 +410,7 @@ async fn main(spawner: Spawner) -> ! {
     };
     spawner.spawn(web_task(stack, store, admin).expect("failed to create web task"));
 
-    mqtt::run(stack, cfg, id.as_str(), &BUS).await
+    mqtt::run(stack, cfg, id.as_str(), store, &BUS).await
 }
 
 /// Decides which credentials this unit runs on, or that there are none.
@@ -678,7 +679,7 @@ async fn ui_task(button: Switch<'static>, store: &'static SharedStore, calibrati
             Either::Second(steps) => UiInput::Turn(steps),
         };
 
-        // Only the two outcomes that write flash come back, because only they
+        // Only the outcomes that write flash come back, because only they
         // need the store's lock, which is an `.await`.
         if let Some(outcome) = ui_input(&mut menu, &mut click, input) {
             if with_store(&mut menu, &mut *store.lock().await, outcome) {
@@ -780,7 +781,7 @@ fn ui_input(menu: &mut Menu, click: &mut Click, input: UiInput) -> Option<MenuOu
     let outcome = outcome?;
     if matches!(
         outcome,
-        MenuOutcome::Save { .. } | MenuOutcome::FactoryReset
+        MenuOutcome::Save { .. } | MenuOutcome::FactoryReset | MenuOutcome::TogglePause
     ) {
         return Some(outcome);
     }
@@ -832,7 +833,8 @@ fn on_menu(outcome: MenuOutcome) {
             }
             Err(_) => warn!("menu: feed queue full, portion dropped"),
         },
-        MenuOutcome::TogglePause => toggle_pause(),
+        // Needs the store; handled in `with_store`.
+        MenuOutcome::TogglePause => {}
     }
 }
 
@@ -843,18 +845,18 @@ fn set_clock(wall: Wall) {
     info!("menu: clock set by hand to {wall}");
 }
 
-/// Applied locally at once, so the schedule stops now and the menu's label
-/// flips under the finger, and published so the retained flag — where it
-/// actually lives — agrees. See `Bus::pause_request`.
+/// Stored, then in force, so the schedule stops now, the menu's label flips
+/// under the finger, and a reboot comes back the same. See `Bus::set_pause`.
 #[inline(never)]
-fn toggle_pause() {
+fn toggle_pause(store: &mut Store) {
     let paused = !BUS.is_paused();
-    BUS.set_paused(paused);
-    BUS.pause_request.signal(paused);
-    info!(
-        "menu: schedule {}",
-        if paused { "paused" } else { "resumed" }
-    );
+    match BUS.set_pause(store, paused) {
+        Ok(_) => info!(
+            "menu: schedule {}",
+            if paused { "paused" } else { "resumed" }
+        ),
+        Err(e) => warn!("menu: pause not stored ({e:?}), nothing changed"),
+    }
 }
 
 /// The menu outcomes that write flash. True means restart now.
@@ -866,6 +868,10 @@ fn with_store(menu: &mut Menu, store: &mut Store, outcome: MenuOutcome) -> bool 
             false
         }
         MenuOutcome::FactoryReset => factory_reset(store),
+        MenuOutcome::TogglePause => {
+            toggle_pause(store);
+            false
+        }
         _ => false,
     }
 }
@@ -1605,6 +1611,25 @@ fn load_zone(store: &mut Store) -> Option<Zone> {
         Err(ZoneRecordError::Corrupt) => {
             warn!("clock: stored timezone is unreadable; keeping plain local time");
             None
+        }
+    }
+}
+
+/// The pause in flash at boot. Not stored, or unreadable, runs the schedule:
+/// the failure that matters is cats not being fed.
+#[inline(never)]
+fn load_paused(store: &mut Store) -> bool {
+    match store.load_paused() {
+        Ok(Some(paused)) => {
+            if paused {
+                info!("schedule: paused, from flash");
+            }
+            paused
+        }
+        Ok(None) => false,
+        Err(e) => {
+            warn!("schedule: could not read the pause ({e:?}); running the schedule");
+            false
         }
     }
 }

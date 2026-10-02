@@ -20,7 +20,7 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 | `feeder/<id>/availability` | `online` / `offline` | device → | yes, and the will |
 | `feeder/<id>/feed` | `<portions:u8>` | → device | **no** |
 | `feeder/all/feed` | `<portions:u8>` | → all devices | **no** |
-| `feeder/<id>/paused` | `ON` / `OFF` | → device, and device → from the knob's menu | yes |
+| `feeder/<id>/paused` | `ON` / `OFF` | → device | **no** |
 | `feeder/<id>/schedule` | `[{"time":"08:00","portions":2}]` | → one device | **no** |
 | `feeder/<id>/schedule/state` | `[{"time":"08:00","portions":2}]`, `[]` for none | device → | yes |
 | `feeder/<id>/meal/<n>/time` | `08:00:00` (or `08:00`), n = 1..8 | → device, from *Meal n time* | **no** |
@@ -33,8 +33,8 @@ only accept characters from `[a-zA-Z0-9_-]`, so lowercase hex is safe.
 The unit owns its schedule and keeps it in flash (its own sector, `FDS1`), and
 keeps its time in a DS3231. What stays broker state is the time — retained so
 a unit has *a* time to log, though only a live one or a set RTC arms the
-schedule — and the paused flag, which is not in flash and is replayed on every
-reconnect. `feeder/<id>/schedule/state` is retained too, but only as an echo of what
+schedule. The pause is in flash too (`FDP1`, ADR-0023); its state is
+`paused` in the state payload. `feeder/<id>/schedule/state` is retained too, but only as an echo of what
 the unit holds, published on every connect and every change; the unit never
 reads it back.
 
@@ -72,7 +72,9 @@ button as `1`, each schedule slot as its own `portions`.
 
 ## Pause stops the schedule, not the feeder
 
-`feeder/<id>/paused` is retained and per unit. While it is `ON`:
+The unit owns its pause (ADR-0023): kept in flash, changed by the knob, the
+admin page or a live `feeder/<id>/paused` command, never by a retained one.
+While it is on:
 
 - Scheduled slots do **not** feed. They are marked consumed anyway, so resuming
   never replays a slot and never catches one up.
@@ -81,13 +83,10 @@ button as `1`, each schedule slot as its own `portions`.
 - The unit stays `online` and keeps re-aligning its clock. Paused is not
   offline, and the feed button must not grey out.
 
-There is deliberately **no `feeder/all/paused`**. Two retained topics setting
-the same flag would race on reconnect, with no defined winner. Home Assistant
-pauses all three by publishing to each unit's own topic, in one automation that
+There is deliberately **no `feeder/all/paused`**. Home Assistant pauses all three by publishing to each unit's own topic, in one automation that
 finds the units in the device registry by the `model` in the discovery payload
 rather than being given a list. That makes `model` a contract: change it here
-and pause quietly stops matching anything. See `references/payloads.md`, which
-also says why it must publish rather than call `switch.turn_on`.
+and pause quietly stops matching anything. See `references/payloads.md`.
 
 A feeder left paused is the one state where cats do not eat and nothing alarms,
 which is why `paused` appears both in the state payload and as a switch.
@@ -102,10 +101,6 @@ Get this wrong and entities appear unavailable or never appear at all.
    — nineteen today — each **retained**, to
    `homeassistant/<component>/feeder_<id>/<object>/config`.
 3. Only then publish `online` to `feeder/<id>/availability`, retained.
-3a. If the knob's menu changed the pause while the broker was unreachable,
-   publish it now to `feeder/<id>/paused`, retained — **before** step 4, so the
-   retained replay the subscription triggers carries the new value back rather
-   than undoing it.
 4. Subscribe to `feeder/<id>/feed`, `feeder/all/feed`, `feeder/<id>/paused`,
    `feeder/<id>/schedule`, `feeder/<id>/meal/+/+`,
    `feeder/time`.
@@ -122,10 +117,6 @@ that arrives before the subscription exists is a reply nobody hears. It is also
 why the request is sent once per connection rather than on a timer — it exists
 to collapse the initial wait, not to poll. Measured on a Zero: the schedule arms
 626 ms after the request instead of up to a minute later.
-
-Step 4 is where the retained paused flag arrives. Do not publish a state payload
-claiming `"paused": false` before that subscription has had a chance to deliver
-it, or Home Assistant will briefly show a paused feeder as running.
 
 Because the discovery messages are retained, Home Assistant re-reads them after
 a restart on its own. The firmware does not need to subscribe to

@@ -8,13 +8,10 @@
 //! 3. `online`, retained.
 //! 4. Subscribe to the command topics.
 //! 5. The retained `feeder/<id>/schedule/state` echo: what this unit holds, since the
-//!    broker's copy may predate a reboot or a factory reset. A pause changed on
-//!    the knob while offline goes out *before* step 4, so the replay that
-//!    follows carries it back.
+//!    broker's copy may predate a reboot or a factory reset.
 //! 6. Ask for the time — after the subscriptions, or the answer arrives before
 //!    anything is listening for it.
-//! 7. The first state — but only after the retained `paused` has had a chance
-//!    to arrive, or Home Assistant briefly shows a paused feeder as running.
+//! 7. The first state, which carries the pause this unit holds in flash.
 //!
 //! Discovery is retained, so Home Assistant re-reads it after a restart on its
 //! own and this firmware never subscribes to `homeassistant/status`.
@@ -43,7 +40,10 @@ use rust_mqtt::types::{MqttBinary, MqttString, TopicFilter, TopicName};
 
 use crate::config::Config;
 use crate::discovery::{self, DISCOVERY_LEN, TOPIC_LEN};
-use crate::schedule::{Schedule, ScheduleCommand, SlotEdit, TimeSource, Wall, parse_time};
+use crate::schedule::{
+    PauseRefused, Schedule, ScheduleCommand, SlotEdit, TimeSource, Wall, parse_time, pause_command,
+};
+use crate::store::{SharedStore, Store};
 use crate::wiring::{Bus, TimeSync, now_ms};
 
 const PAYLOAD_LEN: usize = 128;
@@ -61,8 +61,8 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 /// is generous, and the failure then lands in the ordinary 5 s retry loop.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How long to let retained messages land after subscribing, before publishing
-/// a state payload that claims to know whether this unit is paused.
+/// How long to let retained messages land after subscribing, before the first
+/// state payload.
 const RETAINED_GRACE: Duration = Duration::from_millis(1_000);
 
 /// The broker declares a client dead after 1.5x this, and only then publishes
@@ -106,6 +106,8 @@ struct Topics {
     /// `feeder/<id>/event`: not retained, what the `Feeding` entity reads.
     event: String<TOPIC_LEN>,
     feed: String<TOPIC_LEN>,
+    /// `feeder/<id>/paused`: a command, `ON` or `OFF`. The unit's own answer
+    /// is `paused` in the state payload.
     paused: String<TOPIC_LEN>,
     /// `feeder/<id>/schedule`: a schedule for this unit alone.
     schedule_cmd: String<TOPIC_LEN>,
@@ -215,7 +217,13 @@ impl State {
 ///
 /// Never returns: losing the broker is normal, not fatal. The unit keeps
 /// running and retries.
-pub async fn run(stack: Stack<'static>, cfg: Config, id: &str, bus: &'static Bus) -> ! {
+pub async fn run(
+    stack: Stack<'static>,
+    cfg: Config,
+    id: &str,
+    store: &'static SharedStore,
+    bus: &'static Bus,
+) -> ! {
     let topics = Topics::new(id);
 
     let mut client_id: String<CLIENT_ID_LEN> = String::new();
@@ -234,7 +242,7 @@ pub async fn run(stack: Stack<'static>, cfg: Config, id: &str, bus: &'static Bus
     let endpoint = IpEndpoint::new(IpAddress::Ipv4(host), cfg.mqtt_port);
 
     loop {
-        if session(stack, cfg, endpoint, &topics, &client_id, id, bus)
+        if session(stack, cfg, endpoint, &topics, &client_id, id, store, bus)
             .await
             .is_err()
         {
@@ -259,6 +267,7 @@ async fn session(
     topics: &Topics,
     client_id: &str,
     id: &str,
+    store: &'static SharedStore,
     bus: &'static Bus,
 ) -> Result<(), ()> {
     let mut rx_buffer = [0u8; 1024];
@@ -337,14 +346,6 @@ async fn session(
     .await?;
     info!("mqtt: online");
 
-    // A pause chosen on the knob while the broker was unreachable. Published
-    // **before** subscribing, so the retained replay that follows carries the
-    // new value back rather than the stale one — which would otherwise undo
-    // the change the moment the unit reconnected.
-    if let Some(paused) = bus.pause_request.try_take() {
-        publish_paused(&mut client, topics, paused).await?;
-    }
-
     for filter in [
         topics.feed.as_str(),
         TOPIC_ALL_FEED,
@@ -379,9 +380,8 @@ async fn session(
     publish(&mut client, TOPIC_TIME_REQUEST, id.as_bytes(), false).await?;
     info!("mqtt: asked for the time");
 
-    // The retained `paused`, `schedule` and `time` arrive right after the
-    // subscriptions. Hold the first state publish back until they have had
-    // their moment, so the switch in Home Assistant never flickers.
+    // The retained `time` arrives right after the subscriptions. Hold the first
+    // state publish back until it has had its moment.
     let mut next_state = Instant::now() + RETAINED_GRACE;
 
     loop {
@@ -395,7 +395,7 @@ async fn session(
         let next = select4(
             client.poll_header(),
             Timer::at(next_state),
-            bus.pause_request.wait(),
+            bus.pause_changed.wait(),
             select(bus.schedule_changed.wait(), bus.events.receive()),
         )
         .await;
@@ -409,7 +409,7 @@ async fn session(
                     .map_err(|e| warn!("mqtt: read failed: {e:?}"))?;
 
                 if let Event::Publish(message) = event
-                    && on_message(
+                    && let Some(paused) = on_message(
                         message.topic.as_ref().as_str(),
                         &message.message,
                         // True only for messages the broker replayed at
@@ -422,10 +422,7 @@ async fn session(
                         bus,
                     )
                 {
-                    // Home Assistant's paused switch is not optimistic: it only
-                    // moves once this state arrives. Do not make the user wait
-                    // out the interval.
-                    next_state = Instant::now();
+                    pause(&mut *store.lock().await, paused, bus);
                 }
             }
 
@@ -447,12 +444,10 @@ async fn session(
                 info!("mqtt: event {}", event.event_type());
             }
 
-            Either4::Third(paused) => {
-                // The broker echoes it straight back on the subscription, and
-                // that echo is what `on_message` acts on and what brings the
-                // state payload forward.
-                publish_paused(&mut client, topics, paused).await?;
-            }
+            // From the knob, the admin page or a command just above. Home
+            // Assistant's paused switch is not optimistic: it only moves once
+            // this state arrives, so do not make anyone wait out the interval.
+            Either4::Third(()) => next_state = Instant::now(),
 
             Either4::Second(()) => {
                 next_state = Instant::now() + STATE_INTERVAL;
@@ -464,20 +459,15 @@ async fn session(
     }
 }
 
-/// Publishes the retained pause flag, as Home Assistant's switch would.
-///
-/// For a change made at the feeder itself. The retained topic is where the
-/// flag lives — see `Bus::pause_request` — so this is the same write Home
-/// Assistant makes, and its switch follows through the state payload.
-async fn publish_paused<N: Transport>(
-    client: &mut FeederClient<'_, N>,
-    topics: &Topics,
-    paused: bool,
-) -> Result<(), ()> {
-    let payload = if paused { "ON" } else { "OFF" };
-    publish(client, &topics.paused, payload.as_bytes(), true).await?;
-    info!("mqtt: published paused = {payload}, from the menu");
-    Ok(())
+/// A live pause command, stored and put in force like one from the knob.
+#[inline(never)]
+fn pause(store: &mut Store, paused: bool, bus: &Bus) {
+    let word = if paused { "paused" } else { "resumed" };
+    match bus.set_pause(store, paused) {
+        Ok(true) => info!("mqtt: schedule {word}"),
+        Ok(false) => info!("mqtt: schedule already {word}"),
+        Err(e) => warn!("mqtt: pause not stored ({e:?}), nothing changed"),
+    }
 }
 
 /// Publishes what this unit holds, retained, on `feeder/<id>/schedule/state`. `[]`
@@ -493,52 +483,44 @@ async fn publish_schedule<N: Transport>(
 
 /// Acts on one incoming publication.
 ///
-/// Returns true if the state payload should go out now rather than at the next
-/// interval.
+/// Returns a pause command to apply. That one needs the store's lock, which is
+/// an `.await`, so the caller applies it.
 fn on_message(
     topic_name: &str,
     payload: &[u8],
     retained: bool,
     topics: &Topics,
     bus: &'static Bus,
-) -> bool {
+) -> Option<bool> {
     if topic_name == topics.feed.as_str() || topic_name == TOPIC_ALL_FEED {
         on_feed(payload, bus);
-        false
     } else if topic_name == topics.paused.as_str() {
-        // Reported as the command that arrived, not as a transition: the
-        // retained flag is replayed on every reconnect, so "resumed" would be
-        // logged on a unit that was never paused.
-        match payload {
-            b"ON" => {
-                let changed = !bus.is_paused();
-                bus.set_paused(true);
-                info!("mqtt: paused = ON");
-                changed
-            }
-            b"OFF" => {
-                let changed = bus.is_paused();
-                bus.set_paused(false);
-                info!("mqtt: paused = OFF");
-                changed
-            }
-            _ => {
-                warn!("mqtt: paused payload must be ON or OFF");
-                false
-            }
-        }
+        return on_pause(payload, retained);
     } else if topic_name == TOPIC_TIME {
         on_time(payload, retained, bus);
-        false
     } else if topic_name == topics.schedule_cmd.as_str() {
         on_schedule(payload, retained, bus);
-        false
     } else if let Some(path) = topic_name.strip_prefix(topics.meal_prefix.as_str()) {
         on_meal_edit(path, payload, retained, bus);
-        false
     } else {
         warn!("mqtt: unexpected topic {topic_name}");
-        false
+    }
+    None
+}
+
+/// A pause command, if it is one to act on. **A retained one is refused**,
+/// like a retained schedule — see [`PauseRefused::Retained`].
+fn on_pause(payload: &[u8], retained: bool) -> Option<bool> {
+    match pause_command(payload, retained) {
+        Ok(wanted) => wanted,
+        Err(PauseRefused::Retained) => {
+            warn!("mqtt: ignored a retained paused command; publish it without retain");
+            None
+        }
+        Err(PauseRefused::NotOnOrOff) => {
+            warn!("mqtt: paused payload must be ON or OFF");
+            None
+        }
     }
 }
 
@@ -691,8 +673,8 @@ async fn subscribe<N: Transport>(
         error!("mqtt: `{topic_filter}` is not a valid topic filter");
     })?;
 
-    // At most once would be enough for `feed`, but the retained `paused`,
-    // `schedule` and `time` are worth a PUBACK. The duplicate a QoS 1 redelivery
+    // At most once would be enough for `feed`, but `paused`, `schedule` and
+    // `time` are worth a PUBACK. The duplicate a QoS 1 redelivery
     // can cause is what `MAX_CLICKS` guards against.
     let options = SubscriptionOptions::new().at_least_once();
 

@@ -296,19 +296,15 @@ automation:
       Pause stops the schedule, not the feeder: a manual feed still works while
       paused, so a bowl can always be topped up by hand.
 
-      One publish per unit. There is deliberately no feeder/all/paused, because
-      two retained topics setting the same flag would race on reconnect with no
-      defined winner.
+      One publish per unit, to each unit's own topic.
 
-      This publishes to the topic rather than calling switch.turn_on on the
-      discovered switch, and that is load-bearing: entity service calls skip
-      entities that are unavailable, and a feeder that is offline is exactly the
-      one whose pause has to be waiting in the broker when it comes back.
-
-      This automation is the authority on pausing. A pause or resume from a
-      unit's knob, or from its switch here, is a temporary override: it lasts
-      until the next Home Assistant start or the next change of the helper,
-      then reverts to what the helper says.
+      The unit is the authority on its pause (docs/adr/0023): it keeps it in
+      flash, and its knob and admin page change it with no Home Assistant at
+      all. So this only *asks*, when the helper changes -- never at Home
+      Assistant's start, which would undo a pause or resume made at a unit.
+      The command is not retained, and a unit refuses a retained one: a feeder
+      that is offline when the helper changes misses it, and keeps whatever
+      it was last told. Its Paused switch shows what it actually holds.
     mode: single
     variables:
       # Every feeder Home Assistant has been told about, found rather than
@@ -341,8 +337,6 @@ automation:
         entity_id: schedule.cat_feeder_active
         not_from: [unavailable, unknown]
         not_to: [unavailable, unknown]
-      - trigger: homeassistant
-        event: start
     actions:
       - repeat:
           for_each: "{{ units }}"
@@ -350,10 +344,9 @@ automation:
             - action: mqtt.publish
               data:
                 topic: "feeder/{{ repeat.item }}/paused"
-                # Retained: unlike the schedule, `paused` is not kept in the
-                # unit's flash, so a unit that reboots while paused must come
-                # back paused from the broker alone.
-                retain: true
+                # Never retained: it is a command, and the unit keeps the
+                # result in its own flash.
+                retain: false
                 # Pauses only when the helper is explicitly off. If it is
                 # unknown or unavailable the feeders keep running, because the
                 # failure that matters is cats not being fed.

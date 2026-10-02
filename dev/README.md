@@ -215,17 +215,11 @@ rather than of the broker:
 - **A bind-mounted Mosquitto data directory** still needs `persistence true` in
   its config, or retained messages are lost on every broker restart. The time
   comes straight back, because the package republishes it each minute, and the
-  schedule lives in each unit's flash rather than the broker's — but
-  `feeder/<id>/paused` is still broker state and does not come back, and a
-  paused feeder silently resuming is the one state change in this system that
-  nothing alarms about.
+  schedule and the pause live in each unit's flash rather than the broker's;
+  the units republish their discovery, state and schedule echo on reconnect.
 
-⚠️ **Do not point one feeder at two brokers.** The schedule travels with the
-unit, in flash, but `paused` is still a retained message, so a unit moved back
-to the dev stack picks up whatever *that* broker last held — quite possibly a
-pause from last week, which is indistinguishable from a current one. Each unit points at one broker,
-and changing it is a `./dev/provision.sh` run rather than something that can
-happen by accident.
+Each unit points at one broker, and changing it is a `./dev/provision.sh` run
+rather than something that can happen by accident.
 
 What the package sets up:
 
@@ -233,7 +227,7 @@ What the package sets up:
 |---|---|---|
 | publish the time | every minute, on restart, and on `feeder/time/request` | `feeder/time`, retained |
 | `script.cat_feeder_copy_schedule` | run by hand, never on restart | `feeder/<id>/schedule` per target unit, **not** retained |
-| pause when away | `schedule.cat_feeder_active` changes | `feeder/<id>/paused` per unit, retained |
+| pause when away | `schedule.cat_feeder_active` changes, never on restart | `feeder/<id>/paused` per online unit, **not** retained |
 
 Plus `script.cat_feeder_feed_all`, which publishes one `feeder/all/feed` so all
 three turn at the same instant rather than being staggered by three round
@@ -305,9 +299,9 @@ docker compose exec mosquitto mosquitto_pub -h localhost -u feeder -P feeder-dev
 
 ## Wiping retained state
 
-The broker holds the time, the paused flag, each unit's schedule echo and every
+The broker holds the time, each unit's state and schedule echo and every
 discovery config, so a stale retained message looks exactly like a firmware bug.
-The schedule itself is not among them: each unit keeps it in flash.
+The schedule and the pause are not among them: each unit keeps them in flash.
 
 ```sh
 docker compose down -v && docker compose up -d

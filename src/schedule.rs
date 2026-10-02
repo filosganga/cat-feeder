@@ -868,6 +868,78 @@ impl Schedule {
     }
 }
 
+/// Bytes the pause takes in flash: magic, the flag, CRC.
+pub const PAUSE_RECORD_LEN: usize = 4 + 1 + 4;
+
+/// `FDP` for feeder pause, and a layout version. Its own sector, like the
+/// zone's `FDZ1`, so pausing never rewrites the meals.
+const PAUSE_MAGIC: [u8; 4] = *b"FDP1";
+
+/// Whether the schedule is paused, as the unit keeps it in flash. The unit is
+/// the authority (ADR-0023): the knob, the admin page and a live command from
+/// Home Assistant all write here, and a reboot comes back as it was left.
+///
+/// Encoded as a record, not a bare byte, so erased flash and an interrupted
+/// write both read as *not stored* — and a unit that cannot say it is paused
+/// runs its schedule, because the failure that matters is cats not being fed.
+pub fn encode_paused(paused: bool) -> [u8; PAUSE_RECORD_LEN] {
+    let mut out = [0u8; PAUSE_RECORD_LEN];
+    out[..4].copy_from_slice(&PAUSE_MAGIC);
+    out[4] = u8::from(paused);
+    let crc = crate::provisioning::crc32(&out[..PAUSE_RECORD_LEN - 4]);
+    out[PAUSE_RECORD_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+    out
+}
+
+/// The stored pause, or `None` for a sector holding no pause record — erased,
+/// written before this record existed, or damaged. The caller runs the
+/// schedule on `None`.
+pub fn decode_paused(bytes: &[u8]) -> Option<bool> {
+    let bytes = bytes.get(..PAUSE_RECORD_LEN)?;
+    if bytes[..4] != PAUSE_MAGIC {
+        return None;
+    }
+    let crc = u32::from_le_bytes(bytes[PAUSE_RECORD_LEN - 4..].try_into().ok()?);
+    if crc != crate::provisioning::crc32(&bytes[..PAUSE_RECORD_LEN - 4]) {
+        return None;
+    }
+    match bytes[4] {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
+/// Why a `feeder/<id>/paused` command was not acted on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseRefused {
+    /// Replayed by the broker at subscribe time. The unit holds its pause in
+    /// flash and is the authority on it (ADR-0023); a retained flag — left by
+    /// an older firmware or package — is whatever somebody wanted at some
+    /// point, and acting on it at every reconnect would undo a pause or resume
+    /// made at the unit while Home Assistant was away.
+    Retained,
+    /// Neither `ON` nor `OFF`.
+    NotOnOrOff,
+}
+
+/// A `feeder/<id>/paused` command: `Ok(Some(true))` pauses, `Ok(Some(false))`
+/// resumes, `Ok(None)` is an empty payload — a retained message being deleted,
+/// nobody's command.
+pub fn pause_command(payload: &[u8], retained: bool) -> Result<Option<bool>, PauseRefused> {
+    if payload.is_empty() {
+        return Ok(None);
+    }
+    if retained {
+        return Err(PauseRefused::Retained);
+    }
+    match payload {
+        b"ON" => Ok(Some(true)),
+        b"OFF" => Ok(Some(false)),
+        _ => Err(PauseRefused::NotOnOrOff),
+    }
+}
+
 /// A cursor over the schedule payload.
 struct Json<'a> {
     bytes: &'a [u8],
@@ -2642,6 +2714,52 @@ mod tests {
             Schedule::decode(&[0xFF; SCHEDULE_RECORD_LEN]),
             Err(ScheduleRecordError::NotStored)
         );
+    }
+
+    #[test]
+    fn a_live_pause_command_is_on_or_off() {
+        assert_eq!(pause_command(b"ON", false), Ok(Some(true)));
+        assert_eq!(pause_command(b"OFF", false), Ok(Some(false)));
+        for bad in [&b"on"[..], b"1", b"true", b"PAUSE"] {
+            assert_eq!(pause_command(bad, false), Err(PauseRefused::NotOnOrOff));
+        }
+    }
+
+    /// The unit owns its pause; a flag the broker replays at subscribe time
+    /// must not undo one made at the knob or the admin page.
+    #[test]
+    fn a_retained_pause_command_is_refused() {
+        assert_eq!(pause_command(b"ON", true), Err(PauseRefused::Retained));
+        assert_eq!(pause_command(b"OFF", true), Err(PauseRefused::Retained));
+    }
+
+    #[test]
+    fn an_empty_pause_payload_is_a_deletion_not_a_command() {
+        assert_eq!(pause_command(b"", true), Ok(None));
+        assert_eq!(pause_command(b"", false), Ok(None));
+    }
+
+    #[test]
+    fn the_pause_round_trips_through_flash() {
+        assert_eq!(decode_paused(&encode_paused(true)), Some(true));
+        assert_eq!(decode_paused(&encode_paused(false)), Some(false));
+    }
+
+    /// Erased, never written, or damaged: all read as not stored, and the
+    /// caller then runs the schedule.
+    #[test]
+    fn a_missing_or_damaged_pause_reads_as_not_stored() {
+        assert_eq!(decode_paused(&[0xFF; PAUSE_RECORD_LEN]), None);
+        assert_eq!(decode_paused(&[0x00; PAUSE_RECORD_LEN]), None);
+        assert_eq!(decode_paused(&[]), None);
+        let good = encode_paused(true);
+        for byte in 0..PAUSE_RECORD_LEN {
+            for bit in 0..8 {
+                let mut bad = good;
+                bad[byte] ^= 1 << bit;
+                assert_eq!(decode_paused(&bad), None, "flip at {byte}.{bit} accepted");
+            }
+        }
     }
 
     /// Every single-bit flip is caught, as the credentials record's are.

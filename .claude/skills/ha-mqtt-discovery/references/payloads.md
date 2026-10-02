@@ -82,7 +82,6 @@ Topic: `homeassistant/switch/feeder_<id>/paused/config`, retained.
   "command_topic": "feeder/<id>/paused",
   "state_topic": "feeder/<id>/state",
   "value_template": "{{ 'ON' if value_json.paused else 'OFF' }}",
-  "retain": true,
   "optimistic": false,
   "availability_topic": "feeder/<id>/availability",
   "device": {
@@ -95,10 +94,10 @@ Topic: `homeassistant/switch/feeder_<id>/paused/config`, retained.
 }
 ```
 
-`"retain": true` makes Home Assistant publish the command with the retain flag,
-so a unit that reboots comes back paused. The paused flag is not stored in
-flash — unlike the schedule — so the broker is the only thing that remembers
-it.
+No `retain`, like every command here: the unit keeps its pause in flash and
+refuses a retained command (ADR-0023), so a reboot comes back paused without
+the broker's help, and a stale flag in the broker can never undo a pause made
+at the unit.
 
 Unlike the number entity this replaces, the switch is **not** optimistic. The
 device echoes `paused` in its state payload, so the switch flips only once the
@@ -337,8 +336,9 @@ check the result.
 
 Feeding all three at once is a single publish to `feeder/all/feed`.
 
-Pausing all three takes one publish per unit, because the paused flag is
-retained per unit and has no broadcast topic:
+Pausing all three takes one publish per unit, because there is no broadcast
+pause topic. Not retained — a unit refuses a retained one — so a unit that is
+offline at the time misses it and keeps its own pause:
 
 ```yaml
 # pause every feeder
@@ -348,7 +348,7 @@ retained per unit and has no broadcast topic:
       - service: mqtt.publish
         data:
           topic: "feeder/{{ repeat.item }}/paused"
-          retain: true
+          retain: false
           payload: "ON"
 ```
 
@@ -380,16 +380,13 @@ automation edit:
           - action: mqtt.publish
             data:
               topic: "feeder/{{ repeat.item }}/paused"
-              retain: true
+              retain: false
               payload: "{{ 'OFF' if trigger.to_state.state == 'on' else 'ON' }}"
 ```
 
-⚠️ **Publish to the topic; do not call `switch.turn_on` on the discovered
-switch.** It looks equivalent and needs no id at all, but Home Assistant drops
-unavailable entities from an entity service call, and every feeder's switch
-carries an `availability_topic`. Pausing while a unit is offline would then do
-nothing — and an offline unit is exactly the one whose pause has to be waiting
-in the broker when it comes back.
+Only on the helper's change, **never on Home Assistant's start**: the unit is
+the authority, and republishing at start would undo a pause or resume made at
+its knob or admin page.
 
 A reminder that fires if a feeder has been paused for more than a few days is
 an obvious addition, because a forgotten pause is silent by design and is the
@@ -416,7 +413,7 @@ for i in 1 2 3; do
 done
 
 # pause, then confirm a manual feed still works
-mosquitto_pub -h localhost -p 1883 -u <user> -P <pass> -r -t 'feeder/<id>/paused' -m 'ON'
+mosquitto_pub -h localhost -p 1883 -u <user> -P <pass> -t 'feeder/<id>/paused' -m 'ON'
 mosquitto_pub -h localhost -p 1883 -u <user> -P <pass> -t 'feeder/<id>/feed' -m '1'
 
 # pretend to be Home Assistant

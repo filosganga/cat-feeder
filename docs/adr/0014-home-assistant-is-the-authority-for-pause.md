@@ -1,5 +1,7 @@
 # Pause is broker state, and Home Assistant is its authority
 
+Superseded by [ADR-0023](0023-the-unit-is-the-authority-for-pause.md).
+
 `feeder/<id>/paused` is retained per unit — the one setting still held by the
 broker rather than in flash — so a unit rebooting while paused comes back
 paused. There is no `feeder/all/paused`: two retained topics setting one flag

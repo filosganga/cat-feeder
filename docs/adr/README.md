@@ -15,7 +15,7 @@ One file per decision that is hard to reverse, surprising without context, and t
 - [The status LED is dark when healthy, counts faults, and is solid for the mechanism](0011-the-led-is-dark-when-healthy.md)
 - [The electronics live in their own printed case](0012-electronics-live-in-their-own-case.md)
 - [The feeder's AA batteries are a backup through a diode-OR, never charged](0013-batteries-are-a-diode-or-backup.md)
-- [Pause is broker state, and Home Assistant is its authority](0014-home-assistant-is-the-authority-for-pause.md)
+- [Pause is broker state, and Home Assistant is its authority](0014-home-assistant-is-the-authority-for-pause.md) — superseded by 0023
 - [Making feeders share meals is a copy in Home Assistant, not a broadcast topic](0015-syncing-schedules-is-a-copy-in-home-assistant.md)
 - [The unit keeps summer time from a POSIX rule its admin page derives](0016-the-unit-keeps-summer-time-from-a-browser-derived-rule.md)
 - [The admin page authenticates with the unit's derived password](0017-the-admin-page-uses-the-derived-password.md)
@@ -23,3 +23,4 @@ One file per decision that is hard to reverse, surprising without context, and t
 - [The broker is configured as an IPv4 address](0019-the-broker-is-an-ipv4-address.md)
 - [No sound](0020-no-sound.md)
 - [Headless is a build flag, not a probe](0021-headless-is-a-build-flag.md)
+- [The unit is the authority for pause](0023-the-unit-is-the-authority-for-pause.md)

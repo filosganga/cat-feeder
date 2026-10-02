@@ -11,6 +11,7 @@
 //! | anything, without the password | `401` and a Basic challenge |
 //! | `GET /` | the page: status, meals, network |
 //! | `POST /feed` | portions onto the feed queue, like the knob's `Feed` |
+//! | `POST /pause` | pause or resume the schedule, into flash, like the knob's `Pause` |
 //! | `POST /schedule` | the meals, through the schedule task — no restart |
 //! | `POST /clock` | a hand-set time, like the knob's `Clock` |
 //! | `POST /calibration` | the detent and portion scale, into flash and in force |
@@ -33,8 +34,8 @@ use log::{info, warn};
 
 use crate::admin::{
     CHALLENGE, Network, Notice, ScheduleFormError, Status, authorized, calibration_from_form,
-    clock_form, feed_from_form, network_from_form, render_page, render_restarting, same_origin,
-    schedule_from_form,
+    clock_form, feed_from_form, network_from_form, pause_from_form, render_page, render_restarting,
+    same_origin, schedule_from_form,
 };
 use crate::events::{Event, Source};
 use crate::http;
@@ -197,6 +198,15 @@ async fn handle(
             http::send("web", socket, "200 OK", "", page).await;
             false
         }
+        (Method::Post, "/pause") => {
+            let notice = match pause_from_form(body) {
+                Ok(paused) => save_pause(paused, store, bus).await,
+                Err(message) => Notice::Problem(message),
+            };
+            show(page, unit, bus, "", Some(notice));
+            http::send("web", socket, "200 OK", "", page).await;
+            false
+        }
         (Method::Post, "/clock") => {
             let notice = match clock_form(body) {
                 Ok(form) => {
@@ -344,6 +354,32 @@ fn schedule_message(e: ScheduleFormError) -> &'static str {
         }
         ScheduleFormError::BadTime(_) => "A meal's time is not a time of day.",
         ScheduleFormError::BadPortions(_) => "A meal's portions are out of range.",
+    }
+}
+
+/// Pauses or resumes the schedule through [`Bus::set_pause`], the knob's path:
+/// flash first, then in force, then Home Assistant's switch follows from the
+/// state payload. Works with no broker at all — the unit owns its pause.
+async fn save_pause(
+    paused: bool,
+    store: &'static SharedStore,
+    bus: &'static Bus,
+) -> Notice<'static> {
+    let word = if paused { "paused" } else { "resumed" };
+    match bus.set_pause(&mut *store.lock().await, paused) {
+        Ok(true) => {
+            info!("web: schedule {word}");
+            Notice::Done(if paused {
+                "Schedule paused."
+            } else {
+                "Schedule resumed."
+            })
+        }
+        Ok(false) => Notice::Done("Nothing changed."),
+        Err(e) => {
+            warn!("web: pause not stored ({e:?})");
+            Notice::Problem("Saving to flash failed; nothing changed.")
+        }
     }
 }
 
