@@ -65,6 +65,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::gpio::{Input, InputConfig, Pull};
 use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::rng::Rng;
+use esp_hal::rtc_cntl::{Rtc as LowPower, RwdtStage};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::{
     Config as WifiConfig, ControllerConfig, Interface, WifiController,
@@ -142,6 +143,12 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     info!("Embassy initialized!");
+    // A watchdog reset is otherwise indistinguishable from any other boot.
+    info!("boot: reset reason {:?}", esp_hal::system::reset_reason());
+
+    // First of all, so a hang anywhere after this point resets the chip —
+    // including in setup mode, which never returns.
+    spawner.spawn(watchdog_task(LowPower::new(peripherals.LPWR)).expect("failed to create watchdog task"));
 
     let id = mk_static!(heapless::String<DEVICE_ID_LEN>, device_id());
     info!("board: {}, id={id}", cat_feeder::board::NAME);
@@ -551,6 +558,35 @@ fn stored_config(store: &mut Store) -> Option<Config> {
 /// `Record::without_network` — the power-on gesture's forgetting, not the
 /// menu's factory reset — so the unit comes back in setup mode with its meals,
 /// calibration and timezone.
+/// How long the executor may go without running the watchdog task before the
+/// chip resets. Long enough for the slowest blocking call (a flash sector erase
+/// is tens of milliseconds); short because a panic mid-turn leaves the motor
+/// pins as they were until the reset puts them back to inputs.
+const WATCHDOG_TIMEOUT_SECS: u64 = 5;
+
+/// Keeps the RTC watchdog fed, so a stalled executor or a panic resets the chip
+/// instead of hanging it. `esp_hal::init` disables every watchdog, and
+/// esp-backtrace's panic handler spins with interrupts off, so without this a
+/// panic stops the unit until it is power-cycled. A reset is also what hands an
+/// unconfirmed OTA image back to the bootloader (ADR-0024).
+///
+/// Fed from a task rather than a timer interrupt so that it proves the executor
+/// is still scheduling, not merely that interrupts still fire.
+#[embassy_executor::task]
+async fn watchdog_task(mut low_power: LowPower<'static>) {
+    let rwdt = &mut low_power.rwdt;
+    rwdt.set_timeout(
+        RwdtStage::Stage0,
+        esp_hal::time::Duration::from_secs(WATCHDOG_TIMEOUT_SECS),
+    );
+    rwdt.enable();
+    info!("watchdog: armed, {WATCHDOG_TIMEOUT_SECS} s");
+    loop {
+        rwdt.feed();
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
 #[embassy_executor::task]
 async fn reset_task(boot: Input<'static>, store: &'static SharedStore) {
     let mut hold = HoldToReset::new();

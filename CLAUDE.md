@@ -312,6 +312,7 @@ pcb.diy          the perfboard (component side); docs/hardware.md
 ```
 
 Tasks: `net`, `mqtt`, `switch`, `feeder`, `schedule` (1 s tick), `rtc`,
-`encoder`, `ui`, `display`, `indicator`, `web`, `reset`. `encoder`, `ui` and
+`encoder`, `ui`, `display`, `indicator`, `web`, `reset`, `watchdog` (feeds the
+RTC watchdog; a stall or panic resets the chip in 5 s). `encoder`, `ui` and
 `display` are left out of headless builds. They communicate only through
 `wiring::Bus`.

@@ -1098,3 +1098,26 @@ timeout, which is not a failure.
 - **The green confirmation replaying every few seconds** — a boot loop, almost
   certainly a brown-out on motor start. This is the intended reading of that
   pattern, not a bug in the indicator.
+
+## Watchdog
+
+Status: done and observed, on a Zero.
+
+Every boot logs the reset reason and arms the RTC watchdog before anything
+else is spawned:
+
+```
+INFO (326) - boot: reset reason Some(CoreUsbUart)
+INFO (401) - watchdog: armed, 5 s
+```
+
+`CoreUsbUart` is espflash resetting the chip; a power-up says `ChipPowerOn`.
+A watchdog reset resets the chip's own USB too, so on the Zero the monitor
+ends with `Broken pipe` at the moment it fires and the reason is never seen
+live; reconnect with `./dev/capture.sh` and it is a fresh boot.
+
+To prove it, add a temporary task that waits 20 s and then spins
+(`loop { core::hint::spin_loop() }`) or panics, flash it, and watch the
+broker instead of the console: `docker compose logs mosquitto` shows the unit
+connecting every 24–25 s (20 s plus the 5 s timeout). Remove the task after.
+

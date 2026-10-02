@@ -104,24 +104,26 @@ behaviour and the jam timeout, runs with nobody at the bench.
 
 ## What a healthy boot looks like
 
-Verified on the dev kit. The ESP-IDF second-stage bootloader speaks first, then
-the application:
+Verified on a headless Zero (a dev kit adds its panel and knob lines, and
+reaches the network more slowly). The second-stage bootloader, ours
+(ADR-0024), speaks first, then the application:
 
 ```
 ESP-ROM:esp32c6-20220919
-rst:0x1 (POWERON),boot:0x1c (SPI_FAST_FLASH_BOOT)
-I (23) boot: ESP-IDF v6.1-beta1-497-g14f663f003e 2nd stage bootloader
-I (63) boot:  2 factory          factory app      00 00 00010000 007f0000
-I (198) boot: Loaded app from partition at offset 0x10000
-I (198) boot: Disabling RNG early entropy source...
-INFO (261) - Embassy initialized!
-INFO (264) - board: devkit, id=db0260
-INFO (358) - wifi: connecting to <ssid>
-INFO (364) - switch: watching GPIO2, currently released
-INFO (1621) - wifi: associated
-INFO (11643) - wifi: connected, ip=192.168.1.123/24
-INFO (11797) - mqtt: connected, id=feeder_<id>
-INFO (11821) - mqtt: online
+I (23) boot: ESP-IDF v6.0 2nd stage bootloader
+I (66) boot:  3 ota_0            OTA app          00 10 00020000 001e0000
+I (302) boot: Loaded app from partition at offset 0x20000
+I (302) boot: Disabling RNG early entropy source...
+INFO (326) - Embassy initialized!
+INFO (326) - boot: reset reason Some(CoreUsbUart)
+INFO (326) - board: zero, id=a1b2c3
+INFO (397) - wifi: connecting to <ssid>
+INFO (400) - switch: watching GPIO2, currently released
+INFO (401) - watchdog: armed, 5 s
+INFO (2884) - wifi: associated
+INFO (4912) - wifi: connected, ip=192.168.1.123/24
+INFO (4987) - mqtt: connected, id=feeder_a1b2c3
+INFO (5206) - mqtt: online
 ```
 
 Two different timestamp formats share this log and they are not the same clock.
