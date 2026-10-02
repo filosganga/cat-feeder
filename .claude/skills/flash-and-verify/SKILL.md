@@ -18,7 +18,8 @@ they fail loudly on the mistakes that otherwise cost a whole run.
 ./dev/flash.sh                        # build, flash, capture 45 s
 ./dev/flash.sh --seconds 90           # ...capture 90 s instead
 ./dev/flash.sh --board zero           # ...a Zero rather than the dev kit
-./dev/capture.sh --seconds 60 --filter 'feed:|switch:'   # no reflash, filtered
+./dev/capture.sh --seconds 60 --filter 'feed:|switch:'   # listen: no reflash, no reset
+./dev/capture.sh --reset              # ...or reset, to capture a boot
 ```
 
 **Pass the flags, not an environment prefix.** Every setting these scripts take

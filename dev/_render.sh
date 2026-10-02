@@ -2,7 +2,10 @@
 # Renders a captured serial log. Used by flash.sh and capture.sh; not meant to
 # be called directly.
 #
-#   _render.sh <logfile> [filter-regex]
+#   _render.sh <logfile> [filter-regex] [listening]
+#
+# `listening` means the capture did not reset the unit (capture.sh without
+# --reset), so silence is a quiet unit, not a dead one or the wrong port.
 #
 # Strips colour codes, optionally filters, and annotates each line with the
 # milliseconds elapsed since the previous shown line.
@@ -11,6 +14,7 @@ set -euo pipefail
 
 LOG="$1"
 FILTER="${2:-}"
+LISTENING="${3:-}"
 
 PLAIN=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG")
 
@@ -35,6 +39,12 @@ if printf '%s\n' "$PLAIN" | grep -qiE 'panic|stack overflow'; then
   echo "--- PANIC detected:"
   printf '%s\n' "$PLAIN" | grep -iA 6 'panic' | head -12
   exit 1
+fi
+
+if [ "$APP_LINES" -eq 0 ] && [ -n "$LISTENING" ]; then
+  echo "--- the unit printed nothing while listening; it logs little when idle."
+  echo "    ./dev/capture.sh --reset shows a whole boot (and restarts the unit)."
+  exit 0
 fi
 
 if [ "$APP_LINES" -eq 0 ]; then

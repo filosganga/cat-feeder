@@ -254,7 +254,7 @@ between releases.
 ```sh
 cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"  # pure logic
 ./dev/flash.sh --board zero [--headless] [--seconds n] [--filter re]  # build, flash, capture
-./dev/capture.sh                          # capture without reflashing
+./dev/capture.sh [--reset]                # listen without reflashing; --reset: from boot
 ./dev/provision.sh [--host ip --user u --password-file -] [--detent-ms n] [--portion-scale p]
 ./dev/soak.sh --hours n && ./dev/soak-report.sh
 ./dev/pcb-check.sh                        # after every pcb.diy edit; pcb-review skill

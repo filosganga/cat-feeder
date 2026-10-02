@@ -21,9 +21,10 @@
 # image, which confirms itself once it reaches the broker; one that does not
 # within CONFIRM_SECS is rolled back by the bootloader (ADR-0024).
 #
-# Do not reset the unit until it has confirmed: dev/capture.sh, dev/flash.sh
-# and every espflash command reset it, and a reset before the confirmation is
-# exactly what rolls the update back. Watch the broker instead.
+# Do not reset the unit until it has confirmed: dev/flash.sh,
+# dev/capture.sh --reset and every espflash command reset it, and a reset
+# before the confirmation is exactly what rolls the update back. Plain
+# dev/capture.sh only listens, so it is safe.
 #
 # A unit still on the old single-slot partition table answers that it has no
 # OTA slots: it needs one USB flash with dev/flash.sh first.
@@ -99,5 +100,5 @@ if ! curl --silent --show-error --fail-with-body --config "$CURL_CONFIG" \
   exit 1
 fi
 echo
-echo "Watch it come back with ./dev/watch.sh 'feeder/${ID}/#'. Not dev/capture.sh:"
-echo "a reset before the new image confirms itself rolls it back."
+echo "Watch it come back: ./dev/watch.sh 'feeder/${ID}/#', or ./dev/capture.sh on USB"
+echo "(it listens; --reset before the new image confirms itself would roll it back)."

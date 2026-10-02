@@ -768,7 +768,7 @@ Needed constantly while building setup mode, and the order matters:
 ```sh
 ./dev/flash.sh 5                                    # 1. new firmware FIRST
 espflash erase-region --port "$ESPFLASH_PORT" 0x9000 0x1000
-./dev/capture.sh 15                                 # 2. then look
+./dev/capture.sh --reset 15                         # 2. then look, from boot
 ```
 
 **Flash before erasing, not after.** `erase-region` hard-resets the chip, so
@@ -1049,8 +1049,8 @@ so they have to be deliberate rather than a double-tap.
 
 ### Testing anything below `NoTime` needs care
 
-`capture.sh` and `flash.sh` both **reset the board** when they open the serial
-port. A reset drops clock trust, so the unit returns to `NoTime` and stays there
+`flash.sh` and `capture.sh --reset` both **reset the board** when they open
+the serial port; plain `capture.sh` only listens. A reset drops clock trust, so the unit returns to `NoTime` and stays there
 until Home Assistant's next once-a-minute publish — anywhere from 0 to 60
 seconds, and observed at 46 s in one run.
 
@@ -1114,7 +1114,7 @@ INFO (401) - watchdog: armed, 5 s
 `CoreUsbUart` is espflash resetting the chip; a power-up says `ChipPowerOn`.
 A watchdog reset resets the chip's own USB too, so on the Zero the monitor
 ends with `Broken pipe` at the moment it fires and the reason is never seen
-live; reconnect with `./dev/capture.sh` and it is a fresh boot.
+live; `./dev/capture.sh --reset` then shows a fresh boot.
 
 To prove it, add a temporary task that waits 20 s and then spins
 (`loop { core::hint::spin_loop() }`) or panics, flash it, and watch the
@@ -1148,10 +1148,13 @@ INFO (303) - firmware: 0.1.0 running Ota1, otadata selects Ota0 (Some(Aborted))
 ```
 
 **Do not reset the unit inside the confirm window** (`CONFIRM_SECS`):
-`capture.sh`, `flash.sh`, `read-flash` and `write-bin` all reset it, and a
-reset while the image is `PendingVerify` is what rolls it back. Watch the
-broker instead (`docker compose logs mosquitto`, or `./dev/watch.sh`), and
-capture after the window.
+`flash.sh`, `capture.sh --reset`, `read-flash` and `write-bin` all reset it,
+and a reset while the image is `PendingVerify` is what rolls it back. Plain
+`capture.sh` only listens, so it is safe, and shows the confirmation:
+
+```
+INFO (5811) - firmware: reached the broker, image confirmed
+```
 
 To prove the rollback: stop the broker, send an image, wait `CONFIRM_SECS`
 plus half a minute, start the broker, capture. To prove the interlock: a feed sent during an upload logs

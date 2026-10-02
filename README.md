@@ -351,7 +351,8 @@ meals. It asks `Keep` or `Erase` first.
 | panel image shifted, edges wrapped | a 1.3" SH1106 panel, not an SSD1306-compatible one |
 
 The serial console says what the unit is doing at every step:
-`./dev/capture.sh` attaches without reflashing.
+`./dev/capture.sh` listens without reflashing or resetting the unit;
+`--reset` captures a boot instead.
 
 ## For developers
 
