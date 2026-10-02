@@ -11,9 +11,29 @@ its row; git history keeps the record.
 | Schedule editor on the knob | meals arrive over MQTT or the admin page only |
 | Wi-Fi and broker entry on the knob | needs a character picker; parked |
 | A short press feeding one portion with the broker down | would revisit ADR-0010 |
-| OTA updates | designed (ADR-0022). First: prove on the dev kit that the new table keeps the `nvs` record, and whether espflash's bootloader rolls back on its own |
+| OTA updates | designed (ADR-0022); the partition table is in. Steps below |
 | An external WS2812 on GPIO8 | no firmware change: it sits in parallel with the onboard LED |
 | The printed enclosure | one design for every feeder (ADR-0012) |
+
+### OTA, in order
+
+1. **Bench test the table on a dev kit.** Provision, then `dev/flash.sh`: the
+   boot log must still show `store: nvs at 0x9000` and the stored record. The
+   first run also proves `--erase-data-parts ota` is a value espflash accepts.
+2. **Find out whether espflash's bundled bootloader rolls back.** Write an
+   image to `ota_1`, select it in `otadata` as `New`, never confirm it, reset
+   twice. If it does not roll back, a crash loop needs an app-side boot
+   counter as well as the broker check.
+3. **Firmware:** confirm the running image on CONNACK, or mark it invalid and
+   boot the other slot after a timeout (its value from a measured cold boot to
+   the broker); `POST /update` in `web.rs` writing the other slot through
+   `OtaUpdater`; refused while feeding, feeds held during the write; refuse an
+   image whose `ap_secret` differs (how the image carries it is open, e.g. a
+   hash in the app descriptor).
+4. **`dev/ota.sh`** (`--host`, `--password-file -`): `espflash save-image`,
+   then `curl` it to the unit.
+5. **Move each unit to the table** with one USB flash; after that, updates go
+   over the network.
 
 ## Built, not yet seen on hardware
 
