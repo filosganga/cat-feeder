@@ -38,6 +38,10 @@ dev/homeassistant/*
 # accident, which is the whole point of having it.
 CLAUDE.local.md
 
+# What the person building the units has to do by hand: names units and
+# addresses, so it is as private as CLAUDE.local.md.
+TODO.md
+
 # Build-time secrets
 cfg.toml
 soak/
