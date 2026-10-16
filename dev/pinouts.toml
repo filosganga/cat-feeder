@@ -15,33 +15,24 @@
 # `module` must match in the same direction. Names compare case-insensitively.
 # Copy a new part's row from its silkscreen, never from the drawing.
 #
-# `unused` is the other half, and the one part of this file that is about the
-# design rather than the part: the pins this layout leaves unconnected on
-# purpose. Any other pin connected to nothing fails the check, which is how a
-# signal that never arrives — a switch line one jumper short of GPIO2 — is
-# caught before power rather than on the console.
+# Only the parts live here. What each pin is wired to, and which are spare, is
+# the design, and `dev/netlist.toml` says that.
 
 ["ESP32C6-L"]
 module = "ESP32-C6-Zero"
 pins = ["5V", "GND", "3V3", "GP0", "GP1", "GP2", "GP3", "GP4", "GP5"]
-# GP3-GP5 are free; see src/board.rs.
-unused = ["GP3", "GP4", "GP5"]
 
 ["ESP32C6-R"]
 module = "ESP32-C6-Zero"
 pins = ["TX", "RX", "GP14", "GP15", "GP18", "GP19", "GP20", "GP21", "GP22"]
-unused = ["TX", "RX", "GP15", "GP20", "GP21", "GP22"]
 
 ["DRV8833-L"]
 module = "DRV8833"
 pins = ["IN1", "IN2", "VCC", "GND", "IN3", "IN4"]
-# Channel A drives the motor; channel B is spare.
-unused = ["IN3", "IN4"]
 
 ["DRV8833-R"]
 module = "DRV8833"
 pins = ["ULT", "OUT4", "OUT3", "OUT2", "OUT1", "EEP"]
-unused = ["OUT4", "OUT3", "EEP"]
 
 # The 4-pin passthrough side. The 6-pin side reads 32K, SQW, SCL, SDA, VCC,
 # GND, mirrored against this one — fitting the wrong side puts every pin on

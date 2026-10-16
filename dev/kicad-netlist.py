@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Writes dev/netlist.toml as a KiCad netlist. Run it through kicad-netlist.sh.
+
+The output is KiCad's S-expression netlist (`(export (version "E") ...)`, what
+Eeschema 8 and `kicad-cli sch export netlist` write): one `comp` per part with
+its value and footprint, one `net` per net with a `node` per pin. Pins numbered
+by dev/pinouts.toml, pin 1 first, carry their silkscreen name as `pinfunction`.
+Pins in no net are written as KiCad writes them, one `unconnected-(...)` net
+each, so every pad of every part is accounted for.
+
+Footprints come from KiCad's standard library, named in the netlist file. The
+modules have none there — no stock footprint has the Zero's or the DRV8833's
+two rows at their spacing, or a module's body — so a `cat-feeder:` footprint is
+generated beside the netlist, in `cat-feeder.pretty/`, from pcb.diy: each pad
+where the drawing has that pin, the body from the drawing's outline of it. The
+two are generated together so a netlist never names a footprint that does not
+exist.
+
+The netlist is the design (ADR-0030), so this exports the netlist, not the
+drawing; the drawing supplies only the generated footprints' geometry. Run
+dev/pcb-check.sh to know the two agree.
+"""
+
+import argparse
+import importlib.util
+import re
+import sys
+import tomllib
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location("pcb_check", Path(__file__).with_name("pcb-check.py"))
+pc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(pc)
+
+MM = 25.4
+GENERATED = "cat-feeder"  # the footprint library this writes
+
+# KiCad names its supply nets this way, with no sheet path; every other net is
+# a local label on the root sheet, "/name".
+POWER = {"gnd": "GND", "5v": "+5V", "3v3": "+3V3"}
+
+PART_KEYS = {"value", "footprint", "symbol", "rows", "outline", "drawn", "functions"}
+
+
+def q(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def natural(s):
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", str(s))]
+
+
+def mm(v):
+    s = f"{v:.4f}".rstrip("0").rstrip(".")
+    return "0" if s in ("-0", "") else s
+
+
+def lib_part(name):
+    lib, _, part = (name or "").partition(":")
+    return (lib, part) if part else ("", lib)
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--layout", default="pcb.diy")
+    ap.add_argument("--netlist", default="dev/netlist.toml")
+    ap.add_argument("--pinouts", default="dev/pinouts.toml")
+    ap.add_argument("--out", default="target/kicad/cat-feeder.net")
+    args = ap.parse_args()
+
+    board, _nets, pins, headers, _labels, _notes, _sym = pc.load(args.layout)
+    netlist = pc.load_netlist(args.netlist)
+    with open(args.netlist, "rb") as f:
+        parts = tomllib.load(f).get("part", {})
+    with open(args.pinouts, "rb") as f:
+        pinouts = tomllib.load(f)
+    if not parts:
+        pc.fail(f"{args.netlist} has no [part.<ref>] tables to export")
+
+    problems = []
+    pinmap = {}  # lower-case "Header.pin" or "Part.lead" -> (ref, number, function)
+    partpins = {}  # ref -> [(number, function)]
+    rowpins = {}  # ref -> [(number, "Header.pin")] for parts on headers
+    owner = {}  # header or drawn part -> ref
+
+    for ref, p in parts.items():
+        extra = set(p) - PART_KEYS
+        if extra:
+            problems.append(f"part {ref} has {', '.join(sorted(extra))}; a part has {', '.join(sorted(PART_KEYS))}")
+        for key in ("value", "footprint"):
+            if key not in p:
+                problems.append(f"part {ref} has no {key}")
+        if "rows" in p:
+            n = 0
+            partpins[ref], rowpins[ref] = [], []
+            for row in p["rows"]:
+                if row in owner:
+                    problems.append(f"{row} is in both {owner[row]} and {ref}")
+                owner[row] = ref
+                spec = pinouts.get(row)
+                if spec is None:
+                    problems.append(f"part {ref}: {row} has no row in {args.pinouts}")
+                    continue
+                for name in spec["pins"]:
+                    n += 1
+                    pinmap[f"{row}.{name}".lower()] = (ref, str(n), name)
+                    partpins[ref].append((str(n), name))
+                    rowpins[ref].append((str(n), f"{row}.{name}", row))
+        else:
+            drawn = p.get("drawn", ref)
+            owner[drawn] = ref
+            leads = sorted({v.split(".", 1)[1] for v in pins.values() if v.split(".", 1)[0] == drawn}, key=natural)
+            if not leads:
+                problems.append(f"part {ref}: nothing called {drawn} in {args.layout}")
+                continue
+            # A polarised capacitor's + is pin 1 in KiCad's symbols and footprints.
+            numbers = {"+": "1", "-": "2"}
+            functions = p.get("functions")
+            if functions is not None and len(functions) != len(leads):
+                problems.append(f"part {ref}: {len(functions)} functions for {len(leads)} leads")
+                functions = None
+            partpins[ref] = []
+            for lead in leads:
+                num = numbers.get(lead, lead)
+                func = functions[int(num) - 1] if functions and num.isdigit() else None
+                pinmap[f"{drawn}.{lead}".lower()] = (ref, num, func)
+                partpins[ref].append((num, func))
+
+    # Everything drawn must be some part, or the export silently drops it.
+    for h in headers:
+        if h not in owner:
+            problems.append(f"{args.layout} has the header {h}, and no part has it in its rows")
+    for drawn in sorted({v.split(".", 1)[0] for v in pins.values()} - set(headers)):
+        if drawn not in owner:
+            problems.append(f"{args.layout} has {drawn}, and no part is drawn as it")
+
+    # --- nets -----------------------------------------------------------------
+    used = set()
+    net_entries = []
+    for name, (plist, _) in netlist.items():
+        nodes = []
+        for p in plist:
+            m = pinmap.get(p.lower())
+            if m is None:
+                problems.append(f"net {name}: {p} is on no part")
+                continue
+            nodes.append(m)
+            used.add(m[:2])
+        net_entries.append((POWER.get(name.lower(), f"/{name}"), nodes))
+    for ref in sorted(partpins, key=natural):
+        for num, func in partpins[ref]:
+            if (ref, num) not in used:
+                label = f"unconnected-({ref}-{func}-Pad{num})" if func else f"unconnected-({ref}-Pad{num})"
+                net_entries.append((label, [(ref, num, func)]))
+
+    # --- generated footprints -------------------------------------------------
+    hole_of = {v.lower(): g for g, v in pins.items()}
+    rects = {}
+    for el in ET.parse(args.layout).getroot().find("components"):
+        if el.tag.endswith("Rectangle"):
+            ps = pc.control_points(el)[:2]
+            rects[el.findtext("name")] = [(float(p.get("x")), float(p.get("y"))) for p in ps]
+
+    def hole_mm(g):
+        return ((board.x1 + board.pitch * (g[0] + 1)) * MM, (board.y1 + board.pitch * (g[1] + 1)) * MM)
+
+    footprints = {}
+    for ref, p in parts.items():
+        lib, name = lib_part(p.get("footprint"))
+        if lib != GENERATED:
+            continue
+        if "rows" not in p or "outline" not in p:
+            problems.append(f"part {ref}: a {GENERATED}: footprint needs rows and an outline to be drawn from")
+            continue
+        pads = []
+        for num, pin, row in rowpins.get(ref, []):
+            g = hole_of.get(pin.lower())
+            if g is None:
+                problems.append(f"part {ref}: {pin} is not in {args.layout}, so its pad has nowhere to go")
+                continue
+            pads.append((num, hole_mm(g), row))
+        rect = rects.get(p["outline"])
+        if rect is None:
+            problems.append(f"part {ref}: no rectangle called {p['outline']} in {args.layout}")
+        if not pads or rect is None:
+            continue
+        footprints[name] = render_footprint(name, p, pads, [(x * MM, y * MM) for x, y in rect])
+
+    if problems:
+        for p in problems:
+            print(f"kicad-netlist: {p}", file=sys.stderr)
+        sys.exit(1)
+
+    # --- write ----------------------------------------------------------------
+    out = []
+    w = out.append
+    w('(export (version "E")')
+    w("  (design")
+    w(f"    (source {q(args.netlist)})")
+    w(f"    (tool {q('cat-feeder dev/kicad-netlist.sh')})")
+    w('    (sheet (number "1") (name "/") (tstamps "/")')
+    w(f"      (title_block (title {q('cat-feeder perfboard')}))))")
+    w("  (components")
+    refs = sorted(parts, key=natural)
+    for i, ref in enumerate(refs):
+        p = parts[ref]
+        lib, part = lib_part(p.get("symbol"))
+        w(f"    (comp (ref {q(ref)})")
+        w(f"      (value {q(p['value'])})")
+        w(f"      (footprint {q(p['footprint'])})")
+        close = "))" if i == len(refs) - 1 else ")"
+        w(f"      (libsource (lib {q(lib)}) (part {q(part)}) (description {q(p['value'])})){close}")
+    w("  (nets")
+    for code, (name, nodes) in enumerate(net_entries, 1):
+        w(f"    (net (code {q(code)}) (name {q(name)})")
+        nodes = sorted(nodes, key=lambda n: (natural(n[0]), natural(n[1])))
+        for j, (ref, num, func) in enumerate(nodes):
+            fn = f" (pinfunction {q(func)})" if func else ""
+            close = ")" if j == len(nodes) - 1 else ""
+            if close and code == len(net_entries):
+                close = ")))"
+            w(f"      (node (ref {q(ref)}) (pin {q(num)}){fn} (pintype \"passive\")){close}")
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(out) + "\n")
+    print(out_path)
+    if footprints:
+        lib_dir = out_path.parent / f"{GENERATED}.pretty"
+        lib_dir.mkdir(exist_ok=True)
+        for name, text in sorted(footprints.items()):
+            (lib_dir / f"{name}.kicad_mod").write_text(text)
+            print(lib_dir / f"{name}.kicad_mod")
+    return 0
+
+
+def render_footprint(name, part, pads, rect):
+    """A KiCad 8 footprint: pads at their holes relative to pin 1, the module's
+    body on the fabrication layer, a courtyard around the body, and each pin
+    row's socket on the silkscreen.
+
+    The courtyard is the whole body, as KiCad's own module footprints have it,
+    so nothing may be placed under a module. That is stricter than this board,
+    which has R3 under the Zero: a low part fits beneath a socketed module.
+    """
+    (_, (ox, oy), _) = next(p for p in pads if p[0] == "1")
+    rel = [(num, x - ox, y - oy) for num, (x, y), _ in pads]
+    (x1, y1), (x2, y2) = [(x - ox, y - oy) for x, y in rect]
+    bx1, bx2, by1, by2 = min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
+    px = [x for _, x, _ in rel]
+    py = [y for _, _, y in rel]
+    cx1 = min(bx1, min(px) - 0.85) - 0.25
+    cx2 = max(bx2, max(px) + 0.85) + 0.25
+    cy1 = min(by1, min(py) - 0.85) - 0.25
+    cy2 = max(by2, max(py) + 0.85) + 0.25
+
+    def rect_(a, b, c, d, layer, width):
+        return (f"\t(fp_rect\n\t\t(start {mm(a)} {mm(b)})\n\t\t(end {mm(c)} {mm(d)})\n"
+                f"\t\t(stroke\n\t\t\t(width {width})\n\t\t\t(type solid)\n\t\t)\n"
+                f"\t\t(fill none)\n\t\t(layer \"{layer}\")\n\t)\n")
+
+    def prop(key, value, x, y, layer):
+        return (f"\t(property {q(key)} {q(value)}\n\t\t(at {mm(x)} {mm(y)} 0)\n\t\t(layer \"{layer}\")\n"
+                f"\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1 1)\n\t\t\t\t(thickness 0.15)\n\t\t\t)\n\t\t)\n\t)\n")
+
+    s = [f"(footprint {q(name)}\n", "\t(version 20240108)\n", f"\t(generator {q(GENERATED)})\n",
+         "\t(layer \"F.Cu\")\n",
+         f"\t(descr {q(part['value'] + ' in female headers; generated by dev/kicad-netlist.sh from pcb.diy: pads where the drawing has its pins, body from its outline')})\n",
+         "\t(tags \"cat-feeder module socketed\")\n",
+         prop("Reference", "REF**", (bx1 + bx2) / 2, by1 - 1.5, "F.SilkS"),
+         prop("Value", part["value"], (bx1 + bx2) / 2, by2 + 1.5, "F.Fab"),
+         "\t(attr through_hole)\n",
+         rect_(bx1, by1, bx2, by2, "F.Fab", 0.1),
+         rect_(cx1, cy1, cx2, cy2, "F.CrtYd", 0.05)]
+    # Each row's socket on the silkscreen, so the rows read as headers.
+    rows = {}
+    for (num, x, y), (_, _, row) in zip(rel, pads):
+        rows.setdefault(row, []).append((x, y))
+    for pts in rows.values():
+        xs = [x for x, _ in pts]
+        ys = [y for _, y in pts]
+        s.append(rect_(min(xs) - 1.33, min(ys) - 1.33, max(xs) + 1.33, max(ys) + 1.33, "F.SilkS", 0.12))
+    for num, x, y in sorted(rel, key=lambda r: natural(r[0])):
+        shape = "rect" if num == "1" else "circle"
+        s.append(f"\t(pad {q(num)} thru_hole {shape}\n\t\t(at {mm(x)} {mm(y)})\n\t\t(size 1.7 1.7)\n"
+                 f"\t\t(drill 1)\n\t\t(layers \"*.Cu\" \"*.Mask\")\n\t)\n")
+    s.append(")\n")
+    return "".join(s)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

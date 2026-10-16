@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Exports dev/netlist.toml as a KiCad netlist, for tools that read one.
+#
+#   ./dev/kicad-netlist.sh                          # -> target/kicad/cat-feeder.net
+#   ./dev/kicad-netlist.sh --out board.net          # somewhere else
+#   ./dev/kicad-netlist.sh --netlist nets.toml      # another design
+#   ./dev/kicad-netlist.sh --layout other.diy       # module footprints from another drawing
+#   ./dev/kicad-netlist.sh --pinouts parts.toml     # another set of part pinouts
+#
+# Writes KiCad's S-expression netlist (version "E", as Eeschema 8 writes it):
+# each [part.<ref>] of dev/netlist.toml as a component with its value and a
+# footprint from KiCad's standard library, each net with its pins numbered by
+# dev/pinouts.toml. The modules have no stock footprint, so theirs are
+# generated from pcb.diy into cat-feeder.pretty/ beside the netlist; a tool
+# reading the netlist needs that library too.
+#
+# Exits 1, writing nothing, if a pin of a net is on no part or something drawn
+# belongs to no part: an export that dropped it would look complete. It exports
+# the netlist, not the drawing; dev/pcb-check.sh says whether the two agree.
+#
+# The default output is under target/, which git ignores: it is generated, and
+# regenerating it is cheaper than keeping it in step.
+
+set -euo pipefail
+
+DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DEV_DIR/.."
+# shellcheck source=dev/_common.sh
+. "$DEV_DIR/_common.sh"
+
+LAYOUT="pcb.diy"
+NETLIST="dev/netlist.toml"
+PINOUTS="dev/pinouts.toml"
+OUT="target/kicad/cat-feeder.net"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --layout) need_value "$1" "${2:-}"; LAYOUT="$2"; shift 2 ;;
+    --layout=*) LAYOUT="${1#*=}"; need_value --layout "$LAYOUT"; shift ;;
+    --netlist) need_value "$1" "${2:-}"; NETLIST="$2"; shift 2 ;;
+    --netlist=*) NETLIST="${1#*=}"; need_value --netlist "$NETLIST"; shift ;;
+    --pinouts) need_value "$1" "${2:-}"; PINOUTS="$2"; shift 2 ;;
+    --pinouts=*) PINOUTS="${1#*=}"; need_value --pinouts "$PINOUTS"; shift ;;
+    --out) need_value "$1" "${2:-}"; OUT="$2"; shift 2 ;;
+    --out=*) OUT="${1#*=}"; need_value --out "$OUT"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    -*) die "$(prog): unknown option '$1'. Try --help." ;;
+    *) die "$(prog): unexpected argument '$1'. Try --help." ;;
+  esac
+done
+
+# The script has moved to the repo root, as pcb-check.sh explains.
+[ -f "$LAYOUT" ] || die "$(prog): no layout at $LAYOUT (paths are relative to the repo root)"
+[ -f "$NETLIST" ] || die "$(prog): no netlist at $NETLIST (paths are relative to the repo root)"
+[ -f "$PINOUTS" ] || die "$(prog): no pinouts at $PINOUTS (paths are relative to the repo root)"
+
+python3 -c 'import sys, tomllib' 2>/dev/null \
+  || die "$(prog): needs Python 3.11 or later for tomllib; this is $(python3 --version 2>&1)"
+
+exec python3 "$DEV_DIR/kicad-netlist.py" --layout "$LAYOUT" --netlist "$NETLIST" --pinouts "$PINOUTS" --out "$OUT"

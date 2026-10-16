@@ -256,7 +256,7 @@ cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"  # pure logi
 ./dev/capture.sh [--reset]                # listen without reflashing; --reset: from boot
 ./dev/provision.sh [--host ip --user u --password-file -] [--detent-ms n] [--portion-scale p]
 ./dev/soak.sh --hours n && ./dev/soak-report.sh
-./dev/pcb-check.sh                        # after every pcb.diy edit; pcb-review skill
+./dev/pcb-check.sh                        # after every pcb.diy edit, against dev/netlist.toml; pcb-review skill
 docker compose up -d && ./dev/watch.sh    # local broker + HA; see dev/README.md
 ```
 
@@ -344,7 +344,7 @@ wiring.rs        the Bus static: every shared handle and who writes it
 config.rs        Config from the flash record; `dhcp_config`, shared with setup
 examples/mkrecord.rs  host-only record builder for provision.sh
 homeassistant/packages/cat_feeder.yaml  the HA half: time, pause, copy schedule
-pcb.diy          the perfboard (component side); docs/hardware.md
+pcb.diy          the perfboard (component side); its nets are dev/netlist.toml (ADR-0030)
 ```
 
 Tasks: `net`, `mqtt`, `switch`, `feeder`, `schedule` (1 s tick), `rtc`,

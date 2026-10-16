@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""Draws a DIY Layout Creator perfboard as SVG. Run it through pcb-render.sh.
+
+The picture is of what dev/pcb-check.py believes, not of what DIYLC draws: it
+reads the drawing with the check's own parser, so every hole is coloured by the
+net the check put it in, and anything the check could not understand is listed
+under the board rather than drawn as if it were fine. A picture that agreed
+with DIYLC but not with the check would be the wrong one to solder from.
+
+Drawn as the component side with the bottom traces seen through the board, the
+same view as DIYLC and as the hole names in docs/hardware.md, or as the solder
+side: mirrored, as the board is held to solder its bottom. Either can be drawn
+at true size, to print and lay over the board. Hovering a hole in a browser
+names it, its pin and its net.
+
+Only the standard library, so it runs wherever the check does.
+"""
+
+import argparse
+import importlib.util
+import math
+import sys
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+# The check is a script with a hyphen in its name, so it is loaded by path. Its
+# parser is the whole point: two parsers would be two opinions about the board.
+sys.dont_write_bytecode = True
+_spec = importlib.util.spec_from_file_location("pcb_check", Path(__file__).with_name("pcb-check.py"))
+pc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(pc)
+
+PX = 300  # pixels per inch: a 0.1 in pitch is 30 px
+MARGIN = 40
+LEGEND_W = 420
+
+# Supplies get fixed colours, so 5 V is red in every picture; signals take the
+# palette in order. Three 5 V nets are told apart, because a bridge between the
+# USB input, the battery input and the rail is its own fault.
+SUPPLY = {"GND": "#333333", "3V3": "#ff7f0e", "5V": "#d62728", "USB": "#e377c2", "VBATT": "#9467bd"}
+PALETTE = [
+    "#1f77b4", "#2ca02c", "#17becf", "#8c564b", "#bcbd22", "#393b79", "#637939",
+    "#8c6d31", "#843c39", "#7b4173", "#a6761d", "#1b9e77", "#756bb1", "#e6550d",
+]
+LONE = "#9a9a9a"  # a pin connected to nothing, or a run with no pin on it
+
+
+def kind(names):
+    k = pc.classify(names)
+    if k == "5V":
+        joined = " ".join(names)
+        if "In.Vcc" in joined:
+            return "USB"
+        if "VBatt" in joined:
+            return "VBATT"
+    return k
+
+
+def wrap(text, width=52):
+    lines, line = [], ""
+    for word in text.split(" "):
+        if line and len(line) + len(word) >= width:
+            lines.append(line)
+            line = ""
+        line = f"{line} {word}".strip()
+    return lines + [line]
+
+
+def mm_to_in(el, tag, default):
+    v = el.find(tag)
+    if v is None:
+        return default
+    value = float(v.get("value"))
+    return value / 25.4 if v.get("unit") == "mm" else value
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--layout", default="pcb.diy")
+    ap.add_argument("--out", default="target/pcb.svg")
+    ap.add_argument("--netlist", default="dev/netlist.toml")
+    ap.add_argument("--side", choices=["component", "solder"], default="component")
+    ap.add_argument("--true-size", action="store_true")
+    args = ap.parse_args()
+
+    board, nets, pins, headers, labels, notes, symmetric = pc.load(args.layout)
+    netlist = pc.load_netlist(args.netlist)
+    root = ET.parse(args.layout).getroot()
+    components = list(root.find("components"))
+
+    members = defaultdict(list)
+    for g in list(nets.parent):
+        members[nets.find(g)].append(g)
+    net_pins = {r: sorted(pins[g] for g in hs if g in pins) for r, hs in members.items()}
+
+    # The netlist names each drawn net; a net that disagrees with it keeps its
+    # pins for a name and is marked, and the disagreements are listed in red.
+    roots = [r for r, n in net_pins.items() if n]
+    problems, named = pc.compare([net_pins[r] for r in roots], netlist, symmetric)
+    meant_name = {roots[i]: name for i, name in named.items()}
+
+    # Colours: supplies by kind, signals in name order, lone pins grey.
+    colour = {}
+    signals = sorted((r for r, n in net_pins.items() if len(n) > 1 and kind(n) is None), key=lambda r: net_pins[r])
+    for i, r in enumerate(signals):
+        colour[r] = PALETTE[i % len(PALETTE)]
+    for r, n in net_pins.items():
+        k = kind(n)
+        if k:
+            colour[r] = SUPPLY[k]
+        colour.setdefault(r, LONE)
+
+    def net_label(r):
+        n = net_pins[r]
+        if not n:
+            return "a run with no pin on it"
+        name = meant_name.get(r)
+        return f"{name + ': ' if name else ''}{' '.join(n)}"
+
+    # Inches in the drawing to pixels in the picture. The solder side is the
+    # board turned over about its vertical axis, as it is held to solder the
+    # bottom: columns run X to A, rows stay where they are, and hole names stay
+    # the ones printed on the board, which name the same hole from either side.
+    mirror = args.side == "solder"
+    true_size = args.true_size
+    ox, oy = board.x1, board.y1
+    bw = (board.cols + 1) * board.pitch
+    bh = (board.rows + 1) * board.pitch
+    pitch = board.pitch * PX
+
+    # Printed at true size a pitch is 2.54 mm, so text that reads on screen is a
+    # millimetre tall on paper: board labels grow a little, the legend a lot,
+    # and the legend moves under the board so the page stays narrow.
+    tb = 1.6 if true_size else 1.0  # board labels
+    tl = 2.6 if true_size else 1.0  # legend
+    coord_fs = 11 * (2.2 if true_size else 1.0)
+    margin = int(coord_fs * 3.2) if true_size else MARGIN
+
+    def X(x):
+        return margin + ((ox + bw - x) if mirror else (x - ox)) * PX
+
+    def Y(y):
+        return margin + (y - oy) * PX
+
+    def hole_xy(g):
+        return board.x1 + board.pitch * (g[0] + 1), board.y1 + board.pitch * (g[1] + 1)
+
+    def pt(p):
+        return float(p.get("x")), float(p.get("y"))
+
+    def box(xa, ya, xb, yb):
+        """x, y, width, height in pixels of a box given by two corners in inches."""
+        x1, x2 = sorted((X(xa), X(xb)))
+        y1, y2 = sorted((Y(ya), Y(yb)))
+        return f'x="{x1:.1f}" y="{y1:.1f}" width="{x2 - x1:.1f}" height="{y2 - y1:.1f}"'
+
+    left, right, top, bottom = margin, margin + bw * PX, margin, margin + bh * PX
+
+    board_out, modules, traces, holes, parts, labels_out, module_names = [], [], [], [], [], [], []
+
+    # --- the board and its coordinates ------------------------------------
+    board_out.append(f'<rect x="{left}" y="{top}" width="{bw * PX}" height="{bh * PX}" rx="6" fill="#eef3e6" stroke="#b5b08a"/>')
+    for c in range(board.cols):
+        x = X(hole_xy((c, 0))[0])
+        name = board.name((c, 0)).rstrip("0123456789")
+        board_out.append(f'<text x="{x:.1f}" y="{top - coord_fs * 0.6:.1f}" class="coord">{name}</text>')
+        board_out.append(f'<text x="{x:.1f}" y="{bottom + coord_fs * 1.5:.1f}" class="coord">{name}</text>')
+    for r in range(board.rows):
+        y = Y(hole_xy((0, r))[1]) + coord_fs * 0.35
+        row = board.name((0, r))[1:]
+        board_out.append(f'<text x="{left - coord_fs * 1.3:.1f}" y="{y:.1f}" class="coord">{row}</text>')
+        board_out.append(f'<text x="{right + coord_fs * 1.3:.1f}" y="{y:.1f}" class="coord">{row}</text>')
+
+    # --- module outlines ----------------------------------------------------
+    for el in components:
+        if not el.tag.endswith("Rectangle"):
+            continue
+        (x1, y1), (x2, y2) = [pt(p) for p in pc.control_points(el)[:2]]
+        nm = escape(el.findtext("name") or "")
+        modules.append(f'<rect {box(x1, y1, x2, y2)} class="module"><title>{nm}</title></rect>')
+        # At the outline's corner as the drawing has it, so turning the board
+        # over moves the name with the module rather than onto its headers.
+        corner = X(min(x1, x2))
+        anchor = f' text-anchor="end" x="{corner - 4:.1f}"' if mirror else f' x="{corner + 4:.1f}"'
+        module_names.append(f'<text{anchor} y="{min(Y(y1), Y(y2)) + 12 * tb:.1f}" class="module-name">{nm}</text>')
+
+    # --- bottom traces --------------------------------------------------------
+    # A straight or 45-degree run touches every hole it passes, as the check
+    # reads it; any other angle joins only its ends, and is dashed to say so.
+    for el in components:
+        if not el.tag.endswith("CopperTrace"):
+            continue
+        ps = pc.control_points(el)[:2]
+        a, b = board.grid(ps[0]), board.grid(ps[1])
+        if a is None or b is None:
+            continue
+        net = nets.find(a)
+        dashed = pc.straight_path(a, b) is None
+        (x1, y1), (x2, y2) = hole_xy(a), hole_xy(b)
+        traces.append(
+            f'<line x1="{X(x1):.1f}" y1="{Y(y1):.1f}" x2="{X(x2):.1f}" y2="{Y(y2):.1f}" stroke="{colour[net]}" '
+            f'stroke-width="{pitch * 0.42:.1f}" stroke-linecap="round" class="trace"'
+            f'{" stroke-dasharray=\"4 6\"" if dashed else ""}><title>{escape(net_label(net))}</title></line>')
+
+    # --- holes --------------------------------------------------------------
+    for c in range(board.cols):
+        for r in range(board.rows):
+            g = (c, r)
+            x, y = hole_xy(g)
+            title = board.name(g)
+            if g in nets.parent:
+                net = nets.find(g)
+                if g in pins:
+                    title += f" · {pins[g]}"
+                title += f" · {net_label(net)}"
+                holes.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="{pitch * 0.3:.1f}" fill="{colour[net]}" '
+                             f'stroke="#ffffff" stroke-width="1.5"><title>{escape(title)}</title></circle>')
+            else:
+                holes.append(f'<circle cx="{X(x):.1f}" cy="{Y(y):.1f}" r="{pitch * 0.17:.1f}" fill="#ffffff" '
+                             f'stroke="#c9c4a0"><title>{escape(title)} · empty</title></circle>')
+
+    # --- parts on the component side -----------------------------------------
+    for el in components:
+        tag = el.tag.rsplit(".", 1)[-1]
+        name = escape(el.findtext("name") or tag)
+        ps = [pt(p) for p in pc.control_points(el)]
+
+        if tag == "Jumper":
+            (x1, y1), (x2, y2) = ps[0], ps[1]
+            line = f'x1="{X(x1):.1f}" y1="{Y(y1):.1f}" x2="{X(x2):.1f}" y2="{Y(y2):.1f}"'
+            parts.append(f'<line {line} class="jumper-halo"/>')
+            parts.append(f'<line {line} class="jumper"><title>jumper {name}</title></line>')
+            parts.append(f'<text x="{X((x1 + x2) / 2):.1f}" y="{Y((y1 + y2) / 2) - 6 * tb:.1f}" class="part-name">{name}</text>')
+
+        elif tag == "Resistor":
+            (x1, y1), (x2, y2) = ps[0], ps[1]
+            # The angle in the picture, so a mirrored view turns the body with it.
+            ang = math.degrees(math.atan2(Y(y2) - Y(y1), X(x2) - X(x1)))
+            cx, cy = X((x1 + x2) / 2), Y((y1 + y2) / 2)
+            ln, wd = mm_to_in(el, "length", 0.25) * PX, mm_to_in(el, "width", 0.1) * PX
+            v = el.find("value")
+            # DIYLC writes kilohms as "K"; the SI prefix is a lower-case k.
+            value = f'{float(v.get("value")):g} {v.get("unit").replace("K", "k")}Ω' if v is not None else ""
+            parts.append(f'<line x1="{X(x1):.1f}" y1="{Y(y1):.1f}" x2="{X(x2):.1f}" y2="{Y(y2):.1f}" class="lead"/>')
+            parts.append(f'<rect x="{-ln / 2:.1f}" y="{-wd / 2:.1f}" width="{ln:.1f}" height="{wd:.1f}" rx="{wd / 2:.1f}" '
+                         f'class="resistor" transform="translate({cx:.1f} {cy:.1f}) rotate({ang:.0f})">'
+                         f'<title>{name} {escape(value)}</title></rect>')
+            upright = ang if -90 <= ang <= 90 else ang - 180
+            labels_out.append(f'<text x="{cx:.1f}" y="{cy + 4 * tb:.1f}" class="part-name" '
+                              f'transform="rotate({upright:.0f} {cx:.1f} {cy:.1f})">{name} {escape(value)}</text>')
+
+        elif tag == "RadialElectrolytic":
+            (x1, y1), (x2, y2) = ps[0], ps[1]
+            cx, cy = X((x1 + x2) / 2), Y((y1 + y2) / 2)
+            rad = mm_to_in(el, "width", 0.25) * PX / 2
+            plus = ps[1] if el.findtext("invert") == "true" else ps[0]
+            parts.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{rad:.1f}" class="cap"><title>{name}</title></circle>')
+            labels_out.append(f'<text x="{X(plus[0]):.1f}" y="{Y(plus[1]) - rad * 0.55:.1f}" class="cap-plus">+</text>')
+            labels_out.append(f'<text x="{cx:.1f}" y="{cy - rad - 4:.1f}" class="part-name">{name}</text>')
+
+        elif tag.startswith("Transistor") or tag.startswith("TO") or tag.startswith("Regulator"):
+            xs, ys = [p[0] for p in ps[:3]], [p[1] for p in ps[:3]]
+            h = board.pitch / 2
+            parts.append(f'<rect {box(min(xs) - h, min(ys) - h, max(xs) + h, max(ys) + h)} class="package"><title>{name}</title></rect>')
+            labels_out.append(f'<text x="{X((min(xs) + max(xs)) / 2):.1f}" y="{Y(min(ys) - h) - 4:.1f}" class="part-name">{name}</text>')
+
+        elif tag == "PinHeader":
+            names = headers.get(el.findtext("name"), [])
+            hs = [board.grid(p) for p in pc.control_points(el)]
+            hs = [h for h in hs if h is not None]
+            if not hs:
+                continue
+            xs = [hole_xy(h)[0] for h in hs]
+            ys = [hole_xy(h)[1] for h in hs]
+            pad = board.pitch * 0.45
+            parts.append(f'<rect {box(min(xs) - pad, min(ys) - pad, max(xs) + pad, max(ys) + pad)} class="header"><title>{name}</title></rect>')
+            # Pin names stay at full strength from either side: they are what is
+            # read while soldering.
+            vertical = len(set(xs)) == 1 and len(hs) > 1
+            for h, n in zip(hs, names):
+                x, y = hole_xy(h)
+                rot = "" if vertical else f' transform="rotate(-90 {X(x):.1f} {Y(y):.1f})"'
+                labels_out.append(f'<text x="{X(x):.1f}" y="{Y(y) + 3 * tb:.1f}" class="pin"{rot}>{escape(n)}</text>')
+            # The header's name by its first pin, which is pin 1 in the drawing:
+            # above a row, and past the end of a column, away from its other
+            # pins, where it covers none of them.
+            x0, y0 = hole_xy(hs[0])
+            ny = Y(y0) - pitch * 0.62
+            if vertical:
+                away = 1 if Y(hole_xy(hs[1])[1]) < Y(y0) else -1
+                ny = Y(y0) + away * pitch * (0.62 if away < 0 else 0.95)
+            labels_out.append(f'<text x="{X(x0):.1f}" y="{ny:.1f}" class="header-name">{name} ▸1</text>')
+
+    # From the component side the parts are on top; from the solder side they
+    # are behind the board, drawn faint, and the copper is what is in front.
+    out = board_out + modules
+    if mirror:
+        out += ['<g opacity="0.3">'] + parts + ["</g>"] + traces + holes
+    else:
+        out += traces + holes + parts
+    out += labels_out + module_names
+
+    # --- legend ---------------------------------------------------------------
+    fs = 11 * tl
+    lh = fs * 1.3
+    if true_size:
+        lx, ly = left, bottom + coord_fs * 3
+        chars = int((right - left) / (fs * 0.56))
+    else:
+        lx, ly = right + margin, top + 6
+        chars = 60
+    legend = []
+
+    def line(text, cls, indent=0.0):
+        nonlocal ly
+        legend.append(f'<text x="{lx + indent:.1f}" y="{ly:.1f}" class="{cls}">{escape(text)}</text>')
+        ly += lh
+
+    def item(text, cls):
+        for i, ln in enumerate(wrap(text, chars)):
+            line(("– " if not i else "") + ln, cls, 0 if not i else fs)
+
+    side = "solder side, mirrored" if mirror else "component side"
+    for ln in wrap(f"{Path(args.layout).name}, {side}: nets named by {Path(args.netlist).name}", int(chars * 0.85)):
+        line(ln, "legend-title")
+    ly += lh * 0.3
+    if problems:
+        line("Disagrees with the netlist (pcb-check fails):", "warn")
+        for p in problems:
+            item(p, "warn")
+        ly += lh * 0.5
+    shown = sorted((r for r, n in net_pins.items() if len(n) > 1), key=lambda r: (kind(net_pins[r]) is None, net_pins[r]))
+    sw = fs * 1.25
+    for r in shown:
+        lines = wrap(net_label(r), chars - 6)
+        legend.append(f'<rect x="{lx:.1f}" y="{ly - sw * 0.8:.1f}" width="{sw:.1f}" height="{sw:.1f}" rx="{sw / 4:.1f}" fill="{colour[r]}"/>')
+        for i, ln in enumerate(lines):
+            legend.append(f'<text x="{lx + sw * 1.6:.1f}" y="{ly + i * lh:.1f}" class="legend">{escape(ln)}</text>')
+        ly += lh * len(lines) + lh * 0.45
+    alone = sorted(net_pins[r][0] for r, n in net_pins.items() if len(n) == 1)
+    if alone:
+        legend.append(f'<rect x="{lx:.1f}" y="{ly - sw * 0.8:.1f}" width="{sw:.1f}" height="{sw:.1f}" rx="{sw / 4:.1f}" fill="{LONE}"/>')
+        legend.append(f'<text x="{lx + sw * 1.6:.1f}" y="{ly:.1f}" class="legend">connected to nothing: {len(alone)} pins</text>')
+        ly += lh * 1.6
+    if mirror:
+        notes_text = [
+            "As held to solder the bottom: mirrored, so column A is on the right.",
+            "The copper is in front; the parts behind the board are faint.",
+        ]
+    else:
+        notes_text = [
+            "Traces are the bottom side, seen through the board.",
+            "Blue lines are jumpers on the component side.",
+        ]
+    notes_text.append("A dashed trace is off 45° and joins only its ends.")
+    if true_size:
+        span = (board.cols - 1) * board.pitch * 25.4
+        notes_text.append(f"Print at 100%, no fit to page: holes A to {board.name((board.cols - 1, 0)).rstrip('0123456789')} then measure {span:.2f} mm.")
+    else:
+        notes_text.append("Hover a hole for its name, pin and net.")
+    for t in notes_text:
+        for ln in wrap(t, chars):
+            line(ln, "note")
+    if notes:
+        ly += lh * 0.5
+        line("Not drawn, as pcb-check could not read them:", "warn")
+        for n in notes:
+            item(n, "warn")
+    out.extend(legend)
+
+    if true_size:
+        width = int(right + margin)
+        height = int(ly + margin)
+    else:
+        width = int(right + margin + LEGEND_W)
+        height = int(max(bottom + margin, ly + margin))
+    style = f"""
+      text {{ font-family: -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif; }}
+      .coord {{ font-size: {coord_fs:.1f}px; fill: #6b6b6b; text-anchor: middle; font-family: Menlo, Consolas, monospace; }}
+      .module {{ fill: #7fbf7f; fill-opacity: 0.12; stroke: #4d8f4d; stroke-dasharray: 6 4; stroke-width: 1.5; }}
+      .module-name {{ font-size: {11 * tb:.1f}px; fill: #3d6e3d; font-style: italic; paint-order: stroke; stroke: #ffffff; stroke-width: 3px; }}
+      .trace {{ opacity: {0.9 if mirror else 0.55}; }}
+      .jumper-halo {{ stroke: #ffffff; stroke-width: 7; stroke-linecap: round; }}
+      .jumper {{ stroke: #1f4fd6; stroke-width: 4; stroke-linecap: round; }}
+      .lead {{ stroke: #8f8f8f; stroke-width: 2.5; }}
+      .resistor {{ fill: #e0c68b; stroke: #a59268; stroke-width: 1.5; }}
+      .cap {{ fill: #333333; fill-opacity: 0.18; stroke: #333333; stroke-width: 1.5; }}
+      .cap-plus {{ font-size: {16 * tb:.1f}px; font-weight: bold; text-anchor: middle; fill: #d62728; }}
+      .package {{ fill: #808080; fill-opacity: 0.2; stroke: #595959; stroke-width: 1.5; }}
+      .header {{ fill: none; stroke: #222222; stroke-width: 1.5; }}
+      .pin {{ font-size: {8 * tb:.1f}px; text-anchor: middle; fill: #000000; paint-order: stroke; stroke: #ffffff; stroke-width: 2.5px; }}
+      .part-name, .header-name {{ font-size: {10 * tb:.1f}px; text-anchor: middle; fill: #111111; paint-order: stroke; stroke: #ffffff; stroke-width: 3px; }}
+      .header-name {{ font-weight: 600; }}
+      .legend-title {{ font-size: {13 * tl:.1f}px; font-weight: 600; fill: #111111; }}
+      .legend {{ font-size: {fs:.1f}px; fill: #222222; }}
+      .note {{ font-size: {fs:.1f}px; fill: #555555; }}
+      .warn {{ font-size: {fs:.1f}px; fill: #b00020; }}
+    """
+    # At true size the page is given in millimetres, so a printer at 100% puts
+    # the holes 2.54 mm apart; on screen the viewBox scales it like any SVG.
+    size = (f'width="{width * 25.4 / PX:.2f}mm" height="{height * 25.4 / PX:.2f}mm"' if true_size
+            else f'width="{width}" height="{height}"')
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" {size} viewBox="0 0 {width} {height}">\n'
+        f"<title>{escape(Path(args.layout).name)}, {side}</title>\n<style>{style}</style>\n"
+        f'<rect width="100%" height="100%" fill="#ffffff"/>\n' + "\n".join(out) + "\n</svg>\n"
+    )
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(svg)
+    for n in notes:
+        print(f"pcb-render: not drawn: {n}", file=sys.stderr)
+    print(out_path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

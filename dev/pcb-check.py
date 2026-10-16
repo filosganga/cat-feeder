@@ -8,12 +8,15 @@ Reads the layout's XML and reports, in order:
   power       nets that join ground to a supply, 5 V to 3V3, or hold a polarised
               capacitor the wrong way round
   nets        every net with its pins, and the pins connected to nothing
+  netlist     the drawing's nets against dev/netlist.toml, what is meant to
+              connect to what: a net split, two joined, a pin where none belongs
+  firmware    each net's GPIO against the pin src/board.rs hands out for it
   labels      printed labels that disagree with the pin they sit on
   neighbours  holes a pitch apart on different nets, worst first — where a solder
               blob does damage
 
-Exits 1 if anything in pinouts, power or labels is wrong, 0 otherwise. Neighbours
-and unconnected pins are for reading, not failing: a perfboard always has them.
+Exits 1 if anything in pinouts, power, netlist, firmware or labels is wrong, 0
+otherwise. Neighbours are for reading, not failing: a perfboard always has them.
 
 Why each rule is shaped the way it is:
 
@@ -24,9 +27,13 @@ Why each rule is shaped the way it is:
   and on the component side.
 - The netlist is only as good as the pin names in the drawing, which is exactly
   what went wrong once, hence the pinout check against the part.
+- A drawing can be self-consistent and still connect the wrong things: every
+  rule above passes a data line run to the wrong resistor. Only a statement of
+  what is meant, made apart from the drawing, catches that (ADR-0030).
 """
 
 import argparse
+import re
 import sys
 import tomllib
 import xml.etree.ElementTree as ET
@@ -141,6 +148,7 @@ def load(path):
     headers = {}  # header name -> [pin names in drawing order]
     labels = []  # (hole or None, text)
     notes = []  # things the reader should know the check could not do
+    symmetric = set()  # two-lead parts that work either way round, by name
 
     def pin(g, label):
         if g is None:
@@ -206,6 +214,10 @@ def load(path):
             # Two-lead parts carry a third, label-placement point after the leads.
             for i, g in enumerate(grid[:2]):
                 pin(g, f"{name}.{i + 1}")
+            # A resistor fitted the other way round is the same circuit; a diode
+            # is not. Electrolytics were handled above, by polarity.
+            if el.tag.startswith("diylc.passive."):
+                symmetric.add(name)
             continue
         if kind == "TactileMicroSwitch":
             for i, g in enumerate(grid[:4]):
@@ -213,7 +225,147 @@ def load(path):
             continue
         notes.append(f"{name} is a {kind}, which this check does not understand; its pins are not in the netlist")
 
-    return board, nets, pins, headers, labels, notes
+    return board, nets, pins, headers, labels, notes, symmetric
+
+
+def load_netlist(path):
+    """dev/netlist.toml as {net name: (pins, firmware macro or None)}, or exits.
+
+    Mistakes in the file itself are reported here rather than as drawing faults:
+    a pin in two nets, or a net of one pin, is a netlist that says nothing true.
+    """
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except OSError as e:
+        fail(f"cannot read {path}: {e}")
+    except tomllib.TOMLDecodeError as e:
+        fail(f"{path} is not TOML: {e}")
+    nets = {}
+    seen = {}
+    for name, body in data.get("net", {}).items():
+        extra = set(body) - {"pins", "firmware"}
+        if extra:
+            fail(f"{path}: net {name} has {', '.join(sorted(extra))}; a net has only pins and firmware")
+        pins_ = list(body.get("pins", []))
+        if len(pins_) < 2:
+            fail(f"{path}: net {name} has {len(pins_)} pin(s); a net joins at least two")
+        for p in pins_:
+            if p.lower() in seen:
+                fail(f"{path}: {p} is in both {seen[p.lower()]} and {name}")
+            seen[p.lower()] = name
+        nets[name] = (pins_, body.get("firmware"))
+    if not nets:
+        fail(f"{path} has no [net.<name>] tables")
+    return nets
+
+
+def compare(drawn, netlist, symmetric):
+    """The drawing's nets against the netlist: layout versus schematic.
+
+    `drawn` is a list of pin-name lists, one per net of the drawing, singletons
+    included. Returns (problems, names): what disagrees, in words, and for each
+    drawn net (by index) the netlist name it carries when exactly one does.
+
+    A pin in no net of the netlist is meant to be connected to nothing, so the
+    netlist alone says which pins are spare.
+    """
+    drawn = [list(n) for n in drawn]
+    where = {}  # lower-case pin -> index of its drawn net
+    for i, n in enumerate(drawn):
+        for p in n:
+            where[p.lower()] = i
+    meant = {}  # lower-case pin -> netlist name
+    for name, (pins_, _) in netlist.items():
+        for p in pins_:
+            meant[p.lower()] = name
+
+    # A resistor fitted either way round is right, so for each one take the
+    # orientation that agrees best with the netlist before comparing.
+    for part in sorted(symmetric):
+        a, b = f"{part}.1".lower(), f"{part}.2".lower()
+        if a not in where or b not in where or a not in meant or b not in meant:
+            continue
+
+        def agree(lead, net_name):
+            others = {p.lower() for p in netlist[net_name][0]} - {a, b}
+            return len(others & {p.lower() for p in drawn[where[lead]]})
+
+        if agree(b, meant[a]) + agree(a, meant[b]) > agree(a, meant[a]) + agree(b, meant[b]):
+            ia, ib = where[a], where[b]
+            drawn[ia] = [f"{part}.2" if p.lower() == a else p for p in drawn[ia]]
+            drawn[ib] = [f"{part}.1" if p.lower() == b else p for p in drawn[ib]]
+            where[a], where[b] = ib, ia
+
+    def group(i):
+        n = drawn[i]
+        return f"{{{' '.join(n)}}}" + (" (connected to nothing)" if len(n) == 1 else "")
+
+    problems = []
+    for name, (pins_, _) in netlist.items():
+        absent = [p for p in pins_ if p.lower() not in where]
+        for p in absent:
+            problems.append(f"{name}: {p} is not in the drawing")
+        parts = sorted({where[p.lower()] for p in pins_ if p.lower() in where})
+        if len(parts) > 1:
+            problems.append(f"{name} is split: " + " | ".join(group(i) for i in parts))
+
+    names = {}
+    for i, n in enumerate(drawn):
+        here = sorted({meant[p.lower()] for p in n if p.lower() in meant})
+        stray = [p for p in n if p.lower() not in meant]
+        if len(here) > 1:
+            problems.append(f"{' and '.join(here)} are joined: {' '.join(n)}")
+        if stray and len(n) > 1:
+            into = f"net {here[0]}" if len(here) == 1 else " ".join(p for p in n if p not in stray) or "each other"
+            problems.append(f"{' '.join(stray)} reach{'es' if len(stray) == 1 else ''} {into}, "
+                            "but no net in the netlist has them")
+        if len(here) == 1:
+            names[i] = here[0]
+    return problems, names
+
+
+def board_pins(path):
+    """{macro name: GPIO number} from src/board.rs's `$peripherals.GPIOn` macros."""
+    try:
+        text = open(path).read()
+    except OSError as e:
+        fail(f"cannot read {path}: {e}")
+    found = dict(
+        (m.group(1), int(m.group(2)))
+        for m in re.finditer(r"macro_rules!\s+(\w+)\s*\{.*?\$peripherals\.GPIO(\d+)", text, re.S)
+    )
+    if not found:
+        fail(f"{path} has no `$peripherals.GPIOn` pin macros; has its shape changed?")
+    return found
+
+
+def firmware(netlist, macros):
+    """Each net's GPIO against the pin the firmware hands out for it.
+
+    A net names its macro (`firmware = "switch_pin"`); the GPn pin in it must be
+    the GPIO that macro returns. Every macro must be claimed by a net, and every
+    net reaching a GPn pin must name one, so a pin the firmware drives and a pin
+    the board wires cannot drift apart unseen.
+    """
+    problems = []
+    claimed = set()
+    for name, (pins_, macro) in netlist.items():
+        gpios = sorted({int(m.group(1)) for p in pins_ if (m := re.fullmatch(r"gp(\d+)", p.rsplit(".", 1)[-1].lower()))})
+        if macro is None:
+            if gpios:
+                problems.append(f"{name} reaches GPIO{gpios[0]} but names no board.rs macro (firmware = \"...\")")
+            continue
+        claimed.add(macro)
+        if macro not in macros:
+            problems.append(f"{name} names {macro}, which board.rs does not define")
+        elif gpios != [macros[macro]]:
+            have = ", ".join(f"GPIO{g}" for g in gpios) or "no GPn pin"
+            problems.append(f"{name}: board.rs gives {macro} GPIO{macros[macro]}, the netlist has {have}")
+    for macro, gpio in sorted(macros.items()):
+        if macro not in claimed:
+            problems.append(f"board.rs gives {macro} GPIO{gpio}, and no net says where it goes")
+    return problems
 
 
 def classify(names):
@@ -231,10 +383,14 @@ def main():
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--layout", default="pcb.diy")
     ap.add_argument("--pinouts", default="dev/pinouts.toml")
+    ap.add_argument("--netlist", default="dev/netlist.toml")
+    ap.add_argument("--board-rs", default="src/board.rs")
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()
 
-    board, nets, pins, headers, labels, notes = load(args.layout)
+    board, nets, pins, headers, labels, notes, symmetric = load(args.layout)
+    netlist = load_netlist(args.netlist)
+    macros = board_pins(args.board_rs)
     try:
         with open(args.pinouts, "rb") as f:
             reference = tomllib.load(f)
@@ -281,6 +437,12 @@ def main():
     for name in reference:
         if name not in headers:
             print(f"  --    {name} is in {args.pinouts} but not in the drawing")
+    # Which pins are spare is the design, not the part, and the netlist says it
+    # now: a pin in no net. Two lists of the same thing would drift apart.
+    for name, ref in reference.items():
+        if "unused" in ref:
+            errors += 1
+            print(f"  FAIL  {name}: `unused` belongs to {args.netlist} now; a pin in no net is spare")
 
     # --- power -----------------------------------------------------------
     print("\nPower")
@@ -312,31 +474,27 @@ def main():
     alone = sorted(n[0] for n in net_pins.values() if len(n) == 1)
     print(f"\n  connected to nothing: {' '.join(alone) if alone else 'none'}")
 
-    # --- unused ----------------------------------------------------------
-    # A pin left unconnected on purpose is listed as `unused` in the pinouts
-    # file; any other pin connected to nothing is a missing trace or jumper.
-    # This is what catches a signal that never arrives — a switch line that
-    # stops one hole short of the jumper that should carry it on.
-    print("\nUnconnected pins")
-    unused_ok = True
-    for full in alone:
-        header, _, pin_name = full.rpartition(".")
-        ref = reference.get(header)
-        if ref is None:
-            continue
-        intended = {p.lower() for p in ref.get("unused", [])}
-        if pin_name.lower() not in intended:
-            errors += 1
-            unused_ok = False
-            print(f"  FAIL  {full} is connected to nothing, and is not listed as unused")
-    alone_set = set(alone)
-    for header, ref in reference.items():
-        for pin_name in ref.get("unused", []):
-            match = [p for p in alone_set if p.lower() == f"{header}.{pin_name}".lower()]
-            if header in headers and not match:
-                print(f"  --    {header}.{pin_name} is listed as unused but is connected")
-    if unused_ok:
-        print("  ok    every unconnected pin is meant to be")
+    # --- netlist ---------------------------------------------------------
+    # What is meant against what is drawn. This is what catches a signal that
+    # never arrives (a switch line one hole short of its jumper: split), one
+    # that arrives somewhere else (a data line on the wrong resistor: joined),
+    # and a pin wired that was meant to be spare.
+    print(f"\nNetlist, against {args.netlist}")
+    problems, _ = compare([n for n in net_pins.values() if n], netlist, symmetric)
+    for p in problems:
+        errors += 1
+        print(f"  FAIL  {p}")
+    if not problems:
+        print(f"  ok    the drawing makes the {len(netlist)} nets meant, and no others")
+
+    # --- firmware --------------------------------------------------------
+    print(f"\nFirmware pins, against {args.board_rs}")
+    problems = firmware(netlist, macros)
+    for p in problems:
+        errors += 1
+        print(f"  FAIL  {p}")
+    if not problems:
+        print(f"  ok    every pin board.rs hands out is wired where a net says, and only those")
 
     # --- labels ----------------------------------------------------------
     print("\nLabels")

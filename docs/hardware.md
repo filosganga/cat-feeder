@@ -144,7 +144,8 @@ are referenced to the Zero's ground, so they must be.
 
 [`pcb.diy`](../pcb.diy) is the layout, drawn in
 [DIY Layout Creator](https://github.com/bancika/diy-layout-creator). Open it
-there to print or export a picture to solder from. GPIO3–GPIO5 are
+there to print or export a picture to solder from. What it must connect is
+[`dev/netlist.toml`](../dev/netlist.toml); the drawing places it. GPIO3–GPIO5 are
 unconnected, and the DS3231 is alone on the I²C bus.
 
 **The drawing is the component side**, with the bottom traces seen through the
@@ -338,8 +339,16 @@ Run it after any edit to `pcb.diy`. It reads the drawing and fails on:
 - a header whose pin names disagree with the part's silkscreen
   ([`dev/pinouts.toml`](../dev/pinouts.toml));
 - a supply joined to ground or to another supply;
-- a label on the wrong pin;
-- a pin left unconnected that is not listed as meant to be.
+- a net that differs from [`dev/netlist.toml`](../dev/netlist.toml), the
+  statement of what connects to what (ADR-0030): split, joined to another, or
+  reaching a pin meant to be spare;
+- a GPIO wired other than where `src/board.rs` drives it;
+- a label on the wrong pin.
+
+`./dev/pcb-render.sh` draws what it reads to `target/pcb.svg`, each net named
+by the netlist, for a look without opening DIY Layout Creator. To solder from:
+`--side solder` draws the bottom as the board is held to solder it, mirrored,
+and `--true-size` prints at 100% with the holes 2.54 mm apart.
 
 It also ranks every pair of neighbouring holes on different nets, worst first.
 Those are where a solder blob does damage, and where the care goes:

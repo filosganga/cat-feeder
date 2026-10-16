@@ -35,5 +35,12 @@ its row; git history keeps the record.
 
 ## Later
 
+- **The board in KiCad**, if a perfboard stops being enough: a schematic with
+  ERC, the layout on a 2.54 mm grid, DRC including body outlines and 3D fit
+  (`pcb-check` cannot see a part's size), all of it headless through
+  `kicad-cli`, and the same project for a manufactured PCB. It means redrawing
+  `pcb.diy` and retiring `pcb-check` and `pcb-render`. `dev/netlist.toml`
+  (ADR-0030) is the half of it already done, and `dev/kicad-netlist.sh`
+  already writes it as a KiCad netlist, with footprints for the modules.
 - Tune the LED palette in a real room; green reads much brighter than blue at the same value.
 - A boot reaching an armed schedule should take about 6 s; not captured end to end.

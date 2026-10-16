@@ -5,14 +5,16 @@
 #   ./dev/pcb-check.sh --all                  # ...and list signal-to-signal neighbours too
 #   ./dev/pcb-check.sh --layout other.diy     # another drawing
 #   ./dev/pcb-check.sh --pinouts parts.toml   # another set of part pinouts
+#   ./dev/pcb-check.sh --netlist nets.toml    # another statement of the design
 #
 # Reports each header's pin names against the part's own silkscreen order
-# (dev/pinouts.toml), supplies joined to ground or to each other, the netlist
-# and the pins connected to nothing, labels that disagree with their pin, and
-# every pair of neighbouring holes on different nets, worst first.
+# (dev/pinouts.toml), supplies joined to ground or to each other, the drawing's
+# nets against what dev/netlist.toml says is meant (ADR-0030), each net's GPIO
+# against src/board.rs, labels that disagree with their pin, and every pair of
+# neighbouring holes on different nets, worst first.
 #
-# Exits 1 when a pinout, a supply or a label is wrong; neighbours and
-# unconnected pins are reported for reading, since every perfboard has them.
+# Exits 1 when a pinout, a supply, a net, a firmware pin or a label is wrong;
+# neighbours are reported for reading, since every perfboard has them.
 #
 # What it cannot know: anything the drawing does not say. A part missing from
 # dev/pinouts.toml is reported as unchecked, not as fine, and a part this does
@@ -27,6 +29,7 @@ cd "$DEV_DIR/.."
 
 LAYOUT="pcb.diy"
 PINOUTS="dev/pinouts.toml"
+NETLIST="dev/netlist.toml"
 ALL=()
 
 while [ $# -gt 0 ]; do
@@ -35,6 +38,8 @@ while [ $# -gt 0 ]; do
     --layout=*) LAYOUT="${1#*=}"; need_value --layout "$LAYOUT"; shift ;;
     --pinouts) need_value "$1" "${2:-}"; PINOUTS="$2"; shift 2 ;;
     --pinouts=*) PINOUTS="${1#*=}"; need_value --pinouts "$PINOUTS"; shift ;;
+    --netlist) need_value "$1" "${2:-}"; NETLIST="$2"; shift 2 ;;
+    --netlist=*) NETLIST="${1#*=}"; need_value --netlist "$NETLIST"; shift ;;
     --all) ALL=(--all); shift ;;
     -h|--help) usage; exit 0 ;;
     -*) die "$(prog): unknown option '$1'. Try --help." ;;
@@ -47,9 +52,10 @@ done
 # than reporting a missing file that plainly exists.
 [ -f "$LAYOUT" ] || die "$(prog): no layout at $LAYOUT (paths are relative to the repo root)"
 [ -f "$PINOUTS" ] || die "$(prog): no pinouts at $PINOUTS (paths are relative to the repo root)"
+[ -f "$NETLIST" ] || die "$(prog): no netlist at $NETLIST (paths are relative to the repo root)"
 
 # tomllib arrived in Python 3.11.
 python3 -c 'import sys, tomllib' 2>/dev/null \
   || die "$(prog): needs Python 3.11 or later for tomllib; this is $(python3 --version 2>&1)"
 
-exec python3 "$DEV_DIR/pcb-check.py" --layout "$LAYOUT" --pinouts "$PINOUTS" ${ALL[@]+"${ALL[@]}"}
+exec python3 "$DEV_DIR/pcb-check.py" --layout "$LAYOUT" --pinouts "$PINOUTS" --netlist "$NETLIST" ${ALL[@]+"${ALL[@]}"}

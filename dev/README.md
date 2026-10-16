@@ -288,6 +288,9 @@ docker compose down -v                  # stop and wipe every retained message
 ./dev/ap-password.sh a1b2c3             # a unit's setup/admin password
 ./dev/label.sh a1b2c3 d4e5f6            # printable labels with a join-Wi-Fi QR
 ./dev/pcb-check.sh                      # check pcb.diy before soldering; see the pcb-review skill
+./dev/pcb-render.sh                     # draw what the check sees: pcb.diy -> target/pcb.svg
+./dev/pcb-render.sh --side solder --true-size   # the bottom, mirrored, to print at 100% and solder from
+./dev/kicad-netlist.sh                  # dev/netlist.toml as a KiCad netlist -> target/kicad/
 ./dev/ota.sh --address <ip> --id <id> --board zero   # build and send firmware over the network
 ./dev/bootloader.sh                     # rebuild bootloader/bootloader.bin in Docker (ADR-0024); rarely
 ```
