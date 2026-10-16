@@ -61,6 +61,7 @@ from the unit itself once it is running:
 | 1 kΩ resistor | guards the switch input |
 | Perfboard, female headers, a 6-pin header (or JST XH) | the layout is [`pcb.diy`](pcb.diy) |
 | 5 V USB adapter, 1 A or more | into the feeder's original USB socket |
+| *Optional:* 2× 1 kΩ, a 2-pin female header, a JST XH 4-pin header; a 5 V WS2812, a push button and 100 nF on a small board | to bring the LED and BOOT outside the feeder |
 | *Optional:* ESP32-C6-DEV-KIT-N8 | for development on a breadboard |
 
 There is no screen and no knob: a unit is configured entirely over the
@@ -74,7 +75,8 @@ feeder, where its original board was. 5 V comes from the feeder's own USB
 socket, with its AA compartment as a backup supply. The LED and the BOOT
 button are on the board, so with the feeder closed they are out of sight and
 reach unless you bring them out — the LED behind the old display window or a
-hole, BOOT through a hole. Both are optional; see
+hole, BOOT through a hole, or both on a small board cabled to the perfboard's
+`Ext` connector. All of it is optional; see
 [ADR-0029](docs/adr/0029-the-electronics-go-inside-the-feeder.md).
 
 [**docs/hardware.md**](docs/hardware.md) is the builder's guide: the cable

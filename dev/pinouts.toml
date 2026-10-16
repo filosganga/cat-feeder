@@ -55,3 +55,18 @@ pins = ["SCL", "SDA", "VCC", "GND"]
 ["In"]
 module = "feeder cable"
 pins = ["GND", "VCC", "VBATT", "MOT1", "MOT2", "SWITCH"]
+
+# Not a module: two wires soldered to the Zero's back pads, GPIO8 (its WS2812)
+# and GPIO9 (its BOOT), ending in a 2-pin male Dupont plug. The edge headers
+# above are all the drawing knows of the Zero, so this is where the two pads
+# enter the layout. Unkeyed: plugged in swapped, the LED and the button do
+# nothing, and nothing is harmed.
+["Pads"]
+module = "Zero back pads"
+pins = ["GP8", "GP9"]
+
+# Not a module: the JST XH 4-pin to the optional LED and BOOT board, as
+# crimped. Keyed. DIN is the external WS2812's data in, BOOT the button to GND.
+["Ext"]
+module = "LED and BOOT cable"
+pins = ["GND", "5V", "DIN", "BOOT"]

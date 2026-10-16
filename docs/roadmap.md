@@ -9,7 +9,7 @@ its row; git history keeps the record.
 | Item | Notes |
 |---|---|
 | OTA updates | built and seen working on a Zero (ADR-0022, ADR-0024): `dev/ota.sh`. What is left is below |
-| An external WS2812 on GPIO8 | no firmware change: it sits in parallel with the onboard LED |
+| An external WS2812 on GPIO8, and BOOT beside it | no firmware change: in parallel with the onboard LED and button. The perfboard has the connectors (`Pads`, `Ext`); the small board is not drawn and its 5 V LED not chosen |
 
 ### OTA, in order
 

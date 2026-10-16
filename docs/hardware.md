@@ -87,6 +87,7 @@ GPIO.
 | 1 kΩ resistor | R1, in series on the switch line |
 | perfboard, female headers, a 6-pin header for the feeder's cable | the layout is [`pcb.diy`](../pcb.diy), double-sided and plated-through |
 | JST XH 6-pin header and housing | optional, for a feeder whose wires need re-crimping anyway |
+| 2× 1 kΩ resistor, a 2-pin female header, a JST XH 4-pin header | optional: R2, R3, `Pads` and `Ext`, for the LED and BOOT board — see *The LED and BOOT connectors* |
 | Waveshare ESP32-C6-DEV-KIT-N8 | optional, for development on a breadboard |
 
 Power comes from the feeder's own USB port (a 1 A adapter or better). The
@@ -156,9 +157,10 @@ never by "third from the left", which flips when the board is turned over.
 perfboard rather than the Zero, the driver and the RTC. Socketed modules can
 go in reversed or one row off: mark each socket's GND end on the board.
 
-There is no external BOOT button on the board. The Zero's own BOOT button is
-the only reset; inside a closed feeder it is reached through a hole, or a
-button wired to its back pad, or not at all — that is not decided (ADR-0029).
+The Zero's own LED and BOOT button are the only ones on the board. Two
+optional connectors, `Pads` and `Ext`, take both to a small second board that
+can sit where they are seen and pressed from outside the feeder; whether a
+feeder gets one is not decided (ADR-0029). See *The LED and BOOT connectors*.
 
 ### The feeder's cable
 
@@ -251,6 +253,11 @@ leaves it. Then:
   Zero's supply.
 - **The Zero gets its own pair**, and the DS3231 hangs off the Zero's ground
   and 3V3. At tens of milliamps a shared run is harmless.
+- **The external LED hangs off the driver's pair** (its `Vcc` and `GND` pins,
+  H13 and H14), the only 5 V and ground that reach the `Ext` connector without
+  crossing another run. One WS2812 draws 60 mA at most, beside the motor's
+  amperes, and nothing reads a voltage against it: a BOOT press is still a
+  clear low with the motor running.
 
 ### R1, the guard on the switch line
 
@@ -271,6 +278,59 @@ motor's cable. Fit one only if spurious clicks appear.
 
 Mark pin 1 on the housing and on the board either way.
 
+### The LED and BOOT connectors
+
+Optional: fitted for a feeder whose LED and BOOT are brought outside on a
+small second board, left empty otherwise (ADR-0029). Both signals already
+exist. GPIO8 drives the onboard WS2812 and GPIO9 is the onboard BOOT button,
+and both are also pads on the back of the Zero (test points `P2` and `P4` on
+its schematic, closer together than 2.54 mm). An external WS2812 on GPIO8
+latches the same data and shows the same colour; a button from GPIO9 to
+ground sits in parallel with BOOT. No firmware change and no other pin.
+
+- **`Pads`, K10 (GPIO8) and L10 (GPIO9)**: a 2-pin female header. Two wires
+  soldered to the back pads run out from under the Zero to a 2-pin male
+  Dupont plug. The drawing knows the Zero only by its edge headers, so this
+  is where the two pads enter it. Plugged in swapped, nothing is harmed: the
+  LED and the button just do nothing.
+- **R2 and R3, 1 kΩ**: GPIO8 through R2 (J10–J14), GPIO9 through R3 (O11–O15,
+  under the Zero). The same guard as R1: a fault on the cable or the small
+  board that reaches 5 V meets 1 kΩ before it meets a pin. On the data line it
+  costs tens of nanoseconds of edge, against 220 ns for the shortest WS2812
+  pulse.
+- **`Ext`, J16–M16**: a JST XH 4-pin header, keyed.
+
+| Pin | Hole | Signal | Goes to |
+|---|---|---|---|
+| 1 | J16 | GND | the DRV8833's `GND` (H14) |
+| 2 | K16 | 5 V | the DRV8833's `Vcc` (H13) |
+| 3 | L16 | DIN, the external WS2812's data in | R2, then GPIO8 |
+| 4 | M16 | BOOT, the external button | R3, then GPIO9 |
+
+5 V sits between ground and DIN, never beside a bare pin: DIN is behind R2.
+The XH's body is wider than a Dupont header's, so columns I and N beside it
+carry traces only, no parts.
+
+**The small board**: a WS2812 on 5 V with 100 nF across its supply, a push
+button from BOOT to ground, and a JST XH 4-pin header in the order above. The
+key stops a reversed plug, but not a housing crimped in the wrong order: beep
+the cable end to end before plugging it in.
+
+**At power-on.** Both lines are strapping pins. GPIO9 low at reset means
+download mode, so holding the external button through a reset does what
+holding BOOT does; released, the Zero's own 10 kΩ pull-up holds it high, cable
+or no cable. GPIO8 matters only while GPIO9 is low, has a 10 kΩ pull-up of its
+own, and an external DIN loads it no more than the onboard LED's does. **What
+does harm is a fault holding BOOT low**: held 5 s while the unit runs, it
+forgets the network and reboots — into download mode, if BOOT is still low.
+That is why the beep test checks BOOT against everything beside it.
+
+**3.3 V data into a 5 V LED.** GPIO8 drives 3.3 V. Older WS2812B datasheets
+want 0.7 × VDD for a high, which on a 4.7 V rail is 3.3 V, no margin at all;
+newer ones (V5, V6) want 0.55–0.63 × VDD and are comfortable. With an older
+part, a 1N4148 in series with the LED's 5 V puts it at about 4.0 V and its
+threshold at about 2.8 V.
+
 ## Before soldering: `./dev/pcb-check.sh`
 
 Run it after any edit to `pcb.diy`. It reads the drawing and fails on:
@@ -287,7 +347,10 @@ Those are where a solder blob does damage, and where the care goes:
 - 5 V (F8–F14) beside ground (G7–G12) on the way to the driver;
 - `Out1` (D9–D15) beside 5 V (E9–E18);
 - the 3V3 run beside `In1` at I10/I11;
-- rows 17 and 18 (the switch line beside 5 V).
+- rows 17 and 18 (the switch line beside 5 V);
+- 5 V (I14, J15, K16) beside the LED's data line (J14, K15, L16), behind R2;
+- BOOT (M16, N16, O15) beside the switch line, DIN and `In2`: no part is
+  damaged, but a bridge holds BOOT low and the unit forgets its network.
 
 It cannot see a part fitted backwards, a cold joint, or a module in the wrong
 socket. That is what the beep test is for.
@@ -310,6 +373,11 @@ With the continuity beeper, modules plugged in, holes as in the drawing:
 | H11 ↔ U16 (`In1` ↔ 3V3) | silence | the 3V3 run beside `In1` — a bridge runs the motor on its own |
 | T16 ↔ H11, S16 ↔ H12, U10 ↔ B11 (GPIO0 ↔ `In1`, GPIO1 ↔ `In2`, GPIO14 ↔ `Ult`) | beep | the runs and jumpers reaching the driver |
 | J5 ↔ S10, J6 ↔ R10 (SDA ↔ GPIO18, SCL ↔ GPIO19) | beep | the RTC's lines, module pin to Zero pin |
+| *With `Pads` and `Ext` fitted:* | | |
+| M16 ↔ J16, L16, A1, H12 (BOOT ↔ GND, DIN, switch, `In2`) | silence | a bridge that holds BOOT low and forgets the network |
+| L16 ↔ K16 (DIN ↔ 5 V) | silence | 5 V on the data line's side of R2 |
+| K10 ↔ L16, L10 ↔ M16 (GPIO8 ↔ DIN, GPIO9 ↔ BOOT) | ~1 kΩ on the ohms range | R2 and R3 and their runs in place |
+| J16 ↔ V16, K16 ↔ W16 (`Ext` GND, 5 V ↔ the Zero's) | beep | the rails reaching `Ext` |
 
 Then, on USB alone:
 
@@ -338,8 +406,9 @@ The board goes **inside the feeder**, where its original board was
   (ADR-0029). The LED can show through the old display window, a button hole
   or a hole of its own, or a light pipe; it is the only output the unit has,
   and the only one left when the network is what failed. BOOT can be reached
-  through a hole, or by a button in parallel on the Zero's back pad. Without
-  either, both need the feeder open.
+  through a hole. Or both go out together on the small board on `Ext` (*The
+  LED and BOOT connectors*), fixed in the feeder's wall with the cable inside.
+  Without any of these, both need the feeder open.
 - Stand the solder side off whatever it is fixed to — about 3 mm, on the
   corner mounting holes — so clipped leads touch nothing.
 - A drop of glue or a cable tie takes the cable's pull off the header's joints.
@@ -375,12 +444,14 @@ What constrains the choice, if you move anything:
 
 ## An external LED
 
-On the Zero, GPIO8 is also on the back pad row. An external WS2812 wired there
-sits in parallel with the onboard one on the same data line and shows the same
+On the Zero, GPIO8 is also a back pad. An external WS2812 wired there sits in
+parallel with the onboard one on the same data line and shows the same
 colour — an indicator where the feeder can show it, such as its old display
-window, for no extra pin and no firmware change. Both boards' LEDs take RGB byte order, not the GRB the WS2812B
-datasheet gives; if an external part shows the wrong colours, `led::wire_word`
-is the one place to change.
+window, for no extra pin and no firmware change. On the perfboard it arrives
+through `Pads` and leaves on `Ext`, at 5 V; *The LED and BOOT connectors* has
+the wiring and the 3.3 V data margin. Both boards' LEDs take RGB byte order,
+not the GRB the WS2812B datasheet gives; if an external part shows the wrong
+colours, `led::wire_word` is the one place to change.
 
 ## Developing on a breadboard
 
