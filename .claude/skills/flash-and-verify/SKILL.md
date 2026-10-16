@@ -20,7 +20,12 @@ they fail loudly on the mistakes that otherwise cost a whole run.
 ./dev/flash --board zero           # ...a Zero rather than the dev kit
 ./dev/capture --seconds 60 --filter 'feed:|switch:'   # listen: no reflash, no reset
 ./dev/capture --reset              # ...or reset, to capture a boot
+./dev/capture --seconds 0          # ...until Ctrl-C
 ```
+
+`capture` shows each line as it arrives and prints the log's path first;
+Ctrl-C ends it early with the summary still printed and the log kept.
+`flash` shows its capture when it ends.
 
 **Pass the flags, not an environment prefix.** Every setting these scripts take
 has one — `--board`, `--port`, `--host` — and it wins over the matching
@@ -98,9 +103,11 @@ directly:
 ./dev/capture --seconds 30 --filter 'mqtt:'
 ```
 
+`--seconds 0` never ends on its own, so an agent always passes a number.
+
 Captures that need a button pressed at the right moment cannot be automated.
-Start the capture in the background, tell the user what to press, and read the
-result when it finishes. Everything else, including boot sequences, MQTT
+Start the capture in the background, tell the user what to press, and read its
+output, which arrives line by line as the unit prints. Everything else, including boot sequences, MQTT
 behaviour and the jam timeout, runs with nobody at the bench.
 
 ## What a healthy boot looks like

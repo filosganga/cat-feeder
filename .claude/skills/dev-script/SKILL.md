@@ -117,7 +117,7 @@ the command lines it must accept and refuse.
 - **A script meant to be run has no extension** — `dev/flash`, not
   `dev/flash.sh` — so a caller never needs to know its language. A helper that
   is only sourced or called by other scripts starts with `_` and keeps its
-  extension (`_common.sh`, `_render.sh`, `_tap.py`, `_args.py`, `_pcb.py`).
+  extension (`_common.sh`, `_render.py`, `_tap.py`, `_args.py`, `_pcb.py`).
 - **Reuse the flag names.** `--port`, `--board`, `--host`, `--user`,
   `--password`, `--nvs-offset`, `--seconds`, `--filter`, `--hours`, `--log`. A
   synonym for one of these is a bug.
@@ -138,7 +138,7 @@ the command lines it must accept and refuse.
   those comments and the mistakes come back.
 - **Secrets go in `mktemp` with a `trap cleanup EXIT`**, never into the working
   tree, and are never echoed.
-- **Serial captures render through `_render.sh`** rather than printing raw, and
+- **Serial captures render through `_render.py`** rather than printing raw, and
   never pass `--no-reset` — it halts the application and captures only the
   bootloader.
 
@@ -146,7 +146,8 @@ the command lines it must accept and refuse.
 
 1. `chmod +x`, then `bash -n` on every bash script:
    `grep -l '^#!/usr/bin/env bash' dev/* | xargs -n1 bash -n`. After any
-   change to `_args.py`, `python3 dev/_args_test.py`.
+   change to `_args.py` or `_render.py`, `python3 dev/_args_test.py` and
+   `python3 dev/_render_test.py`.
 2. Run `--help` from the repo root, from `dev/`, and from `/tmp`. All three
    must work; two of them catch the `$0` mistake above.
 3. Exercise the error paths — unknown flag, missing value, one positional too

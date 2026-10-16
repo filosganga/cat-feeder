@@ -26,6 +26,7 @@
       "Bash(./dev/pcb-check)",
       "Bash(./dev/pcb-check *)",
       "Bash(python3 dev/_args_test.py)",
+      "Bash(python3 dev/_render_test.py)",
       "Bash(python3 -)",
       "Edit(/.claude/skills//**)",
       "Bash(git add *)",

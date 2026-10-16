@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Reads a serial port for a while without resetting what is on the other end.
-Used by dev/capture; not meant to be called directly.
+"""Reads a serial port, without resetting what is on the other end, until it
+is stopped. Used by dev/capture, through dev/_render.py, which stops it at the
+deadline or at Ctrl-C; not meant to be called directly.
 
-    _tap.py <port> <seconds>
+    _tap.py <port>
 
 espflash's monitor resets the chip when it attaches, even told not to: it
 talks to the ROM to identify the chip. This only opens the port and reads.
@@ -12,11 +13,17 @@ Standard library only, so nothing to install.
 
 import os
 import select
+import signal
 import sys
 import termios
 import time
 
-port, seconds = sys.argv[1], float(sys.argv[2])
+port = sys.argv[1]
+
+# Stopped is the normal way to end, not an error: no traceback in the log.
+# Everything read is already written, a chunk at a time.
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
 def open_port():
@@ -34,9 +41,8 @@ def open_port():
 # resets on its own (an OTA restart, the watchdog). Rather than end the
 # capture there, wait for the port to come back and keep reading: the reboot
 # that follows is usually what was worth seeing.
-end = time.time() + seconds
 fd = None
-while time.time() < end:
+while True:
     if fd is None:
         try:
             fd = open_port()
@@ -63,5 +69,3 @@ while time.time() < end:
         # EOF: the device went away without an error.
         os.close(fd)
         fd = None
-if fd is not None:
-    os.close(fd)

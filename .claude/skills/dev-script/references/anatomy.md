@@ -145,23 +145,25 @@ somewhere nobody cleans up: `--refuse 'out=...'`.
 - **Never `--no-reset`.** It loads a flash stub that halts the application, and
   the capture then contains bootloader output only. That mistake costs a whole
   run and looks like a dead program.
-- Bound a capture with `timeout`, let it fail with `|| true`, and hand the log
-  to `_render.sh` — which annotates each line with the gap since the previous
-  one, flags a panic, and exits non-zero when the application printed nothing
-  at all.
+- Hand the capture to `_render.py`, which runs it, keeps everything in the
+  log, shows each line as it arrives with the gap since the previous one, and
+  stops it at the deadline or at Ctrl-C. It then flags a panic and exits
+  non-zero when the application printed nothing at all. Not `timeout(1)`: it
+  puts its command in a process group of its own, which Ctrl-C never reaches.
 
 ```bash
-timeout "$SECONDS_TO_CAPTURE" espflash monitor \
-  --non-interactive --port "$PORT" >"$LOG" 2>&1 || true
-
-exec "$DEV_DIR/_render.sh" "$LOG" "$FILTER"
+exec python3 "$DEV_DIR/_render.py" --as thing --log "$LOG" --seconds "$SECONDS_TO_CAPTURE" \
+  -- espflash monitor --non-interactive --port "$PORT"
 ```
+
+  `--filter RE` and `--listening` go before the `--`. Without `--seconds` and
+  a command, it renders a finished log, which is what `dev/flash` does.
 
 ## A complete script
 
 `dev/capture` is the shortest one that uses every convention: header comment
 as usage, `DEV_DIR` before the `cd`, a spec with preserved positionals,
-`require_port`, a bounded capture, and `_render.sh` at the end. Read it before
+`require_port`, and a capture run by `_render.py` at the end. Read it before
 writing a new one.
 
 ## Checklist

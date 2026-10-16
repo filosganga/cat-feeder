@@ -84,4 +84,8 @@ timeout "$((SECONDS_TO_CAPTURE + 60))" espflash flash \
   --erase-data-parts ota "$BIN" \
   >"$LOG" 2>&1 || true
 
-exec "$DEV_DIR/_render.sh" "$LOG" "$FILTER"
+RENDER=(python3 "$DEV_DIR/_render.py" --as flash --log "$LOG")
+if [ -n "$FILTER" ]; then
+  RENDER+=(--filter "$FILTER")
+fi
+exec "${RENDER[@]}"

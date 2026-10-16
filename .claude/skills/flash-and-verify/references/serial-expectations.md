@@ -1265,7 +1265,6 @@ selected, and `web: restarting` comes only after the turn ends. Send the feed
 after the unit logs `mqtt: subscribed` — commands are not retained, and one
 sent earlier is simply lost.
 
-`dev/capture` prints its filtered view only when it ends. A script that waits
-on a line must poll the raw log it names (`cat-feeder-capture.*` under
-`$TMPDIR`), which is written live.
+`dev/capture` prints each line, filtered, as it arrives, so a script waiting on
+a line can read its output; the unfiltered log is at the path it prints first.
 
