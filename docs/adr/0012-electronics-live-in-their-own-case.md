@@ -1,5 +1,7 @@
 # The electronics live in their own printed case
 
+Superseded by [ADR-0029](0029-the-electronics-go-inside-the-feeder.md).
+
 The original plan reused each feeder's LCD window and button hole. With feeders
 of different brands that means one mounting design per model, fitted to
 interiors that differ. Instead the board, driver, RTC and any panel and knob go

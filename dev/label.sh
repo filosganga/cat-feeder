@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Printable labels for units: the setup network, its password, and a QR code
-# that joins it, so the case carries everything needed to get back into a unit.
+# that joins it, so the feeder carries everything needed to get back into a unit.
 #
 #   ./dev/label.sh                    # read the id off the board that is plugged in
 #   ./dev/label.sh a1b2c3 d4e5f6 ...  # or name the ids, one label each

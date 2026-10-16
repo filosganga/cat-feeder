@@ -156,8 +156,9 @@ never by "third from the left", which flips when the board is turned over.
 perfboard rather than the Zero, the driver and the RTC. Socketed modules can
 go in reversed or one row off: mark each socket's GND end on the board.
 
-There is no external BOOT button. The Zero's own BOOT button is the only
-reset, so the case needs a pinhole over it.
+There is no external BOOT button on the board. The Zero's own BOOT button is
+the only reset; inside a closed feeder it is reached through a hole, or a
+button wired to its back pad, or not at all — that is not decided (ADR-0029).
 
 ### The feeder's cable
 
@@ -324,24 +325,25 @@ A factory-fresh Zero arrives running Waveshare's demo, which leaves data in
 the `nvs` partition. The console then says `schedule: stored record is
 unreadable` until the unit is given a schedule. That is expected.
 
-## Finishing and the case
+## Finishing and fitting
 
 **Insulating spray** on the solder side, **after** the beep test and a working
 power-up — it seals a bridge in rather than fixing it — and kept out of the
 header's contacts.
 
-The electronics live in a **separate 3D-printed case**, not inside the
-feeder. Each feeder gets one hole in its bottom shell for the motor and switch
-cable, routed out through the cavity the original USB lead uses. One case
-design then fits any feeder, because it is not fitted to any of them.
+The board goes **inside the feeder**, where its original board was
+(ADR-0029). No separate case, and no cable leaves the feeder.
 
-- Components face outward, where the BOOT pinhole, the USB-C socket and the
-  RTC's coin cell can be reached.
-- The solder side sits on printed bosses on the corner mounting holes, about
-  3 mm proud of a plate, so clipped leads touch nothing.
+- **The LED and BOOT**: whether either is brought outside is not decided
+  (ADR-0029). The LED can show through the old display window, a button hole
+  or a hole of its own, or a light pipe; it is the only output the unit has,
+  and the only one left when the network is what failed. BOOT can be reached
+  through a hole, or by a button in parallel on the Zero's back pad. Without
+  either, both need the feeder open.
+- Stand the solder side off whatever it is fixed to — about 3 mm, on the
+  corner mounting holes — so clipped leads touch nothing.
 - A drop of glue or a cable tie takes the cable's pull off the header's joints.
-- Give the onboard LED a window or a light pipe. It is the only output the
-  unit has.
+- The USB-C socket and the RTC's coin cell are reached by opening the feeder.
 
 ## Pins
 
@@ -375,8 +377,8 @@ What constrains the choice, if you move anything:
 
 On the Zero, GPIO8 is also on the back pad row. An external WS2812 wired there
 sits in parallel with the onboard one on the same data line and shows the same
-colour — an indicator outside the case for no extra pin and no firmware
-change. Both boards' LEDs take RGB byte order, not the GRB the WS2812B
+colour — an indicator where the feeder can show it, such as its old display
+window, for no extra pin and no firmware change. Both boards' LEDs take RGB byte order, not the GRB the WS2812B
 datasheet gives; if an external part shows the wrong colours, `led::wire_word`
 is the one place to change.
 

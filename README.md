@@ -69,10 +69,13 @@ LED and the board's BOOT button.
 
 ## Building it
 
-The modules sit in female headers on a perfboard, which lives in its own
-3D-printed case outside the feeder. The feeder gets one hole in its bottom
-shell for the motor and switch cable, and 5 V comes from its own USB socket,
-with its AA compartment as a backup supply.
+The modules sit in female headers on a perfboard, which goes inside the
+feeder, where its original board was. 5 V comes from the feeder's own USB
+socket, with its AA compartment as a backup supply. The LED and the BOOT
+button are on the board, so with the feeder closed they are out of sight and
+reach unless you bring them out — the LED behind the old display window or a
+hole, BOOT through a hole. Both are optional; see
+[ADR-0029](docs/adr/0029-the-electronics-go-inside-the-feeder.md).
 
 [**docs/hardware.md**](docs/hardware.md) is the builder's guide: the cable
 pinout, the power path, the perfboard, the safety warnings, and the beep test
@@ -117,7 +120,7 @@ same build with an interactive monitor.
 The unit's id is the last three bytes of its MAC, printed at boot
 (`board: zero, id=a1b2c3`). One binary serves every unit.
 
-**Print a label** for the case, with the unit plugged in:
+**Print a label** for the outside of the feeder, with the unit plugged in:
 
 ```sh
 ./dev/label.sh                 # reads the id from the connected board
@@ -128,7 +131,7 @@ It opens a page of 50 × 30 mm labels with the setup network's name, its
 password and a QR code that joins it. It needs `qrencode`. The page holds the
 passwords in the clear, so it goes to a temporary file. **The label is the
 only way to learn a unit's password** short of a serial cable — print it
-before the unit goes into a case. `./dev/ap-password.sh <id>` prints
+before the unit goes into its feeder. `./dev/ap-password.sh <id>` prints
 the same thing as text.
 
 **Updating a unit that is already in its feeder** goes over the network, once
@@ -300,8 +303,9 @@ recovers a momentary stall; a real blockage needs a hand.
 
 ### Resetting Wi-Fi
 
-**Hold BOOT for five seconds** while the unit runs (through a pinhole in the
-case). It forgets the Wi-Fi and broker settings and reboots into setup mode;
+**Hold BOOT for five seconds** while the unit runs — through a hole in the
+feeder if you made one, otherwise with the feeder open; `./dev/provision.sh`
+over USB is the other way. It forgets the Wi-Fi and broker settings and reboots into setup mode;
 **the meals, the calibration, the timezone and the pause are kept.** The LED
 flashes fast blue while it counts; let go early and nothing changes.
 

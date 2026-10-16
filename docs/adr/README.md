@@ -13,7 +13,7 @@ One file per decision that is hard to reverse, surprising without context, and t
 - [One task owns the motor; decisions live in a pure state machine](0009-one-task-owns-the-motor.md)
 - [The knob is the outside control, and a hold opens the menu](0010-the-knob-is-the-outside-control.md) — superseded by 0027
 - [The status LED is dark when healthy, counts faults, and is solid for the mechanism](0011-the-led-is-dark-when-healthy.md) — amended by 0027
-- [The electronics live in their own printed case](0012-electronics-live-in-their-own-case.md)
+- [The electronics live in their own printed case](0012-electronics-live-in-their-own-case.md) — superseded by 0029
 - [The feeder's AA batteries are a backup through a diode-OR, never charged](0013-batteries-are-a-diode-or-backup.md)
 - [Pause is broker state, and Home Assistant is its authority](0014-home-assistant-is-the-authority-for-pause.md) — superseded by 0023
 - [Making feeders share meals is a copy in Home Assistant, not a broadcast topic](0015-syncing-schedules-is-a-copy-in-home-assistant.md)
@@ -30,3 +30,4 @@ One file per decision that is hard to reverse, surprising without context, and t
 - [Setup answers every DNS name with itself](0026-setup-answers-dns.md)
 - [No knob and no panel: every unit is headless](0027-no-knob-and-no-panel.md)
 - [Dependencies point down: core, state, controls](0028-dependencies-point-down.md)
+- [The electronics go inside the feeder](0029-the-electronics-go-inside-the-feeder.md)

@@ -10,7 +10,6 @@ its row; git history keeps the record.
 |---|---|
 | OTA updates | built and seen working on a Zero (ADR-0022, ADR-0024): `dev/ota.sh`. What is left is below |
 | An external WS2812 on GPIO8 | no firmware change: it sits in parallel with the onboard LED |
-| The printed enclosure | one design for every feeder (ADR-0012) |
 
 ### OTA, in order
 
@@ -31,7 +30,6 @@ its row; git history keeps the record.
 
 | Figure | Why |
 |---|---|
-| Detent interval with a **full** hopper | the jam budget is derived from it (ADR-0006) |
 | What one click dispenses, against the other models | sets each unit's portion scale (ADR-0007) |
 | Motor direction on the real mechanism, before closing it up | if wrong, swap the two motor pins at the header |
 
