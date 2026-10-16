@@ -3,16 +3,14 @@
 //!
 //! Pure logic, sampled by `main.rs`'s `reset_task`. It is the way back into a
 //! unit that cannot reach its network — the Wi-Fi password changed, the broker
-//! moved — when the admin page is unreachable for the same reason. On a unit
-//! with a knob the power-on gesture does the same; a headless unit has only
-//! this.
+//! moved — when the admin page is unreachable for the same reason. It is the
+//! only physical control a unit has.
 //!
 //! **Only the network goes.** The record is rewritten by
 //! `Record::without_network` — every credential blank, the calibration kept —
-//! and meals and timezone live in sectors of their own, so they are untouched.
-//! Same as the power-on gesture, because the problem being fixed is the
-//! network. The
-//! menu's *Factory reset* is the one that forgets everything.
+//! and meals and timezone live in sectors of their own, so they are untouched,
+//! because the problem being fixed is the network. The *Factory reset*, on the
+//! admin page and the setup page, is the one that forgets everything.
 //!
 //! Five seconds, held without a break, because it is irreversible for the
 //! unit's connection and the button sits beside the reset one on the board.
@@ -127,7 +125,7 @@ mod tests {
     }
 
     /// `main.rs` carries on when forgetting the network fails, so the next hold has to
-    /// fire as well. On a headless unit this is the only way back.
+    /// fire as well. It is the only way back.
     #[test]
     fn a_second_hold_after_a_failed_reset_fires_again() {
         let out = run(&[

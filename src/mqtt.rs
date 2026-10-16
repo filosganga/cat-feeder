@@ -175,8 +175,8 @@ pub struct State {
     /// Meals a day in the schedule this unit holds, `0` for none. The one
     /// number that says a healthy-looking unit will never feed.
     pub meals: usize,
-    /// The time and the portion count. Only the time reaches MQTT; the
-    /// count is for the display, which reads the same slot.
+    /// The time and the portion count, as `Bus::last_fed` holds them. Only
+    /// the time reaches MQTT.
     pub last_fed: Option<(Wall, u8)>,
 }
 
@@ -303,7 +303,7 @@ async fn session(
 
     // The address now, not the one at boot: a Wi-Fi reconnect can come back on
     // a new lease, and the discovery below carries it as Home Assistant's
-    // *Visit device* link. The knob's `WI-FI` page reads the same value.
+    // *Visit device* link.
     if let Some(v4) = stack.config_v4() {
         bus.ip.set(Some(v4.address.address().octets()));
     }
@@ -417,7 +417,7 @@ async fn session(
                 info!("mqtt: event {}", event.event_type());
             }
 
-            // From the knob, the admin page or a command just above. Home
+            // From the admin page or a command just above. Home
             // Assistant's paused switch is not optimistic: it only moves once
             // this state arrives, so do not make anyone wait out the interval.
             Either4::Third(()) => next_state = Instant::now(),
@@ -432,7 +432,7 @@ async fn session(
     }
 }
 
-/// A live pause command, stored and put in force like one from the knob.
+/// A live pause command, stored and put in force like one from the admin page.
 #[inline(never)]
 fn pause(store: &mut Store, paused: bool, bus: &Bus) {
     let word = if paused { "paused" } else { "resumed" };

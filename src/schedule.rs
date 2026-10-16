@@ -5,7 +5,7 @@
 //! function of its inputs and the whole thing is testable on the host.
 //!
 //! The unit owns both. The time comes from a DS3231 at boot if it kept time,
-//! from Home Assistant's `feeder/time` every minute, or from the knob, and a
+//! from Home Assistant's `feeder/time` every minute, or set by hand, and a
 //! [`LocalClock`] advances between them — see [`TimeSource`] for how far each
 //! is trusted. The schedule is kept in flash (the record is [`Schedule::encode`])
 //! and replaced only by an explicit command. No NTP. A unit whose RTC lost its
@@ -328,9 +328,9 @@ pub enum TimeSource {
     /// whose flag is set never becomes a `TimeSource` at all — see
     /// `ds3231::Reading::trustworthy`.
     Rtc,
-    /// Set by hand on the knob. Treated as a live time — it earns trust and
-    /// overrides a trusted clock — because somebody standing at the feeder
-    /// saying what time it is is as current as a source gets. If Home
+    /// Set by hand. Treated as a live time — it earns trust
+    /// and overrides a trusted clock — because somebody saying what time it is
+    /// is as current as a source gets. If Home
     /// Assistant disagrees, its next live time wins in turn.
     Manual,
 }
@@ -692,9 +692,8 @@ impl Schedule {
 
     /// This schedule with one slot changed, or why not.
     ///
-    /// Slots are addressed by position, which is how Home Assistant's `Meal n`
-    /// entities and the knob number them. Two rules decide what a position
-    /// past the end means:
+    /// Slots are addressed by position, as every control numbers them. Two
+    /// rules decide what a position past the end means:
     ///
     /// - **Setting a time past the end adds the meal switched off**, padding
     ///   any gap with switched-off slots at midnight. A time alone never feeds;
@@ -876,8 +875,8 @@ pub const PAUSE_RECORD_LEN: usize = 4 + 1 + 4;
 const PAUSE_MAGIC: [u8; 4] = *b"FDP1";
 
 /// Whether the schedule is paused, as the unit keeps it in flash. The unit is
-/// the authority (ADR-0023): the knob, the admin page and a live command from
-/// Home Assistant all write here, and a reboot comes back as it was left.
+/// the authority (ADR-0023): whatever pauses it is written here first, and a
+/// reboot comes back as it was left.
 ///
 /// Encoded as a record, not a bare byte, so erased flash and an interrupted
 /// write both read as *not stored* — and a unit that cannot say it is paused
@@ -1209,7 +1208,7 @@ impl Scheduler {
             Some((date, _)) if later(now.date, date) => None,
             // The same day, or a clock that has gone **backwards** across
             // midnight. The second is not a new day, it is a clock being
-            // corrected — a date set wrong by hand on the knob, then put right
+            // corrected — a date set wrong by hand, then put right
             // by Home Assistant — and treating it as a fresh day would serve
             // again a meal served minutes earlier. So the marker's time of day
             // still holds: nothing at or before the last slot resolved fires
@@ -1284,8 +1283,8 @@ impl Scheduler {
 
     /// The next slot that will fire, without resolving anything.
     ///
-    /// For the display, and **deliberately `&self`**. [`next_due`] marks a slot
-    /// consumed before it returns, so painting a screen with it would eat the
+    /// For showing, and **deliberately `&self`**. [`next_due`] marks a slot
+    /// consumed before it returns, so showing the next meal with it would eat the
     /// meal it was describing — the one bug this whole module exists to
     /// prevent, arriving through the back door.
     ///
@@ -1296,7 +1295,7 @@ impl Scheduler {
     ///
     /// Says nothing about whether the unit *will* feed. A paused or
     /// clock-less unit has an upcoming slot and will not act on it, and
-    /// deciding that is the caller's job — `display.rs` suppresses the line
+    /// deciding that is the caller's job — it should suppress the line
     /// rather than promising a meal that is not coming.
     ///
     /// [`next_due`]: Self::next_due
@@ -1388,7 +1387,7 @@ mod tests {
         let scheduler = two_meals();
 
         // 08:00 is not the *next* feed, it is this one: `next_due` is about to
-        // resolve it. Reporting it would leave the screen claiming a future
+        // resolve it. Reporting it would leave the page claiming a future
         // meal at a time that has already arrived.
         assert_eq!(
             scheduler.upcoming(wall(17, 8, 0)),
@@ -1405,7 +1404,7 @@ mod tests {
     }
 
     /// The whole reason this is a separate method rather than a call to
-    /// `next_due`: painting a screen must never eat a meal.
+    /// `next_due`: rendering a page must never eat a meal.
     #[test]
     fn upcoming_resolves_nothing() {
         let mut scheduler = two_meals();
@@ -1722,7 +1721,7 @@ mod tests {
         );
     }
 
-    /// The sequence the knob made possible: a meal served, the date set a day
+    /// The sequence setting the clock by hand makes possible: a meal served, the date set a day
     /// ahead by hand — which *is* a new day, and feeds — then Home Assistant
     /// putting the date back. The correction must not serve today's meal a
     /// second time.
@@ -1756,7 +1755,7 @@ mod tests {
         ));
     }
 
-    /// A year set one too far on the knob, a meal served under it, then the
+    /// A year set one too far by hand, a meal served under it, then the
     /// date corrected: the following days feed normally rather than waiting a
     /// year for the calendar to catch up with the marker.
     #[test]
@@ -2726,7 +2725,7 @@ mod tests {
     }
 
     /// The unit owns its pause; a flag the broker replays at subscribe time
-    /// must not undo one made at the knob or the admin page.
+    /// must not undo one made at the unit.
     #[test]
     fn a_retained_pause_command_is_refused() {
         assert_eq!(pause_command(b"ON", true), Err(PauseRefused::Retained));

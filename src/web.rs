@@ -10,21 +10,22 @@
 //! |---|---|
 //! | anything, without the password | `401` and a Basic challenge |
 //! | `GET /` | the page: status, meals, network |
-//! | `POST /feed` | portions onto the feed queue, like the knob's `Feed` |
-//! | `POST /pause` | pause or resume the schedule, into flash, like the knob's `Pause` |
+//! | `POST /feed` | portions onto the feed queue |
+//! | `POST /pause` | pause or resume the schedule, into flash |
 //! | `POST /schedule` | the meals, through the schedule task — no restart |
-//! | `POST /clock` | a hand-set time, like the knob's `Clock` |
+//! | `POST /clock` | a hand-set time, and the timezone |
 //! | `POST /calibration` | the detent and portion scale, into flash and in force |
 //! | `POST /calibrate` | start a calibration run; the page follows it |
 //! | `POST /network` | Wi-Fi and broker, into flash, then a restart |
 //! | `POST /update` | a firmware image into the idle slot, then a restart (ADR-0022) |
+//! | `POST /erase` | the factory reset: everything erased, then a restart into setup |
 //! | a `POST` from another site | `403` |
 //! | any other path | `404` |
 //!
 //! **One more writer of the same record, not a second way in.** The boot
 //! decision is still *no valid record → setup mode*; this page only ever
 //! rewrites a record that works, and a wrong one is recovered the way any
-//! other is, with the button held through power-on.
+//! other is, with BOOT held for five seconds.
 
 use embassy_futures::join::join3;
 use embassy_net::Stack;
@@ -35,14 +36,14 @@ use log::{info, warn};
 
 use crate::admin::{
     CHALLENGE, Network, Notice, ScheduleFormError, Status, authorized, calibration_from_form,
-    clock_form, feed_from_form, network_from_form, pause_from_form, render_page, render_restarting,
-    same_origin, schedule_from_form,
+    clock_form, erase_refusal, feed_from_form, network_from_form, pause_from_form, render_erased,
+    render_page, render_restarting, same_origin, schedule_from_form,
 };
 use crate::config::AP_SECRET;
 use crate::events::{Event, Source};
 use crate::firmware::{self, SECTOR, Target};
 use crate::http;
-use crate::provisioning::{Head, Method, PAGE_LEN};
+use crate::provisioning::{Head, Method, PAGE_LEN, erase_confirmed};
 use crate::schedule::ScheduleCommand;
 use crate::store::SharedStore;
 use crate::tz::Zone;
@@ -152,14 +153,7 @@ async fn connection(
                 false
             };
             if restart {
-                // The browser is told before the unit disappears. Without the
-                // flush the reset races the last segment and the browser shows
-                // a connection error on what was actually a success.
-                socket.close();
-                let _ = socket.flush().await;
-                Timer::after(Duration::from_millis(250)).await;
-                info!("web: restarting");
-                esp_hal::system::software_reset()
+                restart_after(&mut socket).await
             }
         }
 
@@ -180,7 +174,7 @@ async fn admit(
         // Not logged per request: a browser's first request always lands here,
         // before it has asked anyone for the password.
         page.clear();
-        let _ = page.push_str("This feeder's password is on its sticker and its setup screen.");
+        let _ = page.push_str("This feeder's password is on its sticker.");
         http::send("web", socket, "401 Unauthorized", CHALLENGE, page).await;
         return false;
     }
@@ -316,6 +310,10 @@ async fn handle(
             http::send("web", socket, "200 OK", "", page).await;
             saved
         }
+        (Method::Post, "/erase") => {
+            erase(socket, body, page, store, unit, bus).await;
+            false
+        }
         (Method::Get, _) => {
             page.clear();
             let _ = page.push_str("Not here.");
@@ -411,8 +409,8 @@ fn schedule_message(e: ScheduleFormError) -> &'static str {
     }
 }
 
-/// Pauses or resumes the schedule through [`Bus::set_pause`], the knob's path:
-/// flash first, then in force, then Home Assistant's switch follows from the
+/// Pauses or resumes the schedule through [`Bus::set_pause`], the one path
+/// every control takes: flash first, then in force, then Home Assistant's switch follows from the
 /// state payload. Works with no broker at all — the unit owns its pause.
 async fn save_pause(
     paused: bool,
@@ -463,10 +461,8 @@ async fn save_zone(
     }
 }
 
-/// Stores a calibration and puts it in force, the way the knob's `Detent` and
-/// `Portion` do: flash first, then `Bus::calibration`, which the feeder task
-/// applies at its next idle moment and the knob's menu reads before its next
-/// input.
+/// Stores a calibration and puts it in force: flash first, then
+/// `Bus::calibration`, which the feeder task applies at its next idle moment.
 async fn save_calibration(
     body: &str,
     store: &'static SharedStore,
@@ -498,6 +494,59 @@ async fn save_calibration(
             Notice::Problem("Saving to flash failed; nothing changed.")
         }
     }
+}
+
+/// The factory reset: everything erased, then a restart into setup mode, or
+/// the page again saying why not.
+///
+/// **The store stays locked from the erase to the restart**, so nothing can
+/// write a record back in between: a schedule or pause command from the
+/// broker, or a BOOT hold, waits on the lock and dies with the restart. A meal
+/// that comes due in that gap still runs first — the restart waits for it, as
+/// `/update`'s does, because a meal is marked consumed when it is sent and a
+/// turn cut short is not served again.
+async fn erase(
+    socket: &mut TcpSocket<'_>,
+    body: &str,
+    page: &mut String<PAGE_LEN>,
+    store: &'static SharedStore,
+    unit: Unit,
+    bus: &'static Bus,
+) {
+    let busy = !idle(bus) || bus.flash_busy.load(Ordering::Relaxed);
+    if let Some(message) = erase_refusal(erase_confirmed(body), !busy) {
+        info!("web: factory reset refused: {message}");
+        show(page, unit, bus, "", Some(Notice::Problem(message)));
+        http::send("web", socket, "200 OK", "", page).await;
+        return;
+    }
+    let mut store = store.lock().await;
+    if let Err(e) = store.erase_all() {
+        warn!("web: factory reset failed ({e:?})");
+        drop(store);
+        let notice = Notice::Problem("Erasing failed; nothing changed.");
+        show(page, unit, bus, "", Some(notice));
+        http::send("web", socket, "200 OK", "", page).await;
+        return;
+    }
+    warn!("web: factory reset, everything erased, restarting into setup");
+    render_erased(page, unit.id);
+    http::send("web", socket, "200 OK", "", page).await;
+    while !idle(bus) {
+        Timer::after(Duration::from_millis(200)).await;
+    }
+    restart_after(socket).await
+}
+
+/// Restarts once the answer has left. Without the flush the reset races the
+/// last segment and the browser shows a connection error on what was actually
+/// a success.
+async fn restart_after(socket: &mut TcpSocket<'_>) -> ! {
+    socket.close();
+    let _ = socket.flush().await;
+    Timer::after(Duration::from_millis(250)).await;
+    info!("web: restarting");
+    esp_hal::system::software_reset()
 }
 
 /// Writes the network form into the record. `true` when it was saved and the

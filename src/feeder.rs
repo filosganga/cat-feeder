@@ -289,7 +289,7 @@ impl Feeder {
         self.pending.count()
     }
 
-    /// New figures from the knob's settings. Applied only while idle, and
+    /// New figures, however they were saved. Applied only while idle, and
     /// returns whether they were.
     ///
     /// Never mid-turn: the jam budget and the spacing floor of a turn in

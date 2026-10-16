@@ -12,7 +12,7 @@
 //! |---|---|---|
 //! | `scheduled` | `schedule`, when a slot falls due and is queued | `portions`, `slot` |
 //! | `skipped` | `schedule`, when a slot is resolved without feeding | `slot`, `reason` |
-//! | `manual` | `ui` (the knob) and `web` (the admin page) | `portions`, `source` |
+//! | `manual` | `web` (the admin page) | `portions`, `source` |
 //! | `jammed` | `feeder`, when the jam budget runs out | |
 //!
 //! **A feed from Home Assistant raises nothing.** Activity already records the
@@ -43,10 +43,11 @@ pub const EVENT_TYPES: [&str; 4] = ["scheduled", "skipped", "manual", "jammed"];
 /// slot and an offset time, at about 100 bytes; a test measures each kind.
 pub const EVENT_LEN: usize = 128;
 
-/// Which control at the unit fed by hand.
+/// Which control at the unit fed by hand. The admin page is the only one; the
+/// `source` attribute stays, so a second control would not change the shape of
+/// the payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    Knob,
     Web,
 }
 
@@ -117,7 +118,6 @@ impl Event {
             }
             Self::Manual { source, portions } => {
                 let source = match source {
-                    Source::Knob => "knob",
                     Source::Web => "web",
                 };
                 write!(json, r#","portions":{portions},"source":"{source}""#)?;
@@ -159,7 +159,7 @@ mod tests {
     }
 
     /// One of every kind, at its widest.
-    fn every_kind() -> [Event; 6] {
+    fn every_kind() -> [Event; 5] {
         [
             Event::Scheduled {
                 minute_of_day: 23 * 60 + 59,
@@ -174,12 +174,8 @@ mod tests {
                 why: Skipped::TooLate { by_s: u32::MAX },
             },
             Event::Manual {
-                source: Source::Knob,
-                portions: u8::MAX,
-            },
-            Event::Manual {
                 source: Source::Web,
-                portions: 1,
+                portions: u8::MAX,
             },
             Event::Jammed,
         ]

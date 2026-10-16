@@ -1,15 +1,13 @@
-//! The DS3231 itself, over the shared I²C bus. Bytes in and out.
+//! The DS3231 itself, over the I²C bus. Bytes in and out.
 //!
 //! [`crate::ds3231`] decides what the registers mean and is host-tested; this
-//! only moves them. Same split as `oled.rs` and `display.rs`.
-
-use embedded_hal_async::i2c::I2c as _;
+//! only moves them.
 
 use crate::ds3231::{
     self, ADDRESS, CONTROL_REG, OFFSET_REG, REGISTERS, Reading, TIME_REG, cleared_status,
     encode_offset, encode_time, running_control,
 };
-use crate::i2c::Device;
+use crate::i2c::Bus;
 use crate::schedule::Wall;
 
 #[derive(Debug)]
@@ -20,12 +18,12 @@ pub enum Error {
     Unrepresentable,
 }
 
-pub struct Rtc<'d> {
-    bus: Device<'d>,
+pub struct Rtc {
+    bus: Bus,
 }
 
-impl<'d> Rtc<'d> {
-    pub fn new(bus: Device<'d>) -> Self {
+impl Rtc {
+    pub fn new(bus: Bus) -> Self {
         Self { bus }
     }
 
@@ -33,7 +31,7 @@ impl<'d> Rtc<'d> {
     pub async fn read(&mut self) -> Result<Reading, Error> {
         let mut regs = [0u8; REGISTERS];
         self.bus
-            .write_read(ADDRESS, &[TIME_REG], &mut regs)
+            .write_read_async(ADDRESS, &[TIME_REG], &mut regs)
             .await
             .map_err(|_| Error::Bus)?;
         Ok(ds3231::decode(&regs))
@@ -51,23 +49,23 @@ impl<'d> Rtc<'d> {
         write[0] = TIME_REG;
         write[1..].copy_from_slice(&time);
         self.bus
-            .write(ADDRESS, &write)
+            .write_async(ADDRESS, &write)
             .await
             .map_err(|_| Error::Bus)?;
 
         let [a, b, c] = encode_offset(wall.offset_minutes);
         self.bus
-            .write(ADDRESS, &[OFFSET_REG, a, b, c])
+            .write_async(ADDRESS, &[OFFSET_REG, a, b, c])
             .await
             .map_err(|_| Error::Bus)?;
 
         let mut flags = [0u8; 2];
         self.bus
-            .write_read(ADDRESS, &[CONTROL_REG], &mut flags)
+            .write_read_async(ADDRESS, &[CONTROL_REG], &mut flags)
             .await
             .map_err(|_| Error::Bus)?;
         self.bus
-            .write(
+            .write_async(
                 ADDRESS,
                 &[
                     CONTROL_REG,

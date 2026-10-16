@@ -76,8 +76,8 @@ pub const DEFAULT_DETENT_MS: u16 = 1_900;
 /// debounce in `switch.rs` and start rejecting real clicks.
 pub const MIN_DETENT_MS: u16 = 200;
 
-/// The slowest detent anything will store: the knob, the admin page, a
-/// calibration run and `mkrecord`. The matching pair of feeders take about
+/// The slowest detent anything will store: the admin page, a calibration run
+/// and `mkrecord`. The matching pair of feeders take about
 /// 2 s; the third, a cheaper mechanism, measured 5.3 s at 4.7 V, and turns
 /// slower still on batteries or with a full hopper. Twice that, with room over.
 pub const MAX_DETENT_MS: u16 = 10_000;
@@ -193,8 +193,7 @@ impl Record {
     /// This record with the network forgotten and the mechanism remembered:
     /// every credential blank, the calibration as it was.
     ///
-    /// What both reset gestures write — the BOOT button held five seconds, and
-    /// the knob's click held through power-on. The result is not
+    /// What the BOOT button held five seconds writes. The result is not
     /// [`Record::is_usable`], so the next boot goes to setup mode exactly as
     /// for erased flash; but it still decodes, so setup mode finds the
     /// calibration in it and carries it into the record the form saves (see
@@ -323,25 +322,24 @@ pub(crate) fn crc32(bytes: &[u8]) -> u32 {
 
 /// The address the setup form is answered on, as four octets.
 ///
-/// Fixed rather than negotiated: it is printed on the label and the panel for
-/// a browser that does not open the form by itself (ADR-0026), so it has to be
-/// the same on every unit and knowable before one is first powered on.
+/// Fixed rather than negotiated: it is printed on the label for a browser that
+/// does not open the form by itself (ADR-0026), so it has to be the same on
+/// every unit and knowable before one is first powered on.
 ///
-/// It lives here, with the rest of the setup network's identity, because **two
-/// modules have to agree on it and only one of them may hold an `Ipv4Addr`**.
-/// `setup.rs` binds the stack to it and is gated behind the board; `display.rs`
-/// puts it on the panel and is pure. Octets rather than a string because
-/// `Ipv4Addr::new` is a `const fn` and `Ipv4Addr::from_str` is not, so this
-/// spelling is the one both sides can be built from.
+/// It lives here, with the rest of the setup network's identity, because the
+/// pure pages spell it — [`AP_URL`] — while `setup.rs`, gated behind the
+/// board, binds the stack and answers DNS with it. Octets rather than a string
+/// because `Ipv4Addr::new` is a `const fn` and `Ipv4Addr::from_str` is not, so
+/// this spelling is the one both sides can be built from.
 pub const AP_ADDR_OCTETS: [u8; 4] = [192, 168, 4, 1];
 
-/// The form's address spelled out: what the panel shows, and the base of every
-/// redirect setup sends, because neither wants to format an address at the
-/// point of use.
+/// The form's address spelled out: what the pages link to, and the base of
+/// every redirect setup sends, so nothing formats an address at the point of
+/// use.
 ///
 /// A literal, and safe as one only because
 /// `tests::the_setup_url_spells_the_address` pins it against
-/// [`AP_ADDR_OCTETS`]. Eighteen characters, which fits `display::COLS`.
+/// [`AP_ADDR_OCTETS`].
 pub const AP_URL: &str = "http://192.168.4.1";
 
 /// The port the form starts with: MQTT's registered one, which is what a
@@ -868,6 +866,9 @@ pub fn render_form(
          .nets button{width:auto;margin:.4rem .4rem 0 0;padding:.35rem .6rem;\
          font-size:.9rem;background:#e8e4dc;color:#222}\
          .alt{background:#666;margin:0 0 1rem}\
+         .erase{margin-top:2.5rem;border-top:1px solid #ddd}\
+         .erase h2{font-size:1.05rem}.erase label{font-weight:400}.erase input{width:auto;margin-right:.4rem}\
+         .erase button{background:#a33}\
          </style></head><body><h1>cat-feeder setup</h1>",
     );
 
@@ -936,7 +937,50 @@ pub fn render_form(
         "<button type=submit>Test and save</button>\
          <p class=hint>The feeder joins the network and logs in to the broker \
          before it saves anything. It restarts only once that works.</p>\
-         </form></body></html>",
+         </form>",
+    );
+    let _ = write!(
+        page,
+        "<div class=erase><h2>Start over</h2>\
+         <p class=hint>Setup keeps this feeder's calibration, meals, timezone and \
+         pause. Erasing forgets those too.</p>{ERASE_FORM}</div>\
+         </body></html>"
+    );
+}
+
+/// The factory reset's form, on the setup page and the admin page alike: a box
+/// to tick and a browser `confirm`, two deliberate acts before anything is
+/// erased. [`erase_confirmed`] checks the box again on the unit.
+pub const ERASE_FORM: &str = "<form method=post action=/erase \
+onsubmit=\"return confirm('Erase everything on this feeder?')\">\
+<label><input type=checkbox name=erase value=everything required> \
+Erase calibration, meals, timezone, pause and network</label>\
+<button type=submit>Factory reset</button></form>";
+
+/// Whether a `POST /erase` carries the ticked box. The browser enforces it
+/// with `required`; this holds a client without one, `curl`, to it too.
+pub fn erase_confirmed(body: &str) -> bool {
+    field::<16>(body, "erase").ok().flatten().as_deref() == Some("everything")
+}
+
+/// The page setup mode shows after a factory reset, on its way into a restart
+/// that brings the same setup network back with nothing kept.
+pub fn render_erased(page: &mut String<PAGE_LEN>, setup_ssid: &str) {
+    page.clear();
+    let _ = write!(
+        page,
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <title>cat-feeder setup</title>{FAVICON}<style>\
+         body{{font:16px/1.5 system-ui,sans-serif;margin:0 auto;padding:1.5rem;\
+         max-width:26rem;background:#faf9f7;color:#222}}\
+         </style></head><body><h1>Erased</h1>\
+         <p>Everything this feeder was told is gone. It is restarting, and \
+         <b>{}</b> comes back in a few seconds with the same password.</p>\
+         <p>Rejoin it, then open <a href=\"{AP_URL}/\">{AP_URL}</a> to set it up \
+         again.</p>\
+         </body></html>",
+        Escaped(setup_ssid),
     );
 }
 
@@ -1118,8 +1162,8 @@ fn text_field(
 ///
 /// `addr` is where the trial was given an address. After the restart the
 /// router almost always hands the same one back, to the same MAC, so it is
-/// worth printing: it is the admin page, and nothing else on a headless unit
-/// would say where that is.
+/// worth printing: it is the admin page, and nothing else on the unit would
+/// say where that is.
 pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record, addr: [u8; 4]) {
     let [a, b, c, d] = addr;
     page.clear();
@@ -1430,7 +1474,7 @@ mod tests {
 
     /// The one thing a literal address cannot be trusted with: agreeing with
     /// the address the stack actually binds. `setup.rs` builds its `Ipv4Addr`
-    /// from the octets, so pinning the string against them makes the panel, the
+    /// from the octets, so pinning the string against them makes the pages, the
     /// console and the socket one fact rather than three.
     #[test]
     fn the_setup_url_spells_the_address() {
@@ -1609,9 +1653,12 @@ mod tests {
         }
         // Counted on `<input`, not on `name=`: the viewport `<meta>` carries a
         // `name=` too, and an assertion that drifts with the page furniture is
-        // one somebody will eventually delete.
+        // one somebody will eventually delete. Within the save form only: the
+        // factory reset below it is a form of its own.
+        let save = &page[page.find("action=/save").unwrap()..];
+        let save = &save[..save.find("</form>").unwrap()];
         assert_eq!(
-            page.matches("<input").count(),
+            save.matches("<input").count(),
             FIELDS.len(),
             "the form has an input the parser does not read"
         );
@@ -2150,6 +2197,35 @@ mod tests {
             page.contains("will leave <b>cat-feeder-a1b2c3</b>"),
             "warns before the drop, not after"
         );
+        assert!(page.ends_with("</html>"));
+    }
+
+    #[test]
+    fn a_factory_reset_needs_the_box_ticked() {
+        assert!(erase_confirmed("erase=everything"));
+        assert!(!erase_confirmed(""), "a bare POST erases nothing");
+        assert!(!erase_confirmed("erase=on"), "a box with another value");
+        assert!(!erase_confirmed("erase=everything2"));
+    }
+
+    #[test]
+    fn the_setup_page_offers_a_factory_reset_below_the_form() {
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(&mut page, "", Notice::None, &[]);
+        let save = page.find("action=/save").unwrap();
+        let erase = page.find("action=/erase").unwrap();
+        assert!(save < erase, "the network form comes first");
+        assert!(page.contains("name=erase value=everything required"));
+        assert!(page.contains("return confirm("));
+        assert!(page.ends_with("</html>"));
+    }
+
+    #[test]
+    fn the_erased_page_names_the_network_coming_back() {
+        let mut page = String::<PAGE_LEN>::new();
+        render_erased(&mut page, "cat-feeder-a1b2c3");
+        assert!(page.contains("<b>cat-feeder-a1b2c3</b>"));
+        assert!(page.contains(AP_URL));
         assert!(page.ends_with("</html>"));
     }
 }

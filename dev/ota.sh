@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the firmware and send it to a unit over the network (ADR-0022).
 #
-#   ./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero --headless
+#   ./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero
 #   ./dev/ota.sh --address 192.168.1.123 --id a1b2c3          # a dev kit
 #
 # --address is the unit's own IP (its admin page), not the broker's: --host
@@ -9,7 +9,7 @@
 # the admin password is derived exactly as dev/ap-password.sh derives it.
 # --board wins over BOARD; see dev/_common.sh.
 #
-# --board and --headless must describe the unit, as for dev/flash.sh: the
+# --board must describe the unit, as for dev/flash.sh: the
 # image is accepted whatever it was built for, and a dev-kit image on a Zero
 # boots with no console and no network — the bootloader then rolls it back
 # after CONFIRM_SECS (src/bin/main.rs), but that is a unit doing nothing.
@@ -41,7 +41,6 @@ cd "$DEV_DIR/.."
 ADDRESS=""
 ID=""
 BOARD_ARG=""
-HEADLESS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,7 +50,6 @@ while [ $# -gt 0 ]; do
     --id=*) ID="${1#*=}"; shift ;;
     --board) need_value "$1" "${2:-}"; BOARD_ARG="$2"; shift 2 ;;
     --board=*) BOARD_ARG="${1#*=}"; shift ;;
-    --headless) HEADLESS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) die "ota: unknown option '$1'. Try --help." ;;
     *) die "ota: unexpected argument '$1'. Try --help." ;;
@@ -63,8 +61,8 @@ done
 
 BOARD="${BOARD_ARG:-${BOARD:-devkit}}"
 case "$BOARD" in
-  devkit) BOARD_FLAGS=(--features "board-devkit${HEADLESS:+,headless}") ;;
-  zero) BOARD_FLAGS=(--no-default-features --features "board-zero${HEADLESS:+,headless}") ;;
+  devkit) BOARD_FLAGS=(--features board-devkit) ;;
+  zero) BOARD_FLAGS=(--no-default-features --features board-zero) ;;
   *) die "ota: --board must be 'devkit' or 'zero', not '$BOARD'" ;;
 esac
 
@@ -76,7 +74,7 @@ CURL_CONFIG=$(mktemp "${TMPDIR:-/tmp}/cat-feeder-ota-auth.XXXXXX")
 cleanup() { rm -f "$IMAGE" "$CURL_CONFIG"; }
 trap cleanup EXIT
 
-echo "building for ${BOARD}${HEADLESS:+, headless} (release)..."
+echo "building for ${BOARD} (release)..."
 cargo build --release ${BOARD_FLAGS[@]+"${BOARD_FLAGS[@]}"}
 
 # espflash.toml supplies the partition table, so this also refuses an image

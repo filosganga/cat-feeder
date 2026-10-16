@@ -107,6 +107,13 @@ pub fn may_start(trial: Trial) -> bool {
     !matches!(trial, Trial::Testing | Trial::Saved { .. })
 }
 
+/// Whether setup's factory reset may run: the box ticked, and no trial
+/// running or saved. A trial saves the old record's calibration (setup's
+/// `previous`), so an erase beside one could be written straight back.
+pub fn may_erase(confirmed: bool, trial: Trial) -> bool {
+    confirmed && may_start(trial)
+}
+
 /// What *Save anyway* may keep: only a Wi-Fi that joined, with a broker that
 /// did not, and the address it joined at. `None` from any other state.
 pub fn keepable(trial: Trial) -> Option<[u8; 4]> {
@@ -326,6 +333,15 @@ mod tests {
         }));
         assert!(!may_start(Trial::Testing));
         assert!(!may_start(Trial::Saved { addr: ADDR }));
+    }
+
+    #[test]
+    fn a_factory_reset_needs_the_box_and_no_trial_running() {
+        assert!(may_erase(true, Trial::Idle));
+        assert!(may_erase(true, Trial::NotSaved));
+        assert!(!may_erase(false, Trial::Idle), "the box unticked");
+        assert!(!may_erase(true, Trial::Testing), "a trial would write back");
+        assert!(!may_erase(true, Trial::Saved { addr: ADDR }));
     }
 
     #[test]

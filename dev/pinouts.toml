@@ -24,7 +24,7 @@
 ["ESP32C6-L"]
 module = "ESP32-C6-Zero"
 pins = ["5V", "GND", "3V3", "GP0", "GP1", "GP2", "GP3", "GP4", "GP5"]
-# GP3-GP5 are the knob's, and this is the headless build.
+# GP3-GP5 are free; see src/board.rs.
 unused = ["GP3", "GP4", "GP5"]
 
 ["ESP32C6-R"]

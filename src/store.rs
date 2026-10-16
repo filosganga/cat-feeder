@@ -24,17 +24,17 @@
 //!
 //! | Offset in `nvs` | Record | Written by |
 //! |---|---|---|
-//! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the knob's settings, the admin page, both reset gestures (`Record::without_network`) |
+//! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the admin page, the BOOT hold (`Record::without_network`) |
 //! | `0x1000` | the schedule, `FDS1` | a schedule command, a `Meal n` entity, the admin page |
 //! | `0x2000` | the timezone, `FDZ1` | the admin page |
-//! | `0x3000` | the pause, `FDP1` | the knob, the admin page, a live `feeder/<id>/paused` |
+//! | `0x3000` | the pause, `FDP1` | the admin page, a live `feeder/<id>/paused` |
 //!
 //! A sector each, so writing one never rewrites another, and no format has to
 //! change for another. It also means `provision.sh`, which erases
 //! only the first sector before writing, keeps a unit's meals and pause across
 //! a re-provision — as does the boot-button reset, which is for re-entering
-//! Wi-Fi details, not for forgetting the cats' schedule. The menu's factory
-//! reset erases all four.
+//! Wi-Fi details, not for forgetting the cats' schedule. The factory reset,
+//! on the admin page or the setup page, erases all four.
 
 use embedded_storage::{ReadStorage, Storage};
 use esp_bootloader_esp_idf::partitions::{
@@ -71,8 +71,10 @@ pub enum StoreError {
     Record(DecodeError),
 }
 
-/// The store behind a lock, for the two tasks that write through it: `ui`
-/// for the knob's settings and reset, `schedule` for schedule commands.
+/// The store behind a lock, for the tasks that write through it: `web` for the
+/// admin page's settings, its factory reset and firmware uploads, `schedule`
+/// for schedule commands, `reset` for the BOOT hold, `confirm` for a new
+/// image.
 pub type SharedStore =
     embassy_sync::mutex::Mutex<embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex, Store>;
 
@@ -229,7 +231,8 @@ impl Store {
     }
 
     /// Throws away every record: credentials, calibration, meals, the
-    /// timezone and the pause. The menu's factory reset.
+    /// timezone and the pause. The factory reset, from the admin page or the
+    /// setup page.
     #[inline(never)]
     pub fn erase_all(&mut self) -> Result<(), StoreError> {
         self.erase()?;
@@ -246,7 +249,7 @@ impl Store {
     /// Forgets the network and keeps the calibration: the record rewritten by
     /// [`Record::without_network`], so the next boot goes to setup mode and
     /// setup mode finds the detent interval and portion scale still there.
-    /// What both reset gestures do. A record that does not decode has nothing
+    /// What the BOOT hold does. A record that does not decode has nothing
     /// worth keeping, and is erased instead.
     #[inline(never)]
     pub fn forget_network(&mut self) -> Result<(), StoreError> {

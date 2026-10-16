@@ -39,13 +39,11 @@ jobs:
           # One run per board rather than --all-features: the two board
           # features pick different esp-println outputs, and esp-println's
           # build script refuses both at once, so --all-features never
-          # compiles. Headless is the build on the perfboards.
+          # compiles.
           - command: clippy
             args: --workspace -- -D warnings
           - command: clippy
             args: --workspace --no-default-features --features board-zero -- -D warnings
-          - command: clippy
-            args: --workspace --no-default-features --features board-zero,headless -- -D warnings
           # Pure-logic tests. These need an explicit host target, because
           # .cargo/config.toml points cargo at the board by default.
           - command: test

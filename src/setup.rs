@@ -30,24 +30,18 @@
 //! 1. ✅ raise the access point — the SSID appears in a phone's Wi-Fi list
 //! 2. ✅ a second network stack on it, DHCP, so a phone gets an address
 //! 3. ✅ the form on TCP 80
-//! 4. ⬜ the panel says what to join and what to type into it — written and
-//!    host-tested, **not yet seen on glass**
-//! 5. ✅ DNS answers every name with the unit, so a phone opens the form by
+//! 4. ✅ DNS answers every name with the unit, so a phone opens the form by
 //!    itself (ADR-0026) — on Android; iOS not yet tried
-//! 6. ✅ access point *and* station: a scan for the SSID box, and a trial —
+//! 5. ✅ access point *and* station: a scan for the SSID box, and a trial —
 //!    join, lease, broker login — before anything is saved (ADR-0025). Not
 //!    yet run: *Save anyway* (`/keep`)
+//! 6. ⬜ the factory reset on the form (`/erase`) — host-tested, not yet run
 //!
-//! A ✅ means verified on hardware, with a phone. The ⬜ does not mean
-//! unbuilt: it is wired and its layout is host-tested, and what is missing is
-//! a capture, because seeing it needs a unit with a panel and no record.
+//! A ✅ means verified on hardware, with a phone.
 //!
-//! The fourth is also not a network slice at all. It is owned by `main.rs`:
-//! the boot path spawns `display_task` before calling
-//! [`run`], because this function never returns and could not spawn it
-//! afterwards. It is the one screen whose contents exist nowhere else — a unit
-//! that has raised a network with a derived password can otherwise only say so
-//! over a serial cable.
+//! The password is on the console and the sticker and nowhere else on the
+//! unit: a unit that has raised a network with a derived password can only say
+//! so over a serial cable, which is why `dev/ap-password.sh` exists.
 
 use core::fmt::Write as _;
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -80,21 +74,24 @@ use log::{error, info, warn};
 use static_cell::StaticCell;
 
 use crate::captive_dns;
-use crate::config::dhcp_config;
+use crate::config::{AP_SECRET, dhcp_config};
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
 use crate::http;
 use crate::provisioning::{
     AP_ADDR_OCTETS, AP_URL, Heard, MAX_NETWORKS, Method, Network, Notice, PAGE_LEN, Record,
-    TESTING_REFRESH_SECS, add_network, record_from_form, render_form, render_saved, render_testing,
+    TESTING_REFRESH_SECS, add_network, ap_password, ap_ssid, erase_confirmed, record_from_form,
+    render_erased, render_form, render_saved, render_testing,
 };
 use crate::store::Store;
-use crate::trial::{BrokerFailure, JoinFailure, Trial, keepable, may_start, message, usable_key};
+use crate::trial::{
+    BrokerFailure, JoinFailure, Trial, keepable, may_erase, may_start, message, usable_key,
+};
 
 /// The address the unit answers on, and the one printed on the console.
 ///
 /// Built from `provisioning::AP_ADDR_OCTETS` rather than written out again,
-/// because the panel shows this address too — see `display::render` — and an
-/// address that is right on the screen and wrong in the socket is a unit that
+/// because the pages link to this address too — `provisioning::AP_URL` — and
+/// an address that is right on the page and wrong in the socket is a unit that
 /// looks configurable and is not. `Ipv4Addr::new` is `const`, which is the
 /// whole reason that constant is octets.
 const AP_ADDR: Ipv4Addr = Ipv4Addr::new(
@@ -219,30 +216,22 @@ static SCAN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Raises this unit's setup network and stays there.
 ///
-/// Never returns. It reboots once a record is saved, so the normal boot path
-/// always starts clean rather than from a half-configured process.
+/// Never returns. It reboots once a record is saved, or everything erased, so
+/// the normal boot path always starts clean rather than from a
+/// half-configured process.
 ///
-/// **The credentials arrive rather than being derived here.** They come from
-/// [`crate::provisioning::ap_ssid`] and [`crate::provisioning::ap_password`]
-/// exactly as before, but the boot path calls them, because the screen has to
-/// show the same two strings this function puts on the air. Deriving them twice
-/// could not actually disagree — the functions are pure — but a single
-/// derivation is what makes that obvious to a reader.
-///
-/// `id` is the device id, which the broker check logs in under.
-pub async fn run(
-    spawner: Spawner,
-    wifi: WIFI<'static>,
-    id: &str,
-    ssid: &str,
-    password: &str,
-    mut store: Store,
-) -> ! {
+/// `id` is the device id: the network's name and password are derived from
+/// it, and the broker check logs in under it.
+pub async fn run(spawner: Spawner, wifi: WIFI<'static>, id: &str, mut store: Store) -> ! {
+    let ssid = ap_ssid(id);
+    let ssid = ssid.as_str();
+    let password = ap_password(AP_SECRET, id);
+    let password = password.as_str();
+
     // Printed in full, on purpose. A unit in setup mode has few ways to tell
     // anyone its password, and the console is the one that exists before the
-    // network does — the panel says the same thing, for a unit in a kitchen
-    // rather than on a bench, and `dev/ap-password.sh <id>` says it off the
-    // device entirely, for stickers.
+    // network does; `dev/ap-password.sh <id>` says it off the device entirely,
+    // for stickers.
     info!("setup: raising {ssid}");
     info!("setup: password {password}");
     info!("setup: then browse to http://{AP_ADDR}");
@@ -1023,9 +1012,9 @@ async fn connection(
             continue;
         }
 
-        // `Saved` is *Save anyway*'s way out of setup mode; a trial that passes
-        // restarts from the radio instead.
-        if let Outcome::Saved = handle(
+        // *Save anyway* leaves setup mode from here; a trial that passes
+        // restarts from the radio, and a factory reset from `erase`.
+        if let Outcome::Restart = handle(
             slot,
             &mut socket,
             request,
@@ -1043,7 +1032,7 @@ async fn connection(
             let _ = socket.flush().await;
             Timer::after(Duration::from_millis(250)).await;
 
-            info!("setup: saved, restarting");
+            info!("setup: restarting");
             esp_hal::system::software_reset()
         }
 
@@ -1053,7 +1042,7 @@ async fn connection(
 
 enum Outcome {
     /// A record is in flash. Reboot into it.
-    Saved,
+    Restart,
     /// Anything else: the connection is finished with, setup mode continues.
     Continue,
 }
@@ -1067,6 +1056,7 @@ enum Outcome {
 /// | `GET /status` | testing, the form again with what failed, or saved |
 /// | `POST /keep` | *Save anyway*: the tested record, broker unchecked |
 /// | `GET /rescan` | scans, then `302` to `/` |
+/// | `POST /erase` | the factory reset: everything erased, then a restart |
 /// | anything else | `302` to `/` — a phone's connectivity probe, mostly |
 async fn handle(
     slot: u8,
@@ -1134,6 +1124,7 @@ async fn handle(
             Outcome::Continue
         }
         (Method::Post, "/keep") => keep(socket, page, store, previous).await,
+        (Method::Post, "/erase") => erase(socket, page, store, body, setup_ssid).await,
         (Method::Get, "/rescan") => {
             let before = SHARED.lock().await.scans;
             SCAN.signal(());
@@ -1246,7 +1237,7 @@ async fn keep(
             );
             render_saved(page, &record, addr);
             http::send("setup", socket, "200 OK", "", page).await;
-            Outcome::Saved
+            Outcome::Restart
         }
         Err(e) => {
             // Flash refused the write. Say so on the page rather than
@@ -1258,6 +1249,61 @@ async fn keep(
             Outcome::Continue
         }
     }
+}
+
+/// The factory reset: credentials, calibration, meals, timezone and pause.
+///
+/// **A restart follows, always.** Setup read the old record once, at the
+/// start, to carry its calibration into whatever is saved (`previous`), so
+/// carrying on would put the erased calibration back at the next save. After
+/// the restart there is nothing to carry. Refused while a trial runs or has
+/// saved, for the same reason: a trial writes `previous`'s calibration
+/// (`trial::may_erase`).
+///
+/// The store stays locked from the erase to the restart, so a trial started
+/// in between cannot save into it.
+async fn erase(
+    socket: &mut TcpSocket<'_>,
+    page: &mut String<PAGE_LEN>,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
+    body: &str,
+    setup_ssid: &str,
+) -> Outcome {
+    let confirmed = erase_confirmed(body);
+    if !may_erase(confirmed, SHARED.lock().await.trial) {
+        info!(
+            "setup: factory reset refused ({})",
+            if confirmed {
+                "a trial is running"
+            } else {
+                "the box was not ticked"
+            }
+        );
+        redirect(socket, page, "303 See Other", "/").await;
+        return Outcome::Continue;
+    }
+    let mut store = store.lock().await;
+    if let Err(e) = store.erase_all() {
+        error!("setup: factory reset failed ({e:?})");
+        drop(store);
+        render_form(
+            page,
+            "",
+            Notice::Failed("Erasing failed; nothing changed."),
+            &SHARED.lock().await.networks,
+        );
+        http::send("setup", socket, "200 OK", "", page).await;
+        return Outcome::Continue;
+    }
+    warn!("setup: factory reset, everything erased");
+    render_erased(page, setup_ssid);
+    http::send("setup", socket, "200 OK", "", page).await;
+    // As `connection` restarts, but with the store still locked.
+    socket.close();
+    let _ = socket.flush().await;
+    Timer::after(Duration::from_millis(250)).await;
+    info!("setup: restarting");
+    esp_hal::system::software_reset()
 }
 
 /// An empty response sending the browser to `path` on the unit's address.

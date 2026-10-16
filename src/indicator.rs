@@ -81,10 +81,6 @@ pub const GREEN: Rgb = Rgb::new(0, 18, 0);
 pub const BLUE: Rgb = Rgb::new(0, 0, 30);
 pub const AMBER: Rgb = Rgb::new(22, 7, 0);
 pub const WHITE: Rgb = Rgb::new(16, 16, 16);
-/// Deliberately not [`BLUE`]: setup mode already owns blue, and these two must
-/// not be confused — one means "type your Wi-Fi password in", the other means
-/// "the menu is open, and a tap on `Feed` will dispense food".
-pub const CYAN: Rgb = Rgb::new(0, 16, 22);
 
 /// How long one flash is lit, and how long the gap after it is.
 ///
@@ -103,8 +99,6 @@ const FLASH_MS: u64 = FLASH_ON_MS + FLASH_GAP_MS;
 pub struct Health {
     /// The BOOT button is being held towards a reset. See `reset.rs`.
     pub reset_held: bool,
-    /// The knob's menu is open. See `menu.rs`.
-    pub button_armed: bool,
     /// Setup mode: this unit has raised its own access point. Roadmap step 9.
     pub setup: bool,
     /// Associated with the configured Wi-Fi network.
@@ -135,12 +129,6 @@ pub enum Status {
     /// The motor is turning. Also the fastest way to tell "the command never
     /// arrived" from "the motor is dead" while wiring a unit up.
     Feeding,
-    /// The knob's menu is open: a tap on `Feed` now dispenses a portion.
-    ///
-    /// Transient and user-initiated, which is why it outranks everything below.
-    /// Whatever it hides is still there ten seconds later, and during those ten
-    /// seconds the only thing worth knowing is whether the button is listening.
-    Armed,
     /// Unconfigured, serving the setup form on its own access point.
     Setup,
     /// Not associated with any Wi-Fi network. Fix: the router, or the credentials.
@@ -173,8 +161,6 @@ impl Status {
             Self::Jammed
         } else if health.feeding {
             Self::Feeding
-        } else if health.button_armed {
-            Self::Armed
         } else if health.setup {
             Self::Setup
         } else if !health.link {
@@ -200,10 +186,6 @@ impl Status {
             // Setup mode's blue, since that is where it leads, but fast: a
             // countdown, not a state.
             Self::Resetting => Pattern::repeating(BLUE, 1, 400),
-
-            // Twice a second: unmistakably faster than anything else here, and
-            // the urgency is honest — it lapses in ten seconds.
-            Self::Armed => Pattern::repeating(CYAN, 1, 500),
 
             Self::Setup => Pattern::repeating(BLUE, 1, 2_000),
 
@@ -350,7 +332,6 @@ mod tests {
     fn well() -> Health {
         Health {
             reset_held: false,
-            button_armed: false,
             setup: false,
             link: true,
             broker: true,
@@ -418,7 +399,6 @@ mod tests {
             reset_held: false,
             jammed: true,
             feeding: true,
-            button_armed: true,
             setup: true,
             link: false,
             broker: false,
@@ -464,44 +444,10 @@ mod tests {
     }
 
     #[test]
-    fn an_armed_button_outranks_the_network_faults() {
-        // The case that decides this: the broker is down, and manual feeding is
-        // exactly what the button is for. Being re-told the network is out is
-        // less useful than knowing the tap will land — and the fault is still
-        // there ten seconds later when the arm lapses.
-        //
-        // **The network faults, not every fault.** A jam still wins, and
-        // `a_jam_outranks_everything_but_a_reset_hold` pins that with `button_armed` set: red
-        // has to keep warning while somebody has their hands in the mechanism.
-        // The cost is that arming a jammed feeder shows nothing at all on the
-        // LED, which is why `display::render` puts the confirmation on the
-        // panel instead.
-        let offline = Health {
-            button_armed: true,
-            link: false,
-            broker: false,
-            armed: false,
-            ..well()
-        };
-        assert_eq!(Status::of(offline), Status::Armed);
-    }
-
-    #[test]
-    fn feeding_outranks_an_armed_button() {
-        // The tap's own result. Otherwise pressing it would show nothing new.
-        let feeding = Health {
-            button_armed: true,
-            feeding: true,
-            ..well()
-        };
-        assert_eq!(Status::of(feeding), Status::Feeding);
-    }
-
-    #[test]
-    fn armed_is_the_fastest_thing_on_the_led() {
+    fn a_reset_hold_is_the_fastest_thing_on_the_led() {
         // It is the only status with a deadline, so it should read as urgent
         // next to everything else.
-        let armed = Status::Armed.pattern().period_ms;
+        let resetting = Status::Resetting.pattern().period_ms;
         for status in [
             Status::Setup,
             Status::NoLink,
@@ -510,8 +456,8 @@ mod tests {
             Status::Paused,
         ] {
             assert!(
-                status.pattern().period_ms > armed,
-                "{status:?} repeats at least as fast as Armed"
+                status.pattern().period_ms > resetting,
+                "{status:?} repeats at least as fast as Resetting"
             );
         }
     }
@@ -525,14 +471,12 @@ mod tests {
             reset_held: true,
             jammed: true,
             feeding: true,
-            button_armed: true,
             ..well()
         };
         assert_eq!(Status::of(holding), Status::Resetting);
         let resetting = Status::Resetting.pattern();
         assert_eq!(resetting.colour, Status::Setup.pattern().colour);
         assert!(resetting.period_ms * 4 <= Status::Setup.pattern().period_ms);
-        assert!(resetting.period_ms < Status::Armed.pattern().period_ms);
     }
 
     #[test]
@@ -571,7 +515,6 @@ mod tests {
 
         for status in [
             Status::Resetting,
-            Status::Armed,
             Status::Setup,
             Status::NoLink,
             Status::NoBroker,
@@ -684,7 +627,6 @@ mod tests {
     fn every_pattern_fits_inside_its_period() {
         for status in [
             Status::Resetting,
-            Status::Armed,
             Status::Setup,
             Status::NoLink,
             Status::NoBroker,

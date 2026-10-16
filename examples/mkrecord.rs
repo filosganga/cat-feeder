@@ -136,7 +136,7 @@ fn build(config: &toml::Table, args: &Args) -> Result<Record, String> {
     if detent_ms > MAX_DETENT_MS {
         return Err(format!(
             "detent_ms {detent_ms} is above the {MAX_DETENT_MS} ms ceiling; \
-             the knob and the admin page could not show or edit it"
+             the admin page could not show or edit it"
         ));
     }
 

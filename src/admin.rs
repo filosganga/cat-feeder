@@ -10,7 +10,7 @@
 //! - **Authenticated, always, with the derived password.** The same
 //!   `base32(sha256("<ap_secret>:<id>"))` the setup network uses, the sticker
 //!   carries and `dev/ap-password.sh` prints — so a unit is never open, and
-//!   there is no reset flow: a reset gesture forgets the network in the
+//!   there is no reset flow: the BOOT hold forgets the network in the
 //!   record, which is the root of trust. HTTP Basic, any username.
 //! - **Never render a stored secret.** The network form shows the SSID, the
 //!   broker and its username; both password boxes are always empty, and
@@ -22,15 +22,15 @@
 //!   page submits to this address, so a POST carrying an `Origin` that is not
 //!   this unit is turned away. No `Origin` at all is a non-browser client —
 //!   `curl` — which has to present the password itself.
-//! - **Feeding, pausing, the clock and the calibration act at once, like the
-//!   knob.** A feed is one more producer on the feed queue, a pause is stored
-//!   and in force the way the knob's is (ADR-0023), a clock set here goes in
-//!   as a hand-set time exactly as the knob's does, and a calibration saved
-//!   here is written to the record and applied at the feeder's next idle
-//!   moment — the same path as the knob's `Detent` and `Portion`.
-//! - **Saving the schedule does not restart; saving the network does.** The
-//!   network stack is built once at boot. A restart would also cost the clock
-//!   nothing now — the RTC keeps it — but it does cost ~6 s off the broker.
+//! - **Feeding, pausing, the clock and the calibration act at once.** A feed
+//!   is one more producer on the feed queue, a pause is stored and in force
+//!   through `Bus::set_pause` (ADR-0023), a clock set here goes in as a
+//!   hand-set time, and a calibration saved here is written to the record and
+//!   applied at the feeder's next idle moment.
+//! - **Saving the schedule does not restart; saving the network does**, and
+//!   so does the factory reset, into setup mode. The network stack is built
+//!   once at boot. A restart would also cost the clock nothing now — the RTC
+//!   keeps it — but it does cost ~6 s off the broker.
 //!
 //! Portions on the page are capped at `MAX_CLICKS`, like the `Meal n`
 //! entities. That is a click count, so on a unit with a portion scale above
@@ -45,11 +45,11 @@ use core::fmt::Write as _;
 
 use heapless::String;
 
-use crate::calibrate::{DETENTS, Failure, Progress};
-use crate::menu::{Calibration, ClockEdit, Field};
+use crate::calibrate::{Calibration, DETENTS, Failure, Field, Progress};
 use crate::portions::MAX_CLICKS;
 use crate::provisioning::{
-    Escaped, FAVICON, FormError, PAGE_LEN, PASSWORD_LEN, Record, field, record_from_form,
+    AP_URL, ERASE_FORM, Escaped, FAVICON, FormError, PAGE_LEN, PASSWORD_LEN, Record, ap_ssid,
+    field, record_from_form,
 };
 use crate::schedule::{
     Date, EditError, MAX_SLOTS, Schedule, Slot, SlotChange, SlotEdit, Wall, parse_slot_time,
@@ -259,8 +259,7 @@ fn named_field(body: &str, name: &str) -> Result<Option<String<8>>, FormError> {
 /// The record the network form describes, on top of `current`.
 ///
 /// `current` is read from flash at the moment of saving, so the calibration
-/// the knob last saved is carried across rather than whatever the unit booted
-/// with. A password box left empty keeps the stored password — see the module
+/// last saved is carried across rather than whatever the unit booted with. A password box left empty keeps the stored password — see the module
 /// doc for why an empty password cannot be *set* here.
 pub fn network_from_form(body: &str, current: &Record) -> Result<Record, FormError> {
     let mut record = record_from_form(body, Some(current))?;
@@ -299,10 +298,28 @@ pub fn pause_from_form(body: &str) -> Result<bool, &'static str> {
     }
 }
 
+/// Why `POST /erase` is refused, or `None` to erase. `idle` is nothing
+/// feeding, queued or held and no upload writing: the restart that follows
+/// would otherwise cut a turn short, and a meal is marked consumed when it is
+/// sent.
+pub fn erase_refusal(confirmed: bool, idle: bool) -> Option<&'static str> {
+    if !confirmed {
+        Some("Tick the box to confirm the factory reset.")
+    } else if !idle {
+        Some("Busy feeding or updating; try again when it stops.")
+    } else {
+        None
+    }
+}
+
+/// The years a clock may be set to by hand. The floor is roughly when this was
+/// built — a clock set before it is certainly wrong — and the ceiling is the
+/// DS3231's, which holds two digits.
+pub const YEARS: (u16, u16) = (2025, 2099);
+
 /// The time `POST /clock` sets: `YYYY-MM-DDTHH:MM`, or with `:SS`, which is
-/// what a `datetime-local` input sends. Local wall-clock, no offset — the same
-/// as the knob's clock, and for the same reason: the schedule is written in
-/// kitchen time. Years are the knob's, which the DS3231 can hold.
+/// what a `datetime-local` input sends. Local wall-clock, no offset: the
+/// schedule is written in kitchen time.
 pub fn clock_from_form(body: &str) -> Result<Wall, &'static str> {
     const BAD: &str = "That is not a date and time.";
     let text = field::<32>(body, "at").ok().flatten().ok_or(BAD)?;
@@ -325,7 +342,7 @@ pub fn clock_from_form(body: &str) -> Result<Wall, &'static str> {
     if !date.is_valid() {
         return Err(BAD);
     }
-    let (first, last) = ClockEdit::YEARS;
+    let (first, last) = YEARS;
     if !(first..=last).contains(&date.year) {
         return Err("The year must be between 2025 and 2099.");
     }
@@ -373,8 +390,8 @@ pub fn clock_form(body: &str) -> Result<ClockForm, &'static str> {
 }
 
 /// The calibration `POST /calibration` asks for, on top of `current`: either
-/// figure may be absent, which keeps it. Held to the knob's own ranges and
-/// steps, so the page cannot store anything the knob could not.
+/// figure may be absent, which keeps it. Held to [`Field::range`]'s ranges and
+/// steps, which the page's number boxes offer too.
 pub fn calibration_from_form(
     body: &str,
     current: Calibration,
@@ -456,7 +473,8 @@ border-radius:.3rem;background:#fff}.wide{width:100%}input[type=number]{width:5r
 button{margin-top:1rem;padding:.6rem 1.2rem;font-size:1rem;border:0;border-radius:.3rem;\
 background:#2f6f4f;color:#fff}\
 .ok{background:#e8f3ec;border:1px solid #2f6f4f}.err{background:#fdecea;border:1px solid #d9534f}\
-.ok,.err{border-radius:.3rem;padding:.6rem;margin:1rem 0}.hint{color:#666;font-size:.85rem;margin:.3rem 0}";
+.ok,.err{border-radius:.3rem;padding:.6rem;margin:1rem 0}.hint{color:#666;font-size:.85rem;margin:.3rem 0}\
+.erase label{font-weight:400}.erase button{background:#a33}";
 
 /// The whole page: status, the schedule form and the network form.
 ///
@@ -510,6 +528,7 @@ pub fn render_page(
     render_clock(page, status.zone);
     render_calibration(page, status.calibration, status.progress);
     render_network(page, network, submitted);
+    render_erase(page);
     let _ = page.push_str("</body></html>");
 }
 
@@ -771,7 +790,7 @@ fn render_network(page: &mut String<PAGE_LEN>, network: &Network, submitted: &st
     let _ = page.push_str(
         "<h2>Network</h2><p class=hint>Saving restarts the feeder. A wrong \
          network or broker takes it offline until it is set up again: hold the \
-         button through power-on for setup mode.</p>\
+         board's BOOT button for five seconds for setup mode.</p>\
          <form method=post action=/network>",
     );
     let mut port: String<5> = String::new();
@@ -807,6 +826,17 @@ fn render_network(page: &mut String<PAGE_LEN>, network: &Network, submitted: &st
     let _ = page.push_str(
         "<p class=hint>Leave a password empty to keep the one stored. Stored \
          passwords are never shown.</p><button type=submit>Save and restart</button></form>",
+    );
+}
+
+/// Last, below everything a person would come here for.
+fn render_erase(page: &mut String<PAGE_LEN>) {
+    let _ = write!(
+        page,
+        "<div class=erase><h2>Factory reset</h2><p class=hint>Erases everything \
+         this feeder was told — network, calibration, meals, timezone and pause — \
+         and restarts it in setup mode. The clock is kept. Holding BOOT for five \
+         seconds forgets only the network.</p>{ERASE_FORM}</div>"
     );
 }
 
@@ -870,6 +900,21 @@ pub fn render_restarting(page: &mut String<PAGE_LEN>, record: &Record) {
         Escaped(&record.wifi_ssid),
         Escaped(&record.mqtt_host),
         record.mqtt_port,
+    );
+}
+
+/// The page shown once, on the way from a factory reset into setup mode.
+pub fn render_erased(page: &mut String<PAGE_LEN>, id: &str) {
+    page.clear();
+    let _ = write!(
+        page,
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <title>cat-feeder</title>{FAVICON}<style>{STYLE}</style></head><body><h1>Erased</h1>\
+         <p>Everything this feeder was told is gone, and it is restarting in setup \
+         mode. Join <b>{}</b> with the password on its sticker, then open \
+         <a href=\"{AP_URL}/\">{AP_URL}</a>.</p></body></html>",
+        Escaped(&ap_ssid(id)),
     );
 }
 
@@ -1168,9 +1213,9 @@ mod tests {
         );
     }
 
-    /// Only what the knob could have stored.
+    /// Only what `Field::range` allows.
     #[test]
-    fn calibration_is_held_to_the_knobs_ranges_and_steps() {
+    fn calibration_is_held_to_its_ranges_and_steps() {
         for bad in [
             "detent_ms=190",
             "detent_ms=10010",
@@ -1200,7 +1245,7 @@ mod tests {
         let scale = calibration_from_form("portion_scale=1", calibration()).unwrap_err();
         assert!(scale.contains(&std::format!("{min} to {max} %, in steps of {step}")));
 
-        let (first, last) = ClockEdit::YEARS;
+        let (first, last) = YEARS;
         let year = clock_from_form("at=2000-01-01T00%3A00").unwrap_err();
         assert!(year.contains(&std::format!("between {first} and {last}")));
     }
@@ -1537,5 +1582,38 @@ mod tests {
             "{} of {PAGE_LEN}",
             page.len()
         );
+    }
+
+    #[test]
+    fn the_factory_reset_is_last_and_asks_twice() {
+        let mut page = String::new();
+        render_page(&mut page, &status(), None, &network(), "", None);
+        let network_form = page.find("action=/network").unwrap();
+        let erase = page.find("action=/erase").unwrap();
+        assert!(network_form < erase, "below everything else");
+        assert!(page.contains("type=checkbox name=erase value=everything required"));
+        assert!(page.contains("return confirm("));
+    }
+
+    #[test]
+    fn a_factory_reset_waits_for_the_box_and_for_idle() {
+        assert_eq!(erase_refusal(true, true), None);
+        assert!(erase_refusal(false, true).unwrap().contains("Tick the box"));
+        assert!(erase_refusal(true, false).unwrap().contains("Busy"));
+        assert!(
+            erase_refusal(false, false)
+                .unwrap()
+                .contains("Tick the box"),
+            "the box first: it is the one the person can fix"
+        );
+    }
+
+    #[test]
+    fn the_erased_page_says_where_setup_will_be() {
+        let mut page = String::new();
+        render_erased(&mut page, "a1b2c3");
+        assert!(page.contains("<b>cat-feeder-a1b2c3</b>"));
+        assert!(page.contains("http://192.168.4.1/"));
+        assert!(page.ends_with("</html>"));
     }
 }

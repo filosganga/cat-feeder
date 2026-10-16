@@ -49,7 +49,7 @@
 
 use crate::schedule::{Date, Wall, seconds_between};
 
-/// The DS3231's I²C address. Fixed, unlike the panel's.
+/// The DS3231's I²C address, which is fixed.
 pub const ADDRESS: u8 = 0x68;
 
 /// Registers `0x00..=0x12`.

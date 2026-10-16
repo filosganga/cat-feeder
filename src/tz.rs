@@ -169,7 +169,7 @@ impl Change {
 /// The wall time a clock reading `wall` should read under `rule`, or `None`
 /// if it already does.
 ///
-/// A reading with no offset — the knob's, an RTC never told one — is taken as
+/// A reading with no offset — one set by hand, an RTC never told one — is taken as
 /// local time and given the offset the rule puts there. A reading with one is
 /// treated as an instant, and moved to the offset the rule says is in force:
 /// that is the summer-time change, an hour forward or back, and the
@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(follow(&r, wall(2026, 10, 25, 2, 0, Some(60))), None);
     }
 
-    /// A reading with no offset — the knob's — is local time, and only gains
+    /// A reading with no offset — one set by hand — is local time, and only gains
     /// an offset; it does not move.
     #[test]
     fn a_reading_without_an_offset_is_given_one_not_moved() {

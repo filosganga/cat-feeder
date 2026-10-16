@@ -51,8 +51,8 @@ pub enum Entity {
     Feed,
     Paused,
     Jammed,
-    /// What the unit did by itself — a meal served or skipped, a feed at the
-    /// knob or the admin page, a jam — as lines in Home Assistant's Activity.
+    /// What the unit did by itself — a meal served or skipped, a feed from
+    /// the admin page, a jam — as lines in Home Assistant's Activity.
     /// The payloads are `events.rs`'s.
     Feeding,
     /// Zero-based slot. Shown and addressed one-based.

@@ -7,28 +7,27 @@
 //! ```text
 //!   mqtt      --feed-->  feeder          (portion requests)
 //!   schedule  --feed-->  feeder
-//!   ui, web   --feed-->  feeder
+//!   web       --feed-->  feeder
 //!   schedule  --events-> mqtt            (a meal served or skipped)
-//!   ui, web   --events-> mqtt            (a feed at the unit)
+//!   web       --events-> mqtt            (a feed at the unit)
 //!   feeder    --events-> mqtt            (a jam)
-//!   feeder    --status-> mqtt            (feeding, jammed)
-//!   ui, web, mqtt --paused-> schedule (stored first: the unit owns it)
+//!   feeder    --status-> mqtt, web       (feeding, jammed)
+//!   web, mqtt --paused-> schedule     (stored first: the unit owns it)
 //!   mqtt      --time---> schedule
 //!   rtc       --time---> schedule     (at boot, if the DS3231 kept time)
-//!   ui        --time---> schedule     (set by hand on the knob)
+//!   web       --time---> schedule     (set by hand on the admin page)
 //!   mqtt      --rtc_time rtc          (live times, to keep the DS3231 set)
-//!   ui        --rtc_time rtc          (a hand-set time, likewise)
-//!   mqtt      --schedule schedule     (a schedule or a slot edit; stored, then in force)
-//!   schedule  --held---> mqtt, display (what the unit holds; the echo, meals)
+//!   web       --rtc_time rtc          (a hand-set time, likewise)
+//!   mqtt, web --schedule schedule     (a schedule or a slot edit; stored, then in force)
+//!   schedule  --held---> mqtt, web    (what the unit holds; the echo, meals)
 //!   schedule  --changed> mqtt         (republish the echo)
-//!   schedule  --now----> display, ui  (the trusted time)
-//!   schedule  --last_fed mqtt, display
-//!   schedule  --next---> display      (the upcoming slot)
-//!   ui        --pressed> display      (wakes the panel)
-//!   ui        --mode---> display      (which page, or the menu)
-//!   ui        --redraw-> display      (now, not at the next tick)
-//!   ui, web, mqtt --pause_changed> mqtt (publish the state now)
-//!   main      --ip-----> display
+//!   schedule  --now----> web, events  (the trusted time)
+//!   schedule  --last_fed mqtt, web
+//!   schedule  --next---> web          (the upcoming slot)
+//!   web, mqtt --pause_changed> mqtt   (publish the state now)
+//!   web       --calibrate> feeder     (start a run)
+//!   feeder    --calibration_progress> web
+//!   main      --ip-----> mqtt         (the *Visit device* link)
 //! ```
 
 use core::cell::{Cell, RefCell};
@@ -41,10 +40,9 @@ use embassy_sync::signal::Signal;
 
 use log::warn;
 
-use crate::calibrate::{Failure, Measurement, Progress};
+use crate::calibrate::{Calibration, Progress};
 use crate::events::Event;
 use crate::indicator::Health;
-use crate::menu::{Calibration, Mode};
 use crate::schedule::{Schedule, ScheduleCommand, Slot, TimeSource, Wall};
 use crate::store::{Store, StoreError};
 use crate::tz::Zone;
@@ -229,9 +227,8 @@ impl Connectivity {
 /// turning, because a jam discards whatever is pending and there is no moment
 /// afterwards that means "done".
 ///
-/// Carries the **portion count** alongside the time, because the display shows
-/// both and "fed at 08:00" without a quantity answers half the question
-/// somebody standing at a feeder is asking.
+/// Carries the **portion count** alongside the time, because the admin page
+/// shows both and "fed at 08:00" without a quantity answers half the question.
 ///
 /// Portions as requested, never clicks. `portions::clicks_for` runs downstream
 /// of this, so a unit with a portion scale would otherwise report a number that
@@ -260,16 +257,16 @@ impl LastFed {
 
 /// The slot this unit will feed next, or `None` when it cannot say.
 ///
-/// Written by `schedule`, read by `display`. It is carried across rather than
+/// Written by `schedule`, read by `web`. It is carried across rather than
 /// queried because `Scheduler` belongs to the schedule task — and asking it is
 /// not free: `next_due` marks a slot consumed before it answers, so a reader
-/// after a screenful of text would eat the meal. `Scheduler::upcoming` is the
-/// `&self` answer, and this is where it lands.
+/// rendering a page would eat the meal. `Scheduler::upcoming` is the `&self`
+/// answer, and this is where it lands.
 ///
 /// `None` means the schedule genuinely has nothing to say: no slots, or no
 /// trusted time to measure "next" against. It does **not** mean paused — a
 /// paused unit still has an upcoming slot it will not feed, and suppressing
-/// that is the display's decision, not this one's.
+/// that is the page's decision, not this one's.
 pub struct NextSlot(Mutex<CriticalSectionRawMutex, Cell<Option<Slot>>>);
 
 impl Default for NextSlot {
@@ -292,44 +289,9 @@ impl NextSlot {
     }
 }
 
-/// When the outside button was last pressed, for waking the screen.
-///
-/// **Every press**, not only the ones the gesture machine makes something of.
-/// Waking the panel is not a gesture and must not compete with one: a tap while
-/// locked still does nothing to the feeder, and now lights the screen, which is
-/// about the most useful thing an ignored tap could do.
-///
-/// A mutex rather than an atomic because this is a `u64` and **there is no
-/// `AtomicU64` on 32-bit RISC-V**. An `AtomicU32` of milliseconds would wrap
-/// every 49 days and wake or blank the panel once per wrap — the same trap
-/// `indicator.rs` documents for its own one-shot timing. Uncontended, and read
-/// once a second, so the lock costs nothing worth measuring.
-pub struct LastPress(Mutex<CriticalSectionRawMutex, Cell<Option<u64>>>);
-
-impl Default for LastPress {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LastPress {
-    pub const fn new() -> Self {
-        Self(Mutex::new(Cell::new(None)))
-    }
-
-    pub fn set(&self, at_ms: u64) {
-        self.0.lock(|cell| cell.set(Some(at_ms)));
-    }
-
-    /// `None` means the button has not been touched since boot, which is why
-    /// the panel starts dark.
-    pub fn get(&self) -> Option<u64> {
-        self.0.lock(Cell::get)
-    }
-}
-
 /// A small `Copy` value behind a lock, for state one task writes and another
-/// samples. Same shape as [`LastPress`], without its commentary.
+/// samples. A lock rather than an atomic because the values are wider than a
+/// word, and **there is no `AtomicU64` on 32-bit RISC-V**.
 pub struct Shared<T: Copy>(Mutex<CriticalSectionRawMutex, Cell<T>>);
 
 impl<T: Copy> Shared<T> {
@@ -388,26 +350,26 @@ impl Held<Schedule> {
 
 /// Everything the tasks share.
 pub struct Bus {
-    /// Portion requests. Written by `mqtt`, `schedule`, `ui` and `web`,
-    /// drained by `feeder`.
+    /// Portion requests. Written by `mqtt`, `schedule` and `web`, drained by
+    /// `feeder`.
     pub feed: FeedChannel,
     /// Things worth a line in Home Assistant's Activity, each with the trusted
     /// time it happened at, if any. Written through [`Bus::report`] by
-    /// `schedule`, `ui`, `web` and `feeder`; drained by `mqtt` onto
+    /// `schedule`, `web` and `feeder`; drained by `mqtt` onto
     /// `feeder/<id>/event`.
     ///
     /// A queue, not a [`Signal`]: two meals or a meal and its jam are two
     /// lines, both wanted. It keeps them while the broker is unreachable.
     pub events: Channel<CriticalSectionRawMutex, (Event, Option<Wall>), EVENT_DEPTH>,
-    /// Written by `feeder`, read by `mqtt`.
+    /// Written by `feeder`, read by `mqtt` and `web`.
     pub status: FeederStatus,
     /// Whether the schedule is paused. Seeded by `main` from flash, then
-    /// changed only through [`Bus::set_pause`], by `ui`, `web` and a live
-    /// command on `mqtt`; read by `schedule`. The unit is the authority
+    /// changed only through [`Bus::set_pause`], by `web` and a live command
+    /// on `mqtt`; read by `schedule`. The unit is the authority
     /// (ADR-0023), so nothing from the broker overrides it on reconnect.
     paused: AtomicBool,
     /// The latest time for the schedule's clock: `feeder/time` from `mqtt`,
-    /// the DS3231 from `rtc` at boot, or a hand-set time from `ui`. Each
+    /// the DS3231 from `rtc` at boot, or a hand-set time from `web`. Each
     /// carries its [`TimeSource`](crate::schedule::TimeSource), which decides
     /// how far it is trusted.
     ///
@@ -429,7 +391,7 @@ pub struct Bus {
     pub schedule: Channel<CriticalSectionRawMutex, ScheduleCommand, SCHEDULE_DEPTH>,
     /// The schedule this unit holds. Written by `schedule` — from flash at
     /// boot, then on every command it stores — and read by `mqtt` for the
-    /// retained echo and the state payload's `meals`, and by `display`.
+    /// retained echo and the state payload's `meals`, and by `web`.
     pub held: HeldSchedule,
     /// The timezone this unit follows when nobody publishes the time, or `None`
     /// for plain local time. Written by `main` from flash at boot and by
@@ -438,42 +400,30 @@ pub struct Bus {
     /// The held schedule changed: `schedule` to `mqtt`, which republishes the
     /// retained `feeder/<id>/schedule/state` echo.
     pub schedule_changed: Signal<CriticalSectionRawMutex, ()>,
-    /// Written by `schedule`, read by `mqtt`.
+    /// Written by `schedule`, read by `mqtt` and `web`.
     pub last_fed: LastFed,
-    /// Written by `schedule`, read by `display`.
+    /// Written by `schedule`, read by `web`.
     pub next: NextSlot,
-    /// Written by `ui`, read by `display`. Every press and every turn.
-    pub last_press: LastPress,
-    /// Which page is up, or the menu and its cursor. Written by `ui`, read by
-    /// `display`.
-    pub mode: Shared<Mode>,
-    /// Redraw now. Signalled by `ui` after every input, so the screen follows
-    /// the knob rather than lagging it by up to a second.
-    pub redraw: Signal<CriticalSectionRawMutex, ()>,
     /// The pause changed: [`Bus::set_pause`] to `mqtt`, which publishes the
     /// state payload now rather than at the next interval, so Home Assistant's
     /// switch — not optimistic — follows at once.
     pub pause_changed: Signal<CriticalSectionRawMutex, ()>,
     /// This unit's address, once DHCP has handed one out. Written by `main`,
-    /// read by `display`.
+    /// read by `mqtt` for the discovery config's *Visit device* link.
     pub ip: Shared<Option<[u8; 4]>>,
     /// The calibration in force. Seeded by `main` from the record, rewritten
-    /// by `ui` when the knob saves a new figure; read by `feeder`, which
-    /// applies it at its next idle moment, and by `display`.
+    /// by `web` when the admin page saves a new figure; read by `feeder`,
+    /// which applies it at its next idle moment, and by `web`.
     pub calibration: Shared<Calibration>,
-    /// Start a calibration run: `ui` to `feeder`, which runs it only when idle.
+    /// Start a calibration run: `web` to `feeder`, which runs it only when
+    /// idle.
     pub calibrate: Signal<CriticalSectionRawMutex, ()>,
-    /// Clicks counted so far in a calibration run: `feeder` to `ui`.
-    pub calibration_clicks: Signal<CriticalSectionRawMutex, u8>,
-    /// How a calibration run ended: `feeder` to `ui`.
-    pub calibration_result: Signal<CriticalSectionRawMutex, Result<Measurement, Failure>>,
-    /// Where the latest calibration run is, whoever started it. Written by
-    /// `feeder`, read by `web`, which cannot share the two signals above with
-    /// `ui` — a signal has one reader.
+    /// Where the latest calibration run is. Written by `feeder`, read by
+    /// `web`.
     pub calibration_progress: Shared<Progress>,
     /// The time now, only while the clock is trusted. Written by `schedule`
-    /// each tick, read by `display` for the home page and by `ui` so the
-    /// knob's clock editor opens on it.
+    /// each tick, read by `web` for the page and by [`Bus::report`] to stamp
+    /// events.
     pub now: Shared<Option<Wall>>,
     /// Written by `wifi`, `mqtt` and `schedule`, read by `indicator`.
     pub net: Connectivity,
@@ -482,12 +432,6 @@ pub struct Bus {
     /// Set once, by the boot path, and never cleared: setup mode is left by
     /// rebooting, not by changing its mind.
     pub setup: AtomicBool,
-    /// The menu is open. Written by `ui`, read by `indicator`.
-    ///
-    /// The gesture state itself stays inside the ui task — this is only the
-    /// one bit the LED needs, so nothing else can reach in and change what a
-    /// press means.
-    pub button_armed: AtomicBool,
     /// The BOOT button is being held towards a reset. Written by `reset`,
     /// read by `indicator`.
     pub reset_held: AtomicBool,
@@ -530,17 +474,10 @@ impl Bus {
             schedule_changed: Signal::new(),
             last_fed: LastFed::new(),
             next: NextSlot::new(),
-            last_press: LastPress::new(),
-            mode: Shared::new(Mode::Locked {
-                page: crate::menu::Page::Home,
-            }),
-            redraw: Signal::new(),
             pause_changed: Signal::new(),
             ip: Shared::new(None),
             now: Shared::new(None),
             calibrate: Signal::new(),
-            calibration_clicks: Signal::new(),
-            calibration_result: Signal::new(),
             calibration_progress: Shared::new(Progress::None),
             calibration: Shared::new(Calibration {
                 portion_scale_pct: crate::portions::SCALE_UNCHANGED,
@@ -549,7 +486,6 @@ impl Bus {
             net: Connectivity::new(),
             setup: AtomicBool::new(false),
             reset_held: AtomicBool::new(false),
-            button_armed: AtomicBool::new(false),
             flash_busy: AtomicBool::new(false),
             feed_held: AtomicBool::new(false),
         }
@@ -563,7 +499,6 @@ impl Bus {
     pub fn health(&self) -> Health {
         Health {
             reset_held: self.reset_held.load(Ordering::Relaxed),
-            button_armed: self.button_armed.load(Ordering::Relaxed),
             setup: self.setup.load(Ordering::Relaxed),
             link: self.net.link(),
             broker: self.net.broker(),
@@ -574,8 +509,8 @@ impl Bus {
         }
     }
 
-    /// A time set by a person — on the knob or the admin page — to the
-    /// schedule's clock and to the RTC behind it.
+    /// A time set by a person on the admin page, to the schedule's clock and
+    /// to the RTC behind it.
     ///
     /// Through the paths a live `feeder/time` takes, stamped now, so there is
     /// no second way for a time to enter the unit. `Manual` behaves as `Live`

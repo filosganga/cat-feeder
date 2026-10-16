@@ -248,7 +248,7 @@ wall-clock fields without converting the offset away, and the container
 defaults to UTC. Without that variable every meal lands an hour or two out
 while everything still looks healthy. The feeder prints the offset it received
 at startup — `clock: live time 2026-09-18T00:07:18+02:00, schedule armed` —
-and its panel and admin page show the clock, which is where the mistake shows.
+and its admin page shows the clock, which is where the mistake shows.
 
 **The `mqtt` trigger on `feeder/time/request` is what makes a feeder start
 quickly.** A unit whose RTC cannot be trusted arms its schedule only on a live
@@ -288,7 +288,7 @@ docker compose down -v                  # stop and wipe every retained message
 ./dev/ap-password.sh a1b2c3             # a unit's setup/admin password
 ./dev/label.sh a1b2c3 d4e5f6            # printable labels with a join-Wi-Fi QR
 ./dev/pcb-check.sh                      # check pcb.diy before soldering; see the pcb-review skill
-./dev/ota.sh --address <ip> --id <id> --board zero --headless   # build and send firmware over the network
+./dev/ota.sh --address <ip> --id <id> --board zero   # build and send firmware over the network
 ./dev/bootloader.sh                     # rebuild bootloader/bootloader.bin in Docker (ADR-0024); rarely
 ```
 
@@ -311,7 +311,7 @@ docker compose down -v && docker compose up -d
 
 That is **no longer a cold boot**, because a unit keeps its meals in flash and
 its time in the DS3231, and `down -v` touches neither. A true cold start is the
-menu's `Settings` → `Factory reset`, which erases the meals with the
+*Factory reset* on the admin page, which erases the meals with the
 credentials, plus pulling the RTC's coin cell so it comes back untrusted — a
 feeder that has never been told the time must still wait rather than guess.
 
@@ -351,7 +351,7 @@ is `./dev/provision.sh` again, with no rebuild.
 
 A board with **no** record does not fall back to anything: it says
 `store: no record yet, going to setup` and raises its own Wi-Fi network.
-A board that was reset — BOOT held 5 s, or the knob held through power-on —
+A board that was reset — BOOT held 5 s —
 says `store: no network in the record (calibration kept), going to setup`
 and does the same, keeping its calibration. Nothing is compiled into the
 binary, so anything else is a warning naming a fault in the record or the

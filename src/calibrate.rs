@@ -26,6 +26,11 @@
 //! A run whose gaps disagree by more than [`MAX_SPREAD_PCT`] is refused rather
 //! than averaged: a gap twice the others is a missed click, a gap half the
 //! others a doubled one, and neither is a speed.
+//!
+//! ## What a unit is calibrated by
+//!
+//! Two figures, [`Calibration`]: the detent interval a run measures, and the
+//! portion scale, which is set by hand. Both are in the flash record.
 
 use heapless::Vec;
 
@@ -67,13 +72,12 @@ pub enum Failure {
     Inconsistent { fastest_ms: u64, slowest_ms: u64 },
     /// Faster than the record accepts. The switch is bouncing, not a detent.
     TooFast { slowest_ms: u64 },
-    /// Slower than the knob can store; the mechanism is nearly stalled.
+    /// Slower than the record can store; the mechanism is nearly stalled.
     TooSlow { slowest_ms: u64 },
 }
 
-/// Where the latest run is, for anyone who wants to show it. Published by the
-/// feeder task, which is the only one that knows; the knob's menu follows its
-/// own run through signals, and the admin page reads this.
+/// Where the latest run is, for a control to show. Published by the feeder
+/// task, which is the only one that knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Progress {
     /// No run since power-on.
@@ -83,6 +87,49 @@ pub enum Progress {
     Running { clicks: u8 },
     /// The last run ended like this. Nothing is saved until someone saves it.
     Finished(Result<Measurement, Failure>),
+}
+
+/// One of the figures a unit is calibrated by. Both live in the flash record
+/// beside the credentials, and both take effect without a restart: the feeder
+/// task picks the new figures up at its next idle moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// `portions::clicks_for`'s scale, in percent.
+    PortionScale,
+    /// The detent interval every mechanical timing is derived from, in ms.
+    Detent,
+}
+
+impl Field {
+    /// The smallest, largest, and one step's worth of change: all a control
+    /// may store, and the steps it should offer.
+    ///
+    /// Detent's floor is the record's own, so nothing can store a value the
+    /// record would then refuse to read. The ceilings are well past any
+    /// mechanism measured, and within what `feeder.rs`'s tests cover.
+    pub const fn range(self) -> (u16, u16, u16) {
+        match self {
+            Field::PortionScale => (25, 300, 5),
+            Field::Detent => (MIN_DETENT_MS, MAX_DETENT_MS, 10),
+        }
+    }
+}
+
+/// The calibration in force: what the record holds, and what the feeder task
+/// counts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Calibration {
+    pub portion_scale_pct: u16,
+    pub detent_ms: u16,
+}
+
+impl Calibration {
+    pub fn get(self, field: Field) -> u16 {
+        match field {
+            Field::PortionScale => self.portion_scale_pct,
+            Field::Detent => self.detent_ms,
+        }
+    }
 }
 
 /// One calibration run, click by click.
@@ -249,11 +296,10 @@ mod tests {
         assert!(JAM_MS > MAX_DETENT_MS as u64);
     }
 
-    /// The limits here are the knob's: whatever a run saves, the detent editor
-    /// could have stored too.
+    /// Whatever a run saves, a control could have stored by hand too.
     #[test]
-    fn the_limits_agree_with_the_detent_editor() {
-        let (min, max, _) = crate::menu::Field::Detent.range();
+    fn the_limits_agree_with_the_detent_range() {
+        let (min, max, _) = Field::Detent.range();
         assert_eq!(MIN_DETENT_MS, min);
         assert_eq!(MAX_DETENT_MS, max);
     }
