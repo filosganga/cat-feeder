@@ -798,29 +798,6 @@ INFO (308) - setup: then browse to http://192.168.4.1
 INFO (1228) - setup: access point up
 ```
 
-⚠️ **These two captures predate the panel**, which is now brought up on this
-path as well — so a capture taken today also carries `oled: found a panel at
-0x3c` between the `store:` line and the `setup:` lines, and a `display:` block
-repeating the same SSID and password. That block is what proves the screen, and
-it is the one thing these transcripts cannot show yet, because it has never been
-captured. Expect roughly:
-
-```
-INFO (301) - oled: found a panel at 0x3c
-INFO (315) - setup: raising cat-feeder-db0260
-INFO (1240) - display: +---------------------+
-INFO (1241) - display: |JOIN THIS WI-FI      |
-INFO (1242) - display: |cat-feeder-db0260    |
-INFO (1243) - display: |DAKS-2W9X-NVQG       |
-INFO (1244) - display: |                     |
-INFO (1245) - display: |THEN BROWSE TO       |
-INFO (1246) - display: |http://192.168.4.1   |
-INFO (1265) - display: awake
-```
-
-Correct this block with what a real capture shows, rather than leaving it as a
-prediction — that is the rule this whole file is written under.
-
 **There is no build-time fallback left**, so the record decides alone:
 `configured for ...`, or one of the `going to setup` lines — `no record yet`
 for blank flash, `no network in the record (calibration kept)` after a reset —
@@ -1069,6 +1046,43 @@ A second trial after a broker failure starts with the station still joined;
 it leaves first, so expect no `given` line to repeat the old address unless
 the router really did hand out the same one.
 
+### Factory reset
+
+Status: built and host-tested, not yet observed (ADR-0027).
+
+Action: on the admin page, tick *Erase calibration, meals, timezone, pause and
+network* and confirm *Factory reset*; or the same on the setup page, after BOOT
+held five seconds. Expected, admin page first:
+
+```
+INFO - web: [0] Post /erase
+WARN - web: factory reset, everything erased, restarting into setup
+INFO - web: restarting
+...
+INFO - store: no record yet, going to setup
+INFO - setup: raising cat-feeder-<id>
+```
+
+From the setup page it is `setup: [n] Post /erase (N byte body)`, `setup: factory reset,
+everything erased`, then `setup: restarting`. After the restart setup mode must
+**not** print `keeping this unit's measured timings from the old record`, and
+once set up again the unit boots with `schedule: none stored`, no `clock:
+timezone` line, and the default `feeder: clicks >760 ms apart` figures.
+
+**Failure signatures:** nothing is erased in any of these.
+
+| Console | Page |
+|---|---|
+| `web: factory reset refused: Busy feeding or updating; ...` | the same, above the admin page: a turn, a queued feed or an upload was in progress |
+| `web: factory reset refused: Tick the box ...` | the same: a POST without `erase=everything` |
+| `setup: factory reset refused (the box was not ticked)` | back to the setup form, no message |
+| `setup: factory reset refused (a trial is running)` | back to the setup page, which shows the trial |
+| `web: factory reset failed (...)` / `setup: factory reset failed (...)` | *Erasing failed; nothing changed.* |
+
+The clock is not erased: the DS3231 keeps its time and offset, so a reset unit
+set up again prints `clock: RTC time ..., schedule armed` straight away. A true
+cold start also needs the coin cell out — see `dev/README.md`.
+
 ## The status LED
 
 **Console half observed** on the dev kit. The LED itself still wants eyes on a
@@ -1213,7 +1227,7 @@ connecting every 24–25 s (20 s plus the 5 s timeout). Remove the task after.
 
 Status: done and observed, on a Zero.
 
-Action: `./dev/ota.sh --address <ip> --id <id> --board zero --headless`.
+Action: `./dev/ota.sh --address <ip> --id <id> --board zero`.
 It answers `Updated. Restarting into the new firmware...`; the unit's side:
 
 ```

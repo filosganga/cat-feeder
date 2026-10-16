@@ -61,13 +61,11 @@ from the unit itself once it is running:
 | 1 kΩ resistor | guards the switch input |
 | Perfboard, female headers, a 6-pin header (or JST XH) | the layout is [`pcb.diy`](pcb.diy) |
 | 5 V USB adapter, 1 A or more | into the feeder's original USB socket |
-| *Optional:* 0.96" 128×64 **SSD1315** OLED, I²C | a status screen and menu |
-| *Optional:* **EC11** rotary encoder with push switch | the knob |
 | *Optional:* ESP32-C6-DEV-KIT-N8 | for development on a breadboard |
 
-Without the panel and knob a unit is **headless**: it is configured entirely
-over the network, and its only controls are the LED and the board's BOOT
-button.
+There is no screen and no knob: a unit is configured entirely over the
+network, from a phone or Home Assistant, and all it has on the outside is its
+LED and the board's BOOT button.
 
 ## Building it
 
@@ -107,8 +105,7 @@ never in the binary.
 **Flash**, matching the build to the board in your hand:
 
 ```sh
-./dev/flash.sh --board zero               # with panel and knob
-./dev/flash.sh --board zero --headless    # without
+./dev/flash.sh --board zero
 ./dev/flash.sh --board zero --port /dev/cu.usbmodemXXXX
 ```
 
@@ -129,21 +126,20 @@ The unit's id is the last three bytes of its MAC, printed at boot
 
 It opens a page of 50 × 30 mm labels with the setup network's name, its
 password and a QR code that joins it. It needs `qrencode`. The page holds the
-passwords in the clear, so it goes to a temporary file. **On a headless unit
-the label is the only way to learn its password** short of a serial cable —
-print it before the unit goes into a case. `./dev/ap-password.sh <id>` prints
+passwords in the clear, so it goes to a temporary file. **The label is the
+only way to learn a unit's password** short of a serial cable — print it
+before the unit goes into a case. `./dev/ap-password.sh <id>` prints
 the same thing as text.
 
 **Updating a unit that is already in its feeder** goes over the network, once
 it has been flashed over USB with a version that supports it:
 
 ```sh
-./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero --headless
+./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero
 ```
 
 `--address` is the unit's own IP: its device page in Home Assistant links to
-it, and a unit with a panel shows it. The unit checks the image before switching to
-it, including that it was built with the same `ap_secret`, and restarts into
+it. The unit checks the image before switching to it, including that it was built with the same `ap_secret`, and restarts into
 it. A new image that cannot reach the broker within about two minutes
 (`CONFIRM_SECS`) is undone by the unit itself, so a bad update costs those
 minutes, not a trip to the feeder.
@@ -153,8 +149,7 @@ minutes, not a trip to the feeder.
 A unit with no configuration raises its own Wi-Fi network and waits.
 
 1. Join `cat-feeder-<id>` from a phone: scan the label's QR code, or type the
-   password on it (a unit with a panel shows it too). The setup page opens by
-   itself; if it does not, browse to `http://192.168.4.1`.
+   password on it. The setup page opens by itself; if it does not, browse to `http://192.168.4.1`.
 2. Pick your Wi-Fi from the list (or type it, for a hidden network), and fill
    in its password and your MQTT broker. The broker must be an **IP address**:
    the firmware has no DNS resolver. Give the broker's machine a DHCP
@@ -183,8 +178,8 @@ back to setup is always deliberate (see [Resetting Wi-Fi](#resetting-wi-fi)).
 
 ### The admin page
 
-Every configured unit serves a page at `http://<its address>/`. The address is
-on the panel's `WI-FI` page, and Home Assistant links to it as *Visit device*.
+Every configured unit serves a page at `http://<its address>/`. Home
+Assistant links to it as *Visit device*, and setup showed it when it saved.
 Log in with any username and the label's password.
 
 It shows the clock, the next meal and the last feed, and lets you:
@@ -196,7 +191,8 @@ It shows the clock, the next meal and the last feed, and lets you:
   unit keeps summer time on its own when Home Assistant is not around;
 - set or measure the calibration — **Run calibration** turns five portions
   into the bowl and times them, then offers to save the result;
-- change Wi-Fi or the broker, which restarts the unit.
+- change Wi-Fi or the broker, which restarts the unit;
+- [factory reset](#factory-reset) it.
 
 Stored passwords are never shown; leave a password box empty to keep it.
 
@@ -206,7 +202,7 @@ Stored passwords are never shown; leave a password box empty to keep it.
    bolted down. If it runs backwards, swap the two motor wires.
 2. **Calibrate** with a full hopper and a bowl underneath.
 3. **Give it meals.** A new unit starts with none and **will not feed until
-   given some** — its panel says `NO MEALS SET` and its state reports
+   given some** — its admin page says `0 a day` and its state reports
    `"meals":0`. That is deliberate: a unit never inherits meals nobody chose
    for it.
 
@@ -260,8 +256,8 @@ No feeder id appears in the package: units are found in the device registry,
 so a new one joins by itself.
 
 **The unit is the authority on pausing.** It keeps its pause in flash, so it
-survives a reboot, and the knob's menu and the admin page pause and resume it
-with no Home Assistant at all. Home Assistant's Paused switch and helper send
+survives a reboot, and the admin page pauses and resumes it with no Home
+Assistant at all. Home Assistant's Paused switch and helper send
 a command when used; a feeder that is offline at that moment misses it and
 keeps what it holds — the switch shows which.
 
@@ -281,7 +277,6 @@ The full MQTT contract is in [CLAUDE.md](CLAUDE.md).
 | blue, fast | BOOT is held: at five seconds the Wi-Fi settings go. Let go to cancel |
 | **solid** red | jammed — go and look |
 | **solid** white | feeding |
-| cyan, twice a second | the menu is open: a tap on `Feed` dispenses |
 | blue, every 2 s | setup mode: waiting to be configured |
 | red ×1 every 3 s | no Wi-Fi |
 | red ×2 every 3 s | no broker |
@@ -293,31 +288,11 @@ The full MQTT contract is in [CLAUDE.md](CLAUDE.md).
 two and three point at three different things to fix. Solid means the
 mechanism; blinking means the network.
 
-### The knob
-
-| | Turn | Tap | Hold 2 s |
-|---|---|---|---|
-| **locked** | step the pages: home, Wi-Fi, broker, device | back to home | open the menu, on `Feed` |
-| **menu open** | move the cursor | run the item | lock |
-| **editing a value** | change it | save it | cancel, and lock |
-| nothing for 10 s | | | locks again |
-| held while plugging in, 3 s | | | forget the Wi-Fi settings |
-
-The menu holds `Feed one portion`, `Pause schedule` / `Resume schedule`,
-`Settings` and `Lock`. **Settings** has the clock, the portion scale, the
-detent interval and a factory reset.
-
-**Why a hold:** a control on a cat feeder that dispenses food is a control
-cats will learn to use. Turning never dispenses; only a hold followed by a tap
-on `Feed` does. A knob cannot be recessed, so mount the case where a paw has
-no footing.
-
 ### Recovering from a jam
 
 A jam stops the motor, discards any portions still owed, and shows solid red.
 Clear the obstruction, then **ask it to feed again** — the Feed button in Home
-Assistant, *Feed now* on the admin page, or on the knob: hold two seconds,
-then tap `Retry feed`. The first click clears the jam. No power cycle is
+Assistant, or *Feed now* on the admin page. The first click clears the jam. No power cycle is
 needed.
 
 There is no reverse. A retry drives forward into whatever stopped it, so it
@@ -325,16 +300,19 @@ recovers a momentary stall; a real blockage needs a hand.
 
 ### Resetting Wi-Fi
 
-Either gesture forgets the Wi-Fi and broker settings and reboots into setup
-mode. **The meals, the calibration and the timezone are kept.**
+**Hold BOOT for five seconds** while the unit runs (through a pinhole in the
+case). It forgets the Wi-Fi and broker settings and reboots into setup mode;
+**the meals, the calibration, the timezone and the pause are kept.** The LED
+flashes fast blue while it counts; let go early and nothing changes.
 
-- **Hold BOOT for five seconds** while the unit runs (through a pinhole in the
-  case). The LED flashes fast blue while it counts; let go early and nothing
-  changes. On a headless unit this is the only way.
-- **Hold the knob's click while plugging the unit in**, for three seconds.
+### Factory reset
 
-**Factory reset**, in the knob's Settings, also erases the calibration and the
-meals. It asks `Keep` or `Erase` first.
+*Factory reset*, at the bottom of the admin page and of the setup page, erases
+everything the unit was told — Wi-Fi and broker, calibration, meals, timezone
+and pause — and restarts it in setup mode. The clock is kept: it lives in
+the RTC, not in flash. Tick the box, then confirm. A unit that cannot reach your network gets there through the setup
+page: hold BOOT for five seconds first. The admin page refuses while the unit
+is feeding.
 
 ## Troubleshooting
 
@@ -344,9 +322,9 @@ meals. It asks `Keep` or `Erase` first.
 | red ×2 | broker unreachable: wrong address (it may have moved — use a DHCP reservation), wrong credentials, or Mosquitto down |
 | red ×3 that lasts | no trusted time: the RTC lost power (flat or missing coin cell) **and** Home Assistant is not publishing the time. Install the package; check the coin cell |
 | console: `clock: started, … (retained; waiting for a live time)` and nothing more | the broker is up but Home Assistant is not publishing `feeder/time` |
-| online, dark LED, never feeds; `NO MEALS SET` | the unit has no meals. Set them, or copy them from another feeder |
-| amber ×1 | paused — resume it from the admin page, the knob or the Paused switch |
-| console: `ignored a retained paused command` at every connect | a retained flag left on the broker by an older firmware or package. Clear it once: `mosquitto_pub -r -n -t feeder/<id>/paused`. A unit that was paused that way comes back **running** after the upgrade — pause it again from the admin page, the knob or the switch |
+| online, dark LED, never feeds; `"meals":0` | the unit has no meals. Set them, or copy them from another feeder |
+| amber ×1 | paused — resume it from the admin page or the Paused switch |
+| console: `ignored a retained paused command` at every connect | a retained flag left on the broker by an older firmware or package. Clear it once: `mosquitto_pub -r -n -t feeder/<id>/paused`. A unit that was paused that way comes back **running** after the upgrade — pause it again from the admin page or the switch |
 | every meal an hour or two out | Home Assistant's timezone is wrong (check the offset on `feeder/time`) |
 | solid red | jammed — see [Recovering from a jam](#recovering-from-a-jam). Repeated false jams with a full hopper: recalibrate with it full |
 | `rtc: nothing answered; running without one` | an open I²C line, or the DS3231 fitted on the wrong side. Beep SDA and SCL module pin to Zero pin |
@@ -354,10 +332,8 @@ meals. It asks `Keep` or `Erase` first.
 | motor turns the wrong way | swap the two motor wires (pins 4 and 5 of the header) |
 | plugged in, nothing happens, laptop's USB port cuts out | the DRV8833's supply reversed on the board |
 | nothing on the console after flashing | built for the wrong board: check `--board`, and the port |
-| a button reads `currently pressed` at boot while untouched; the unit forgets its Wi-Fi every boot | a button's GPIO and ground legs wired together |
 | `schedule: stored record is unreadable` on a brand-new Zero | data left by the factory demo; harmless, goes once the unit is given meals |
 | `store: no network in the record (calibration kept), going to setup` | the Wi-Fi was reset; set it up again |
-| panel image shifted, edges wrapped | a 1.3" SH1106 panel, not an SSD1306-compatible one |
 
 The serial console says what the unit is doing at every step:
 `./dev/capture.sh` listens without reflashing or resetting the unit;

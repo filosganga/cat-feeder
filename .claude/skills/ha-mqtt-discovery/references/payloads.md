@@ -167,7 +167,6 @@ an event whose `event_type` is not in the config's list.
 {"event_type":"scheduled","portions":2,"slot":"08:00","at":"2026-10-01T08:00:00+02:00"}
 {"event_type":"skipped","slot":"19:00","reason":"paused","at":"..."}
 {"event_type":"skipped","slot":"19:00","reason":"late","at":"..."}
-{"event_type":"manual","portions":1,"source":"knob","at":"..."}
 {"event_type":"manual","portions":3,"source":"web","at":"..."}
 {"event_type":"jammed","at":"..."}
 ```
@@ -386,7 +385,7 @@ automation edit:
 
 Only on the helper's change, **never on Home Assistant's start**: the unit is
 the authority, and republishing at start would undo a pause or resume made at
-its knob or admin page.
+its admin page.
 
 A reminder that fires if a feeder has been paused for more than a few days is
 an obvious addition, because a forgotten pause is silent by design and is the

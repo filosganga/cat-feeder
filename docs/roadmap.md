@@ -8,12 +8,12 @@ its row; git history keeps the record.
 
 | Item | Notes |
 |---|---|
-| Schedule editor on the knob | meals arrive over MQTT or the admin page only |
-| Wi-Fi and broker entry on the knob | needs a character picker; parked |
-| A short press feeding one portion with the broker down | would revisit ADR-0010 |
 | OTA updates | built and seen working on a Zero (ADR-0022, ADR-0024): `dev/ota.sh`. What is left is below |
 | An external WS2812 on GPIO8 | no firmware change: it sits in parallel with the onboard LED |
 | The printed enclosure | one design for every feeder (ADR-0012) |
+| Split `provisioning.rs` along ADR-0028's layers | it holds the flash record and `crc32` (state), the detent limits (core), and HTTP parsing and the setup page (controls); the core imports it for `crc32` and the limits |
+| Move `indicator::Health` below the controls | `wiring::Bus::health` returns it, so the state layer imports the LED's module (ADR-0028) |
+| A `Bus` operation for saving the calibration | the logic is inside `web.rs`, so a second control would copy it (ADR-0028) |
 
 ### OTA, in order
 
@@ -24,10 +24,8 @@ its row; git history keeps the record.
 
 | Item | How to see it |
 |---|---|
-| The setup-mode screen (SSID, password, address) | hold the knob's click through power-on, `./dev/capture.sh --reset --seconds 40` |
 | Setup's *Save anyway*, and the captive portal on iOS | a phone on a unit in setup: a broker that refuses, then *Save anyway*; an iPhone joining from the label |
-| The `WI-FI`, `BROKER` and `DEVICE` info pages | turn the knob while locked |
-| The BOOT hold's `HOLD TO ERASE WI-FI` banner on a unit with a panel | hold BOOT on a knob unit, then re-provision |
+| The factory reset on the admin page and the setup page (ADR-0027) | tick, confirm: `web: factory reset` or `setup: factory reset`, then setup mode with no `keeping this unit's measured timings`; see *Factory reset* in the `flash-and-verify` skill's serial expectations |
 | *Feed now*, *Run calibration*, *Use this device's time*, the timezone list, and a phone layout on the admin page | use it from a phone |
 | Changing a `Meal n` entity from Home Assistant's own UI | built against the payloads HA sends; not driven from the UI |
 | `script.cat_feeder_copy_schedule` to a label, an area or a floor | run it so |

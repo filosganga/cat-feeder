@@ -105,8 +105,7 @@ behaviour and the jam timeout, runs with nobody at the bench.
 
 ## What a healthy boot looks like
 
-Verified on a headless Zero (a dev kit adds its panel and knob lines, and
-reaches the network more slowly). The second-stage bootloader, ours
+Verified on a Zero (a dev kit reaches the network more slowly). The second-stage bootloader, ours
 (ADR-0024), speaks first, then the application:
 
 ```

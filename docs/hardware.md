@@ -87,8 +87,6 @@ GPIO.
 | 1 kΩ resistor | R1, in series on the switch line |
 | perfboard, female headers, a 6-pin header for the feeder's cable | the layout is [`pcb.diy`](../pcb.diy), double-sided and plated-through |
 | JST XH 6-pin header and housing | optional, for a feeder whose wires need re-crimping anyway |
-| 0.96" 128×64 SSD1315 OLED, I²C | optional — the panel |
-| EC11 rotary encoder with push switch | optional — the knob |
 | Waveshare ESP32-C6-DEV-KIT-N8 | optional, for development on a breadboard |
 
 Power comes from the feeder's own USB port (a 1 A adapter or better). The
@@ -145,9 +143,8 @@ are referenced to the Zero's ground, so they must be.
 
 [`pcb.diy`](../pcb.diy) is the layout, drawn in
 [DIY Layout Creator](https://github.com/bancika/diy-layout-creator). Open it
-there to print or export a picture to solder from. It is the **headless**
-build: no panel, no knob, GPIO3–GPIO5 unconnected, with the DS3231 on the I²C
-bus.
+there to print or export a picture to solder from. GPIO3–GPIO5 are
+unconnected, and the DS3231 is alone on the I²C bus.
 
 **The drawing is the component side**, with the bottom traces seen through the
 board. Columns run `A … X` left to right and rows 1–18 bottom to top, matching
@@ -239,9 +236,7 @@ The DS3231 is chosen for its oscillator-stop flag rather than its accuracy:
 it can say *I lost power and the time is not real*, so a unit with a flat cell
 waits for a real time instead of feeding on a plausible wrong one.
 
-It answers on I²C address `0x68`; the panel is on `0x3C`. If the panel starts
-misbehaving only once the RTC is on the bus, suspect the two modules' pull-up
-resistors in parallel stiffening the bus.
+It answers on I²C address `0x68`.
 
 ### Star grounding on C1
 
@@ -319,7 +314,7 @@ Then, on USB alone:
 
 1. About 4.7 V across C1.
 2. 3.3 V on the Zero's `3V3`.
-3. `./dev/flash.sh --board zero --headless` shows `switch: watching GPIO2`,
+3. `./dev/flash.sh --board zero` shows `switch: watching GPIO2`,
    the RTC answering, and the LED's red-green-blue sweep.
 
 Before the unit goes into its feeder, **check the motor's direction** with a
@@ -345,11 +340,8 @@ design then fits any feeder, because it is not fitted to any of them.
 - The solder side sits on printed bosses on the corner mounting holes, about
   3 mm proud of a plate, so clipped leads touch nothing.
 - A drop of glue or a cable tie takes the cable's pull off the header's joints.
-- Give the onboard LED a window or a light pipe. It is the only output a
-  headless unit has.
-- **Mount the case where a cat has no footing** — high, or behind the feeder.
-  A control on a feeder that dispenses food is a control cats learn to use,
-  and a knob cannot be recessed the way a button can.
+- Give the onboard LED a window or a light pipe. It is the only output the
+  unit has.
 
 ## Pins
 
@@ -360,10 +352,9 @@ boards. In summary, on the Zero:
 |---|---|
 | DRV8833 `In1`, `In2`, `nSLEEP` | GPIO0, GPIO1, GPIO14 |
 | hub microswitch | GPIO2 |
-| knob: push switch, `A`, `B` | GPIO3, GPIO4, GPIO5 (unused on a headless build) |
 | onboard WS2812 LED | GPIO8 |
 | BOOT button | GPIO9 |
-| I²C `SDA`, `SCL` (panel and RTC) | GPIO18, GPIO19 |
+| I²C `SDA`, `SCL` (the RTC) | GPIO18, GPIO19 |
 
 Every switch input uses the chip's internal pull-up and reads a press as a
 falling edge; none needs an external pull-up.
@@ -375,33 +366,10 @@ What constrains the choice, if you move anything:
   JTAG source). GPIO8 is also the onboard LED; GPIO9 is the BOOT button.
 - GPIO12 and GPIO13 are native USB, the Zero's only console.
 - GPIO4 and GPIO5 are strapping pins too, but on the C6 they only set SDIO
-  sampling edges, so an encoder holding them through reset cannot stop the
-  unit booting.
+  sampling edges, so a part holding them through reset cannot stop the unit
+  booting.
 - Peripheral signals route through the C6's GPIO matrix, so any free pin can
-  carry I²C or anything else. GP6, GP7 and GP20–GP23 are free.
-
-## The optional panel and knob
-
-**The panel** is a 0.96" 128×64 SSD1315 (register-compatible with the
-SSD1306), on the I²C bus at `0x3C`, powered from 3V3. It shows six lines of
-**21 characters** — both common panel sizes are 128 pixels wide, so a bigger
-panel buys rows, not columns.
-
-If you try a 1.3" module instead, check its controller first. Many are
-**SH1106**, not SSD1306: 132 columns of RAM with the panel on the middle 128,
-so an SSD1306 driver draws everything shifted with the edges wrapped. That
-looks like a broken framebuffer and is not one.
-
-**The knob** is a bare EC11-style encoder with a push switch: its common pin
-and the switch's other leg go to ground, and `A`, `B` and the switch each use
-the internal pull-up. Nothing goes to a supply, and no capacitors are needed —
-the decoder cancels bounce.
-
-> ⚠️ A **KY-040-style encoder module** carries 10 kΩ pull-ups from `A` and `B`
-> to its `+` pin. Power its `+` from **3V3, never 5 V**: on 5 V it holds two
-> GPIOs at 5 V, and the C6 is not 5 V tolerant.
-
-Build with `--headless` for a unit with neither fitted.
+  carry I²C or anything else. GP3–GP7 and GP20–GP23 are free.
 
 ## An external LED
 
@@ -423,9 +391,8 @@ than the chip's own USB, so it enumerates as a different port.
 > jumper one position off puts 5 V on a signal pin and destroys it. Take
 > ground from the J3 header, which has no 5 V neighbour.
 
-When wiring a push button or switch on a breadboard, put its GPIO leg and its
-ground leg in **different** row groups. In the same group the pin is grounded
-permanently and the switch is bypassed — which, on the knob's click, looks
-like a unit that forgets its network on every boot. The console prints each
-button's level at boot: `currently pressed` on an untouched button is the
+When wiring a push button as the hub switch on a breadboard, put its GPIO leg
+and its ground leg in **different** row groups. In the same group the pin is
+grounded permanently and the switch is bypassed. The console prints the
+switch's level at boot: `currently pressed` on an untouched button is the
 whole diagnosis.

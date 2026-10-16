@@ -41,7 +41,8 @@ checked in CI** (`.github/workflows/rust_ci.yml`). Before adding to it:
 Boards: **ESP32-C6-Zero** in production (8 MB flash — the schematic's
 `C6FH4` suggests 4 MB; `espflash board-info` is the authority), the
 ESP32-C6-DEV-KIT-N8 for development. Same chip; Cargo features
-`board-devkit` (default) / `board-zero`, plus `headless` (ADR-0021).
+`board-devkit` (default) / `board-zero`. No knob, no panel: one build
+(ADR-0027; the old code is at the tag `last-with-knob-and-panel`).
 `--no-default-features` is required for the Zero: two board features at once
 fail in esp-println's build script.
 
@@ -51,7 +52,7 @@ table to solder against. Constraints behind it:
 - The Zero does not bring out GPIO10/11. GPIO8, 9, 15 are strapping that
   matters (boot mode, boot log, JTAG); GPIO12/13 are native USB, the Zero's
   only console; GPIO8 is also the onboard WS2812. GPIO4/5 are strapping pins
-  only for SDIO edges, so the encoder may use them.
+  only for SDIO edges, so they are usable.
 - On the C6 peripherals route through the GPIO matrix, so any free pin will do.
 
 | Part | What the firmware assumes |
@@ -60,8 +61,7 @@ table to solder against. Constraints behind it:
 | DRV8833 | `IN1=1,IN2=0` forward, `0,0` coast, `1,1` brake; `nSLEEP` driven high or nothing turns. No reverse, deliberately (ADR-0009) |
 | motor | geared; stops dead on brake. Detent interval is per model, ~1.9 s to ~5.3 s known (ADR-0006) |
 | WS2812 on GPIO8 | **RGB** wire order, not the datasheet's GRB; `led::wire_word` is the one place to change |
-| I²C, GPIO18 SDA / GPIO19 SCL | SSD1306-compatible panel at `0x3C`/`0x3D`, DS3231 at `0x68` (a PCF8563 would be `0x51`) |
-| panel | 128×64, `FONT_6X10`: `display::ROWS` 6, **`display::COLS` 21**. `Line` is `String<COLS>` and `push` truncates silently — lay out every line against 21 |
+| I²C, GPIO18 SDA / GPIO19 SCL | DS3231 at `0x68`, alone on the bus (a PCF8563 would be `0x51`) |
 | DS3231 | its `OSF` flag is the reason for the part (ADR-0001); alarm 2's registers hold the UTC offset (ADR-0016) |
 
 Safety for bench work (detail in `docs/hardware.md`): don't hold a jam on USB
@@ -132,9 +132,10 @@ read as *unconfigured*. A missing `nvs` partition is a loud error.
 - Credentials come **only** from flash (ADR-0004). `build.rs` injects one
   value, `ap_secret`. Check: `strings` on the ELF finds no Wi-Fi password.
 - Boot: usable record → station; otherwise setup mode. **No fallback to setup
-  after failing to connect** (ADR-0005). Reset gestures call
-  `Record::without_network` (keeps calibration); only *Factory reset* calls
-  `Store::erase_all`.
+  after failing to connect** (ADR-0005). The BOOT hold calls
+  `Record::without_network` (keeps calibration); only the factory reset
+  (`POST /erase`, on the admin page and the setup page) calls
+  `Store::erase_all`, and restarts.
 - `Store::update` rewrites a record with everything else untouched; an
   unchanged value is not rewritten.
 
@@ -146,8 +147,8 @@ both serve over `http.rs`; the pure halves are `provisioning.rs` and
 
 - SSID `cat-feeder-<id>`, password `base32(sha256("<ap_secret>:<id>"))` as
   `XXXX-XXXX-XXXX` (Crockford), address 192.168.4.1 from
-  `provisioning::AP_ADDR_OCTETS` — the one constant the socket, the panel and a
-  test all use. `dev/ap-password.sh` must agree byte for byte.
+  `provisioning::AP_ADDR_OCTETS` — the one constant the socket, the pages and
+  a test all use. `dev/ap-password.sh` must agree byte for byte.
 - Setup runs AP+STA and **tests before it saves** (ADR-0025): `/save` starts a
   trial (join, lease, `mqtt::probe`), the page polls `/status`; only a joined
   Wi-Fi is saved, a broker failure offers `/keep`. One `radio` future owns the
@@ -162,7 +163,7 @@ both serve over `http.rs`; the pure halves are `provisioning.rs` and
   port and user — **never from passwords**.
 - Admin page rules (ADR-0017): Basic auth with the derived password; foreign
   `Origin` on POST → 403; stored passwords never rendered, empty = keep;
-  network changes and `/update` restart, nothing else does.
+  network changes, `/update` and `/erase` restart, nothing else does.
 - `POST /update` (ADR-0022) streams an image into the slot not running
   (`firmware.rs`) and selects it only if `update::ImageCheck` passes: magic,
   trailing SHA-256, and `web::SECRET_MARK` — this build's `ap_secret`, so an
@@ -172,7 +173,10 @@ both serve over `http.rs`; the pure halves are `provisioning.rs` and
   A new image confirms itself on the broker or resets after `CONFIRM_SECS`.
 - `CONNECTIONS = 3`: browsers open several sockets; one socket gets the real
   request RST'd.
-- `display_task` is spawned **before** `setup::run`, which never returns.
+- Setup's `/erase` always restarts: setup carries the old record's calibration
+  (`previous`) into the next save, so erasing and carrying on would bring it
+  back. Refused while a trial runs; `/erase` on the admin page is refused
+  mid-turn and waits for idle before restarting.
 
 ## MQTT contract
 
@@ -211,23 +215,15 @@ feeder/<id>/event              {"event_type","portions","slot","at"}  not retain
 | `portions::MAX_CLICKS` | 16 | clicks owed at once, clamped with a warning |
 | `wiring::FEED_DEPTH` | 8 | unread feed *requests* |
 
-## The knob, panel and LED
+## The LED and the controls
 
-Pure logic: `button.rs` (holds, taps), `menu.rs` (pages and menu), `encoder.rs`,
-`display.rs` (what the six lines say, when the panel sleeps), `indicator.rs`
-(LED priority and patterns). Rules (ADR-0010, ADR-0011):
+The unit's only output is the LED and its only physical control is BOOT
+(ADR-0027). `indicator.rs` is the LED's priority and patterns (ADR-0011);
+`reset.rs` is the BOOT hold.
 
-- Hold `button::ARM_HOLD_MS` toggles locked/unlocked; tap acts; turning never
-  dispenses. Unlock always lands on `Feed`; 10 s idle locks. A lock needs a
-  different press from the unlock. Waking shows home.
-- **The unit owns its pause** (ADR-0023): the menu, the admin page and a live
-  `paused` command all go through `Bus::set_pause` — flash, then in force.
-- The menu reads `Bus::calibration` before every input, so a web save is not
-  overwritten by a stale copy.
-- Hold hints come from `display::hold_hint_for`, rounded **up**.
-- A jam keeps `** JAMMED **` on the panel and offers `Retry feed`; the LED
-  stays solid red over the armed state.
-- No page shows a password; `display::UnitInfo` has no field for one.
+- **The unit owns its pause** (ADR-0023): the admin page and a live `paused`
+  command both go through `Bus::set_pause` — flash, then in force.
+- A jam keeps the LED solid red; only a BOOT hold outranks it.
 
 ## Gotchas
 
@@ -244,13 +240,8 @@ Pure logic: `button.rs` (holds, taps), `menu.rs` (pages and menu), `encoder.rs`,
 - smoltcp's DHCP `discover_timeout` defaults to 10 s and the first DISCOVER is
   lost after association; `dhcp_config()` sets 2 s.
 - `esp-storage` is pinned at 0.9; 0.10 needs an esp-hal release candidate.
-- `embassy-sync` 0.8, for `embassy-embedded-hal`'s shared I²C.
 - A `--no-reset` flash halts the app so only the bootloader prints; use the
   dev scripts.
-- Wired buttons with both legs in one breadboard row group read
-  `currently pressed` at boot and erase the network every boot.
-- An SH1106 panel (common on 1.3") renders shifted by two pixels with an
-  SSD1306 driver.
 
 ## Toolchain and testing
 
@@ -261,7 +252,7 @@ between releases.
 
 ```sh
 cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"  # pure logic
-./dev/flash.sh --board zero [--headless] [--seconds n] [--filter re]  # build, flash, capture
+./dev/flash.sh --board zero [--seconds n] [--filter re]  # build, flash, capture
 ./dev/capture.sh [--reset]                # listen without reflashing; --reset: from boot
 ./dev/provision.sh [--host ip --user u --password-file -] [--detent-ms n] [--portion-scale p]
 ./dev/soak.sh --hours n && ./dev/soak-report.sh
@@ -299,17 +290,38 @@ placeholder `ap_secret` when `cfg.toml` is absent **and** `CI` is set.
 
 ## Code organisation
 
+**Dependencies point down** (ADR-0028): core ← state ← controls ← `main.rs`.
+Pure versus hardware is a separate axis; `admin.rs` is pure and is a control.
+
+| Layer | Modules | May know |
+|---|---|---|
+| core | `feeder` `portions` `calibrate` `schedule` `tz` `ds3231` `events` `update` `sha256` | core only |
+| state | `provisioning::Record`, `config`, `store`, `wiring::Bus` | core |
+| controls | `web`+`admin`, `setup`+`trial`+`captive_dns`+`dhcp`+`http`, `mqtt`+`discovery`, `indicator`+`led`, `reset` | core, state |
+| drivers | `motor` `switch` `rtc` `i2c` `firmware` `board` | core |
+| wiring | `src/bin/main.rs` | everything |
+
+Known exceptions, on the roadmap: `provisioning.rs` spans all three layers,
+and `Bus::health` returns the LED's `indicator::Health`.
+
+- One operation per state change, called by every control (`Bus::set_pause`);
+  a control parses, calls it, renders the result.
+- A control's own state stays in its task, never on `Bus`. A type a control
+  and the core share is defined in the core.
+- Core comments name the input ("set by hand"), not the control that sends it.
+- Removing a control should touch the control, `main.rs` and its docs.
+
 ```
 src/bin/main.rs  wiring: peripherals, tasks, executor, clock following, zone
 board.rs         pin map per board feature
 -- pure, host-tested --
 feeder.rs        align, spacing, count, brake, jam; DEBOUNCE_MS
 portions.rs      pending clicks, MAX_CLICKS, portions -> clicks
-calibrate.rs     the Run calibration measurement
+calibrate.rs     the Run calibration measurement; Calibration, Field ranges
 schedule.rs      Schedule, LocalClock, Scheduler, double-feed guard
 tz.rs            POSIX rules, offsets, the stored zone
 reset.rs         BOOT 5 s hold
-button.rs menu.rs encoder.rs display.rs indicator.rs
+indicator.rs     LED priority and patterns
 events.rs        feeder/<id>/event payloads
 discovery.rs     Home Assistant discovery configs, JSON-checked
 ds3231.rs        DS3231 registers
@@ -320,7 +332,7 @@ admin.rs         admin page: auth, forms, rendering
 update.rs        checking an uploaded firmware image as it streams in
 dhcp.rs sha256.rs
 -- hardware --
-motor.rs switch.rs led.rs oled.rs rtc.rs i2c.rs store.rs
+motor.rs switch.rs led.rs rtc.rs i2c.rs store.rs
 mqtt.rs setup.rs http.rs web.rs
 firmware.rs      the OTA slots and otadata: idle slot, write, select, confirm
 wiring.rs        the Bus static: every shared handle and who writes it
@@ -331,8 +343,6 @@ pcb.diy          the perfboard (component side); docs/hardware.md
 ```
 
 Tasks: `net`, `mqtt`, `switch`, `feeder`, `schedule` (1 s tick), `rtc`,
-`encoder`, `ui`, `display`, `indicator`, `web`, `reset`, `watchdog` (feeds the
-RTC watchdog; a stall or panic resets the chip in 5 s), `confirm` (only on a
-new image's first boot). `encoder`, `ui` and
-`display` are left out of headless builds. They communicate only through
-`wiring::Bus`.
+`indicator`, `web`, `reset`, `watchdog` (feeds the RTC watchdog; a stall or
+panic resets the chip in 5 s), `confirm` (only on a new image's first boot).
+They communicate only through `wiring::Bus`.

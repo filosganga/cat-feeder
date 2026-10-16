@@ -1,5 +1,7 @@
 # No automatic fall back to setup mode; resets forget only the network
 
+Amended by [ADR-0027](0027-no-knob-and-no-panel.md): the knob and its gesture are gone, and the factory reset is on the admin page and the setup page.
+
 The boot path has one question: is there a usable record? If not, setup mode.
 A unit that fails to connect does **not** fall back to setup: a router
 rebooting for five minutes must not drop a working feeder into setup and stop

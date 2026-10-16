@@ -1,5 +1,7 @@
 # The status LED is dark when healthy, counts faults, and is solid for the mechanism
 
+Amended by [ADR-0027](0027-no-knob-and-no-panel.md): there is no armed menu, so no cyan state.
+
 The LED is the only output that survives the network being the broken thing.
 
 - **Dark is healthy.** If lit were normal, nobody would look at it. A double

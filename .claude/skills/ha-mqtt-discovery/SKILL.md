@@ -72,8 +72,8 @@ button as `1`, each schedule slot as its own `portions`.
 
 ## Pause stops the schedule, not the feeder
 
-The unit owns its pause (ADR-0023): kept in flash, changed by the knob, the
-admin page or a live `feeder/<id>/paused` command, never by a retained one.
+The unit owns its pause (ADR-0023): kept in flash, changed by the admin page
+or a live `feeder/<id>/paused` command, never by a retained one.
 While it is on:
 
 - Scheduled slots do **not** feed. They are marked consumed anyway, so resuming

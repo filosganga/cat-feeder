@@ -271,7 +271,7 @@ automation:
       are local times and the feeders share a house with the broker.
       Publishing UTC would still look valid while moving every meal by the
       offset. The feeder logs the offset it received at startup, and its
-      panel and admin page show the clock, which is where that mistake shows.
+      admin page shows the clock, which is where that mistake shows.
     mode: single
     triggers:
       - trigger: time_pattern
@@ -299,7 +299,7 @@ automation:
       One publish per unit, to each unit's own topic.
 
       The unit is the authority on its pause (docs/adr/0023): it keeps it in
-      flash, and its knob and admin page change it with no Home Assistant at
+      flash, and its admin page changes it with no Home Assistant at
       all. So this only *asks*, when the helper changes -- never at Home
       Assistant's start, which would undo a pause or resume made at a unit.
       The command is not retained, and a unit refuses a retained one: a feeder

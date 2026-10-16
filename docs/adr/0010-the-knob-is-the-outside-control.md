@@ -1,5 +1,7 @@
 # The knob is the outside control, and a hold opens the menu
 
+Superseded by [ADR-0027](0027-no-knob-and-no-panel.md); the code is at the tag `last-with-knob-and-panel`.
+
 The adversary is cats: a control on a cat feeder that dispenses food is a
 control cats will learn to use. So the vocabulary is **hold to unlock/lock, tap
 to act, turn to move**, and turning never dispenses. The only route to food at

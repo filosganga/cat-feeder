@@ -55,7 +55,7 @@ that contradicts it has broken something real.
 - `docs/adr/` — a change that contradicts an ADR needs a new ADR superseding
   it, not a silent divergence.
 - `docs/hardware.md` — wiring, pin roles, the beep-test table.
-- `README.md` — the builder's guide: commands, LED and knob tables.
+- `README.md` — the builder's guide: commands and the LED table.
 - `.claude/skills/flash-and-verify/references/serial-expectations.md` — quoted
   log lines. **Check they exist**: `grep -rhoE '(info|warn|error)!\("[^"]+' src/`
   lists every line the firmware can actually print. One documented transcript
