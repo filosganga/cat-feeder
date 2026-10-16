@@ -44,3 +44,114 @@ its row; git history keeps the record.
   already writes it as a KiCad netlist, with footprints for the modules.
 - Tune the LED palette in a real room; green reads much brighter than blue at the same value.
 - A boot reaching an armed schedule should take about 6 s; not captured end to end.
+
+## Dev tooling
+
+Each item has the prompt to start a new chat with. They name the scripts as
+they are now; once the `.sh` rename below has landed, drop the extension.
+
+### Capture that shows the console live and keeps it however it ends
+
+`dev/capture.sh` shows nothing until `--seconds` (45 by default) have passed,
+then renders the whole log at once; stopping it early with Ctrl-C loses the
+output, so the only way to see anything is to wait for the end.
+
+```text
+Make dev/capture.sh show the serial console live while it records, and keep
+the record however the capture ends.
+
+Today it writes the port to a mktemp log through dev/_tap.py (or espflash
+monitor with --reset), shows nothing until --seconds (45 by default) have
+passed, then renders the log with dev/_render.sh. Ctrl-C before the end loses
+the rendered output, so the only way to see anything is to wait.
+
+Wanted:
+- lines appear as they arrive, rendered as _render.sh renders them: colour
+  codes stripped, the +N ms gap since the previous line, --filter applied;
+- a way to run until Ctrl-C (--seconds 0 or a --follow flag: pick one and say
+  why);
+- Ctrl-C ends the capture cleanly and still prints the summary (application
+  line count, PANIC detection, the "printed nothing while listening" hint),
+  and the log is kept at a path it prints, so a session can be read back.
+
+Keep: listening without a reset by default (a reset before an OTA image
+confirms itself rolls it back, ADR-0024), waiting for the Zero's USB port to
+come back after the unit resets, --reset through espflash monitor, the
+existing positional arguments, and dev/flash.sh, which shares _render.sh,
+rendering as it does now.
+
+Follow the dev-script skill, and update the flash-and-verify skill if what
+the console shows changes. Verify on the bench Zero: a live capture shows boot
+lines as they come; Ctrl-C mid-capture prints the summary and leaves the log;
+--filter applies live; flash.sh's output is unchanged. Branch first; don't
+commit until I say.
+```
+
+### Python dev tools as extensionless executables
+
+`pcb-check`, `pcb-render` and `kicad-netlist` are each a `.sh` wrapper around a
+`.py` that parses the same flags again. One executable per tool, with the
+conventions in a shared `dev/_common.py`, removes the duplication, and a caller
+no longer needs to know what language a tool is written in.
+
+```text
+Turn the Python dev tools into extensionless executables, so callers don't
+need to know the language.
+
+Today dev/pcb-check, dev/pcb-render and dev/kicad-netlist are each a .sh
+wrapper (flag parsing, --help from the header comment, cd to the repo root,
+the Python 3.11 check, all through dev/_common.sh) around a .py that parses the
+same flags a second time. pcb-render and kicad-netlist load pcb-check.py by
+path to reuse its parser.
+
+Replace each pair with one executable file, `#!/usr/bin/env python3`, no
+extension:
+- dev/_common.py, mirroring dev/_common.sh: --help prints the header,
+  errors start with the tool's name, exit 2 when called wrong and 1 when it
+  ran and failed, a flag beats its environment variable, run from the repo
+  root, refuse Python < 3.11 in one line;
+- dev/_pcb.py, holding what pcb-check.py shares today (load, load_netlist,
+  compare, board_pins, firmware, classify), imported by all three;
+- every flag, default and output kept as it is; no __pycache__ left in dev/.
+
+Update every reference (git grep the old names): CLAUDE.md, the pcb-review
+and dev-script skills (document the Python convention in dev-script),
+dev/README.md, docs/hardware.md, ADR-0030, this roadmap, and the allow-rules
+in .claude/settings.json (./dev/pcb-check *).
+
+Verify: --help from the repo root, from dev/ and from /tmp; an unknown flag,
+a missing value and a stray argument each exit 2. pcb-check passes on pcb.diy
+and still fails on broken copies: the Ext ground trace removed, Pads GP8
+joined to GP9, led_pin moved to GPIO7 in a copy of board.rs, and the first
+draft (git show f90156f:pcb-v2.diy). pcb-render's four views and
+kicad-netlist's output are byte-identical to before, apart from the tool's
+own name in the netlist header. The bash scripts keep .sh: that is the next
+item. Branch first; don't commit until I say.
+```
+
+### Bash dev scripts without `.sh`
+
+The same rule for the rest of `dev/`: `./dev/flash`, `./dev/provision`, and
+so on. Best done after the Python tools, as its own change.
+
+```text
+Drop the .sh extension from the bash dev scripts that are called directly
+(flash, capture, provision, ota, watch, soak, soak-report, label,
+ap-password, bootloader, and any other in dev/ meant to be run), so a caller
+doesn't need to know the language. Leave the underscore helpers that are only
+sourced or called by other scripts (_common.sh, _render.sh) as they are, and
+say if any other file deserves the same exception.
+
+Rename with git mv. Update every caller and reference (git grep for each old
+name): scripts calling each other, CLAUDE.md, every skill (flash-and-verify,
+dev-script, pcb-review, ha-mqtt-discovery...), dev/README.md, README.md,
+docs/, .github/workflows, and the allow-rules in .claude/settings.json. List
+what to change in CLAUDE.local.md and in Claude's memory rather than editing
+them: they are not in the repo.
+
+prog() and --help read the script's own name, so check both still print the
+right thing. Verify: bash -n on every script; --help on each from the repo
+root and from /tmp; git grep finds no old name left except in git history;
+flash and capture run against the bench Zero. Branch first; don't commit
+until I say.
+```
