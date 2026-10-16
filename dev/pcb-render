@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Draws the perfboard as an SVG, without opening DIY Layout Creator.
 #
-#   ./dev/pcb-render.sh                       # pcb.diy -> target/pcb.svg
-#   ./dev/pcb-render.sh --out board.svg       # somewhere else
-#   ./dev/pcb-render.sh --layout other.diy    # another drawing
-#   ./dev/pcb-render.sh --netlist nets.toml   # named by another netlist
-#   ./dev/pcb-render.sh --side solder         # the bottom, as held to solder it
-#   ./dev/pcb-render.sh --true-size           # to print at 100% and lay on the board
+#   ./dev/pcb-render                       # pcb.diy -> target/pcb.svg
+#   ./dev/pcb-render --out board.svg       # somewhere else
+#   ./dev/pcb-render --layout other.diy    # another drawing
+#   ./dev/pcb-render --netlist nets.toml   # named by another netlist
+#   ./dev/pcb-render --side solder         # the bottom, as held to solder it
+#   ./dev/pcb-render --true-size           # to print at 100% and lay on the board
 #
-# The picture is what dev/pcb-check.sh believes, drawn from the same parser:
+# The picture is what dev/pcb-check believes, drawn from the same parser:
 # holes and bottom traces coloured by net, jumpers, parts, header pin names and
 # module outlines, with every net listed beside the board under its name in
 # dev/netlist.toml, and anything the two disagree on in red. Open it in any
@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Same reason as pcb-check.sh: the script has moved to the repo root, so a path
+# Same reason as dev/pcb-check: the script has moved to the repo root, so a path
 # relative to wherever it was called from now points somewhere else.
 [ -f "$LAYOUT" ] || die "$(prog): no layout at $LAYOUT (paths are relative to the repo root)"
 [ -f "$NETLIST" ] || die "$(prog): no netlist at $NETLIST (paths are relative to the repo root)"

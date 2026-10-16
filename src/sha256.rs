@@ -1,7 +1,7 @@
 //! SHA-256, because the setup password has to be reproducible off the device.
 //!
 //! The chip has a SHA peripheral, and this is not it. The access-point password
-//! is derived on the unit *and* by `dev/ap-password.sh` so a sticker can be
+//! is derived on the unit *and* by `dev/ap-password` so a sticker can be
 //! printed before the unit is ever powered up, and the two must agree
 //! byte-for-byte. A plain software implementation of a standard algorithm is
 //! reproducible by `shasum -a 256`, runs on the host so the derivation is

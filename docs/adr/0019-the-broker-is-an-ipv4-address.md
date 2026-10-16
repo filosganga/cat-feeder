@@ -8,4 +8,4 @@ connection it can never make. `HOST_LEN` is 64 to leave room for DNS later.
 ## Consequences
 
 The broker's machine needs a DHCP reservation. If its address moves, every
-unit must be re-provisioned (`provision.sh --host`, or the admin page).
+unit must be re-provisioned (`dev/provision --host`, or the admin page).

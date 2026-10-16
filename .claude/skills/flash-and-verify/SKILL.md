@@ -15,16 +15,16 @@ log line appears.
 they fail loudly on the mistakes that otherwise cost a whole run.
 
 ```sh
-./dev/flash.sh                        # build, flash, capture 45 s
-./dev/flash.sh --seconds 90           # ...capture 90 s instead
-./dev/flash.sh --board zero           # ...a Zero rather than the dev kit
-./dev/capture.sh --seconds 60 --filter 'feed:|switch:'   # listen: no reflash, no reset
-./dev/capture.sh --reset              # ...or reset, to capture a boot
+./dev/flash                        # build, flash, capture 45 s
+./dev/flash --seconds 90           # ...capture 90 s instead
+./dev/flash --board zero           # ...a Zero rather than the dev kit
+./dev/capture --seconds 60 --filter 'feed:|switch:'   # listen: no reflash, no reset
+./dev/capture --reset              # ...or reset, to capture a boot
 ```
 
 **Pass the flags, not an environment prefix.** Every setting these scripts take
 has one — `--board`, `--port`, `--host` — and it wins over the matching
-variable. `BOARD=zero ./dev/flash.sh` still works, but it changes the start of
+variable. `BOARD=zero ./dev/flash` still works, but it changes the start of
 the command line, which is what a permission rule in `.claude/settings.json`
 matches on, so the allow-rule for the script no longer covers it.
 
@@ -94,8 +94,8 @@ scripts are already bounded and non-interactive, so they are safe to call
 directly:
 
 ```sh
-./dev/flash.sh --seconds 60
-./dev/capture.sh --seconds 30 --filter 'mqtt:'
+./dev/flash --seconds 60
+./dev/capture --seconds 30 --filter 'mqtt:'
 ```
 
 Captures that need a button pressed at the right moment cannot be automated.

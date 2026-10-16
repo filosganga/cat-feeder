@@ -81,7 +81,7 @@ hole, BOOT through a hole, or both on a small board cabled to the perfboard's
 
 [**docs/hardware.md**](docs/hardware.md) is the builder's guide: the cable
 pinout, the power path, the perfboard, the safety warnings, and the beep test
-to run before first power. Run `./dev/pcb-check.sh` after any change to the
+to run before first power. Run `./dev/pcb-check` after any change to the
 layout and before soldering.
 
 ## Flashing
@@ -110,11 +110,11 @@ never in the binary.
 **Flash**, matching the build to the board in your hand:
 
 ```sh
-./dev/flash.sh --board zero
-./dev/flash.sh --board zero --port /dev/cu.usbmodemXXXX
+./dev/flash --board zero
+./dev/flash --board zero --port /dev/cu.usbmodemXXXX
 ```
 
-`./dev/flash.sh` builds, flashes and captures the console for 45 s. A Zero
+`./dev/flash` builds, flashes and captures the console for 45 s. A Zero
 binary on a dev kit, or the reverse, flashes fine and then prints nothing, so
 check `--board`. `cargo run --no-default-features --features board-zero` is the
 same build with an interactive monitor.
@@ -125,22 +125,22 @@ The unit's id is the last three bytes of its MAC, printed at boot
 **Print a label** for the outside of the feeder, with the unit plugged in:
 
 ```sh
-./dev/label.sh                 # reads the id from the connected board
-./dev/label.sh a1b2c3 d4e5f6   # or name the ids
+./dev/label                 # reads the id from the connected board
+./dev/label a1b2c3 d4e5f6   # or name the ids
 ```
 
 It opens a page of 50 × 30 mm labels with the setup network's name, its
 password and a QR code that joins it. It needs `qrencode`. The page holds the
 passwords in the clear, so it goes to a temporary file. **The label is the
 only way to learn a unit's password** short of a serial cable — print it
-before the unit goes into its feeder. `./dev/ap-password.sh <id>` prints
+before the unit goes into its feeder. `./dev/ap-password <id>` prints
 the same thing as text.
 
 **Updating a unit that is already in its feeder** goes over the network, once
 it has been flashed over USB with a version that supports it:
 
 ```sh
-./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero
+./dev/ota --address 192.168.1.123 --id a1b2c3 --board zero
 ```
 
 `--address` is the unit's own IP: its device page in Home Assistant links to
@@ -169,11 +169,11 @@ A unit with no configuration raises its own Wi-Fi network and waits.
    where its admin page will be, and the unit reboots onto your network and
    appears in Home Assistant.
 
-With a USB cable to hand, `./dev/provision.sh` does the same without the setup
+With a USB cable to hand, `./dev/provision` does the same without the setup
 network: fill in Wi-Fi and the broker in `cfg.toml`, then
 
 ```sh
-./dev/provision.sh --host 192.168.1.10 --user <name> --password-file <path>
+./dev/provision --host 192.168.1.10 --user <name> --password-file <path>
 ```
 
 The setup network stays up until someone configures it; there is no timeout.
@@ -306,7 +306,7 @@ recovers a momentary stall; a real blockage needs a hand.
 ### Resetting Wi-Fi
 
 **Hold BOOT for five seconds** while the unit runs — through a hole in the
-feeder if you made one, otherwise with the feeder open; `./dev/provision.sh`
+feeder if you made one, otherwise with the feeder open; `./dev/provision`
 over USB is the other way. It forgets the Wi-Fi and broker settings and reboots into setup mode;
 **the meals, the calibration, the timezone and the pause are kept.** The LED
 flashes fast blue while it counts; let go early and nothing changes.
@@ -342,7 +342,7 @@ is feeding.
 | `store: no network in the record (calibration kept), going to setup` | the Wi-Fi was reset; set it up again |
 
 The serial console says what the unit is doing at every step:
-`./dev/capture.sh` listens without reflashing or resetting the unit;
+`./dev/capture` listens without reflashing or resetting the unit;
 `--reset` captures a boot instead.
 
 ## For developers

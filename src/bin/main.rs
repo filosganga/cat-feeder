@@ -298,7 +298,7 @@ async fn main(spawner: Spawner) -> ! {
 ///
 /// [`Boot::Setup`] means setup mode. There is deliberately **no build-time
 /// fallback** any more: credentials compiled into the binary were what roadmap
-/// step 9 set out to remove, and `dev/provision.sh` writes a record over USB
+/// step 9 set out to remove, and `dev/provision` writes a record over USB
 /// without a compiler — so an unconfigured board is never stranded. It either
 /// gets a record from the host or asks for one over its own network.
 ///

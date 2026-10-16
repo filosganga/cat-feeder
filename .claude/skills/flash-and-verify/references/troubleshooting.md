@@ -53,10 +53,10 @@ for the wrong board produces this exact symptom on a perfectly good one. A
 dev-kit build on a Zero compiles, flashes and runs, and prints into a UART
 nobody is listening to.
 
-`./dev/flash.sh` builds the dev kit unless told otherwise, so on a Zero:
+`./dev/flash` builds the dev kit unless told otherwise, so on a Zero:
 
 ```sh
-./dev/flash.sh --board zero --port /dev/cu.usbmodemXXXX
+./dev/flash --board zero --port /dev/cu.usbmodemXXXX
 ```
 
 Both halves matter and they fail the same way. The boards enumerate as different
@@ -164,7 +164,7 @@ This cost real time once. The sequence was:
 
 ```sh
 espflash erase-region 0x9000 0x1000     # record gone...
-./dev/flash.sh                          # ...and back again
+./dev/flash                             # ...and back again
 ```
 
 The erase worked. The reset then booted the *old* firmware, which still had
@@ -188,7 +188,7 @@ two together. `FDR2` written over `FDR1` becomes `FDR0`, and the firmware
 reports `store: no record yet` — which reads as the write having failed rather
 than as corruption.
 
-`dev/provision.sh` erases the sector first, which is why that step is in the
+`dev/provision` erases the sector first, which is why that step is in the
 script and must not be tidied away as redundant.
 
 ## The board resets

@@ -83,7 +83,7 @@ pub fn ap_ssid(device_id: &str) -> String<AP_SSID_LEN> {
 /// home Wi-Fi password and it never leaves the unit, so it is the only
 /// build-time value that survives this feature.
 ///
-/// Reproduced by `dev/ap-password.sh` so stickers can be printed before a unit
+/// Reproduced by `dev/ap-password` so stickers can be printed before a unit
 /// is first powered on. Both sides must agree, which is why this is plain
 /// SHA-256 over `<secret>:<device id>` and nothing more inventive.
 pub fn ap_password(secret: &str, device_id: &str) -> String<AP_PASSWORD_LEN> {
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn the_password_is_stable() {
-        // The unit and dev/ap-password.sh derive this independently, so a
+        // The unit and dev/ap-password derive this independently, so a
         // change here silently invalidates every sticker already printed.
         //
         // These values come from a separate Python implementation of the same

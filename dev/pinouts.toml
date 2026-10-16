@@ -1,5 +1,5 @@
 # The real pin order of every pin row on the perfboard, read off each part's
-# silkscreen — not off the drawing. `dev/pcb-check.sh` compares each header in
+# silkscreen — not off the drawing. `dev/pcb-check` compares each header in
 # pcb.diy against its entry here.
 #
 # This file exists because a drawing can be perfectly self-consistent and

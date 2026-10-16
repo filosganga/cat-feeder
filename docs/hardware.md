@@ -332,7 +332,7 @@ newer ones (V5, V6) want 0.55–0.63 × VDD and are comfortable. With an older
 part, a 1N4148 in series with the LED's 5 V puts it at about 4.0 V and its
 threshold at about 2.8 V.
 
-## Before soldering: `./dev/pcb-check.sh`
+## Before soldering: `./dev/pcb-check`
 
 Run it after any edit to `pcb.diy`. It reads the drawing and fails on:
 
@@ -345,7 +345,7 @@ Run it after any edit to `pcb.diy`. It reads the drawing and fails on:
 - a GPIO wired other than where `src/board.rs` drives it;
 - a label on the wrong pin.
 
-`./dev/pcb-render.sh` draws what it reads to `target/pcb.svg`, each net named
+`./dev/pcb-render` draws what it reads to `target/pcb.svg`, each net named
 by the netlist, for a look without opening DIY Layout Creator. To solder from:
 `--side solder` draws the bottom as the board is held to solder it, mirrored,
 and `--true-size` prints at 100% with the holes 2.54 mm apart.
@@ -392,7 +392,7 @@ Then, on USB alone:
 
 1. About 4.7 V across C1.
 2. 3.3 V on the Zero's `3V3`.
-3. `./dev/flash.sh --board zero` shows `switch: watching GPIO2`,
+3. `./dev/flash --board zero` shows `switch: watching GPIO2`,
    the RTC answering, and the LED's red-green-blue sweep.
 
 Before the unit goes into its feeder, **check the motor's direction** with a

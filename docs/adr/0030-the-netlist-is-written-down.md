@@ -2,7 +2,7 @@
 
 `dev/netlist.toml` says what connects to what on the perfboard, net by net.
 `pcb.diy` only says where the parts sit and how the copper runs, and
-`dev/pcb-check.sh` fails on any difference between the two: a net split, two
+`dev/pcb-check` fails on any difference between the two: a net split, two
 nets joined, a pin wired that no net has. A net that reaches a GPIO names the
 `src/board.rs` macro that drives it, and the check holds both to the same pin.
 
@@ -23,7 +23,7 @@ new dependency.
 
 What follows. A wiring change starts in the netlist and then in the drawing.
 Anything made from the netlist, such as the KiCad netlist and module
-footprints `dev/kicad-netlist.sh` writes for other tools, is generated and
+footprints `dev/kicad-netlist` writes for other tools, is generated and
 never edited; a change made there is lost on the next export.
 The netlist cannot be checked against anything but the firmware's pins: a net
 it should not contain is a mistake only a reader catches.

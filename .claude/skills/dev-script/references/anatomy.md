@@ -45,8 +45,8 @@ done
 SECONDS_TO_CAPTURE="${SECONDS_TO_CAPTURE:-45}"
 ```
 
-A list-valued positional — topics in `watch.sh`, device ids in
-`ap-password.sh` — collects into an array instead, and supports `--` so a value
+A list-valued positional — topics in `watch`, device ids in
+`ap-password` — collects into an array instead, and supports `--` so a value
 that starts with `-` can still be passed:
 
 ```bash
@@ -86,7 +86,7 @@ variable. A new per-run setting does not need one either.
 
 | Function | Does |
 |---|---|
-| `prog` | the script's name without `.sh`, for messages |
+| `prog` | the script's name, for messages |
 | `die "msg"` | print to stderr, exit 2 |
 | `need_value "$1" "${2:-}"` | die unless the flag was given a value |
 | `usage` | print the calling script's header comment (uses `SCRIPT`) |
@@ -97,7 +97,7 @@ variable. A new per-run setting does not need one either.
 loudly if it is not.
 
 Use `resolve_port` when an empty answer is a legitimate outcome the script
-handles itself — `ap-password.sh` only needs a port if no device id was named,
+handles itself — `ap-password` only needs a port if no device id was named,
 and its error mentions both ways out. Use `require_port` otherwise.
 
 ## Resolving a setting
@@ -119,7 +119,7 @@ unresolved one.
 **The rule: name a flag here only if it has an environment variable; forward
 everything else.**
 
-Forwarding is the default, and it is why `provision.sh` needs no change when
+Forwarding is the default, and it is why `provision` needs no change when
 `mkrecord` grows an option — a typo comes back as `mkrecord`'s own usage rather
 than as a guess from the shell:
 
@@ -138,20 +138,20 @@ Expand a possibly-empty array as `${ARR[@]+"${ARR[@]}"}`; a bare
 `"${ARR[@]}"` is an unbound-variable error under `set -u` on bash 3.2, which is
 still what `/bin/bash` is on macOS.
 
-The exceptions earn their place one at a time. `provision.sh` names `--port`,
+The exceptions earn their place one at a time. `provision` names `--port`,
 `--host`, `--user`, `--password`, `--password-file` and `--nvs-offset` because
 each has an `ESPFLASH_PORT` / `MQTT_*` / `NVS_OFFSET` variable behind it, and a
 forwarded flag would reach `mkrecord` intact while skipping that layer
-entirely — so `MQTT_USER=x ./dev/provision.sh` would silently do nothing.
+entirely — so `MQTT_USER=x ./dev/provision` would silently do nothing.
 Everything else, `--detent-ms` and `--portion-scale` included, is forwarded.
 
-Naming a flag costs something, so do not do it for free: `provision.sh` parses
+Naming a flag costs something, so do not do it for free: `provision` parses
 `--password` and `--password-file` and therefore has to enforce that they are
 alternatives itself, because `mkrecord`'s own check never sees a duplicate that
 the shell already collapsed.
 
 Reject a forwarded option that would break the script's own contract —
-`provision.sh` refuses `--out`, because the record is a temporary file it
+`provision` refuses `--out`, because the record is a temporary file it
 deletes on the way out, and redirecting it would leave the Wi-Fi password
 somewhere nobody cleans up.
 
@@ -177,14 +177,14 @@ exec "$DEV_DIR/_render.sh" "$LOG" "$FILTER"
 
 ## A complete script
 
-`dev/capture.sh` is the shortest one that uses every convention: header comment
+`dev/capture` is the shortest one that uses every convention: header comment
 as usage, `DEV_DIR` before the `cd`, a parse loop with preserved positionals,
 `require_port`, a bounded capture, and `_render.sh` at the end. Read it before
 writing a new one.
 
 ## Checklist
 
-- [ ] `#!/usr/bin/env bash`, `set -euo pipefail`, `chmod +x`.
+- [ ] Named `dev/<name>`, no extension; `#!/usr/bin/env bash`, `set -euo pipefail`, `chmod +x`.
 - [ ] Header comment shows the common case and every flag, then one blank line.
 - [ ] `DEV_DIR` captured before `cd "$DEV_DIR/.."`, then `_common.sh` sourced.
 - [ ] Every setting has a flag; the flag wins over the variable.

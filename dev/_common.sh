@@ -12,16 +12,16 @@
 # The environment came first and stays, because a port or a broker address is
 # usually the same all day and `export` says so once. But an env-var prefix
 # changes the *start* of the command line, which is what a permission rule in
-# .claude/settings.json matches on: `BOARD=zero ./dev/flash.sh` is not
-# `./dev/flash.sh`, so an allow-rule for the script does not cover it. A flag
+# .claude/settings.json matches on: `BOARD=zero ./dev/flash` is not
+# `./dev/flash`, so an allow-rule for the script does not cover it. A flag
 # leaves the command starting with the script's own path, so one rule covers
 # every invocation — and it is less to type by hand.
 #
 # So: every environment variable here also has a flag, and the flag wins.
 
-# The script's own name, without the .sh, so every message from these scripts
-# reads the same: "flash: ...", never "flash.sh: ...".
-prog() { basename "$0" .sh; }
+# The script's own name, so every message from these scripts reads the same:
+# "flash: ...".
+prog() { basename "$0"; }
 
 die() {
   echo "$*" >&2

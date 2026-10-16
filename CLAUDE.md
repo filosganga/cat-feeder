@@ -116,7 +116,7 @@ never rewrites, so configuration survives a reflash; two 1.9 MB app slots and
 `otadata` (ADR-0022). Every USB flash passes `--erase-data-parts ota`, or the
 bootloader boots the slot `otadata` names, not the one just written. The
 bootloader is ours, with rollback (ADR-0024): `bootloader/bootloader.bin`,
-rebuilt only by `dev/bootloader.sh`.
+rebuilt only by `dev/bootloader`.
 (esp-radio's `NVS` symbol is an unrelated RAM array.)
 
 | Offset | Magic | Holds |
@@ -148,7 +148,7 @@ both serve over `http.rs`; the pure halves are `provisioning.rs` and
 - SSID `cat-feeder-<id>`, password `base32(sha256("<ap_secret>:<id>"))` as
   `XXXX-XXXX-XXXX` (Crockford), address 192.168.4.1 from
   `provisioning::AP_ADDR_OCTETS` — the one constant the socket, the pages and
-  a test all use. `dev/ap-password.sh` must agree byte for byte.
+  a test all use. `dev/ap-password` must agree byte for byte.
 - Setup runs AP+STA and **tests before it saves** (ADR-0025): `/save` starts a
   trial (join, lease, `mqtt::probe`), the page polls `/status`; only a joined
   Wi-Fi is saved, a broker failure offers `/keep`. One `radio` future owns the
@@ -228,7 +228,7 @@ The unit's only output is the LED and its only physical control is BOOT
 ## Gotchas
 
 - `espflash write-bin` does not erase, and NOR flash only clears bits:
-  `erase-region` first (`provision.sh` does). Otherwise records AND together.
+  `erase-region` first (`dev/provision` does). Otherwise records AND together.
 - `AccessPointConfig::default()` is an **open** network; set `Wpa2Personal`.
   Applying the config starts Wi-Fi; there is no separate start call.
 - `edge-dhcp` is a codec, not a server. `Server::new` defaults its pool to
@@ -252,12 +252,12 @@ between releases.
 
 ```sh
 cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"  # pure logic
-./dev/flash.sh --board zero [--seconds n] [--filter re]  # build, flash, capture
-./dev/capture.sh [--reset]                # listen without reflashing; --reset: from boot
-./dev/provision.sh [--host ip --user u --password-file -] [--detent-ms n] [--portion-scale p]
-./dev/soak.sh --hours n && ./dev/soak-report.sh
-./dev/pcb-check.sh                        # after every pcb.diy edit, against dev/netlist.toml; pcb-review skill
-docker compose up -d && ./dev/watch.sh    # local broker + HA; see dev/README.md
+./dev/flash --board zero [--seconds n] [--filter re]  # build, flash, capture
+./dev/capture [--reset]                # listen without reflashing; --reset: from boot
+./dev/provision [--host ip --user u --password-file -] [--detent-ms n] [--portion-scale p]
+./dev/soak --hours n && ./dev/soak-report
+./dev/pcb-check                        # after every pcb.diy edit, against dev/netlist.toml; pcb-review skill
+docker compose up -d && ./dev/watch    # local broker + HA; see dev/README.md
 ```
 
 The explicit test target is required: `.cargo/config.toml` points cargo at
@@ -342,7 +342,7 @@ mqtt.rs setup.rs http.rs web.rs
 firmware.rs      the OTA slots and otadata: idle slot, write, select, confirm
 wiring.rs        the Bus static: every shared handle and who writes it
 config.rs        Config from the flash record; `dhcp_config`, shared with setup
-examples/mkrecord.rs  host-only record builder for provision.sh
+examples/mkrecord.rs  host-only record builder for dev/provision
 homeassistant/packages/cat_feeder.yaml  the HA half: time, pause, copy schedule
 pcb.diy          the perfboard (component side); its nets are dev/netlist.toml (ADR-0030)
 ```

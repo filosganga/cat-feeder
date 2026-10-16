@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Checks the perfboard drawing before anything is soldered or powered.
 #
-#   ./dev/pcb-check.sh                        # pcb.diy against dev/pinouts.toml
-#   ./dev/pcb-check.sh --all                  # ...and list signal-to-signal neighbours too
-#   ./dev/pcb-check.sh --layout other.diy     # another drawing
-#   ./dev/pcb-check.sh --pinouts parts.toml   # another set of part pinouts
-#   ./dev/pcb-check.sh --netlist nets.toml    # another statement of the design
+#   ./dev/pcb-check                        # pcb.diy against dev/pinouts.toml
+#   ./dev/pcb-check --all                  # ...and list signal-to-signal neighbours too
+#   ./dev/pcb-check --layout other.diy     # another drawing
+#   ./dev/pcb-check --pinouts parts.toml   # another set of part pinouts
+#   ./dev/pcb-check --netlist nets.toml    # another statement of the design
 #
 # Reports each header's pin names against the part's own silkscreen order
 # (dev/pinouts.toml), supplies joined to ground or to each other, the drawing's

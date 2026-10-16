@@ -18,7 +18,7 @@ phone that rejoins — by itself, within seconds, on the test — lands.
 
 The SoftAP stays the one way in. Improv only carries an SSID and password, not
 the broker this unit also needs; over BLE it needs esp-radio's `ble` and `coex`
-features and a GATT host stack, over serial it duplicates `dev/provision.sh`,
+features and a GATT host stack, over serial it duplicates `dev/provision`,
 and a generic ESP Web Tools page cannot work when every build has its own
 `ap_secret`. Espressif's BLE provisioning needs their app; Web Bluetooth has no
 Safari. WPS, Wi-Fi Easy Connect (DPP) and SmartConfig have no esp-radio API.

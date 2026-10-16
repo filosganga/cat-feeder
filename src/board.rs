@@ -40,11 +40,11 @@
 //! `esp-println` always fails first and such a guard could never run; it would
 //! be unreachable code claiming to catch something it cannot.
 //!
-//! The serial port changes too, and the scripts take it from the environment:
+//! The serial port changes too, and the scripts take it as a flag:
 //!
 //! ```sh
 //! espflash list-ports --list-all-ports
-//! ESPFLASH_PORT=/dev/cu.usbmodemXXXX ./dev/flash.sh
+//! ./dev/flash --port /dev/cu.usbmodemXXXX
 //! ```
 //!
 //! ## Which pins are usable

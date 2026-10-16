@@ -3,7 +3,7 @@
 Feeders differ (one known variant takes ~1.9 s between detents, another
 ~5.3 s), but one binary must drive them all, so timing cannot be a compile-time
 constant or a `cfg.toml` value. It lives in the unit's flash record, set by
-`provision.sh --detent-ms`, the knob, or the admin page's *Run calibration*.
+`dev/provision --detent-ms`, the knob, or the admin page's *Run calibration*.
 
 Only the **detent interval** is measured; everything else is derived:
 

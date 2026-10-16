@@ -41,7 +41,7 @@
 //!
 //! The password is on the console and the sticker and nowhere else on the
 //! unit: a unit that has raised a network with a derived password can only say
-//! so over a serial cable, which is why `dev/ap-password.sh` exists.
+//! so over a serial cable, which is why `dev/ap-password` exists.
 
 use core::fmt::Write as _;
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -233,7 +233,7 @@ pub async fn run(spawner: Spawner, wifi: WIFI<'static>, id: &str, mut store: Sto
 
     // Printed in full, on purpose. A unit in setup mode has few ways to tell
     // anyone its password, and the console is the one that exists before the
-    // network does; `dev/ap-password.sh <id>` says it off the device entirely,
+    // network does; `dev/ap-password <id>` says it off the device entirely,
     // for stickers.
     info!("setup: raising {ssid}");
     info!("setup: password {password}");

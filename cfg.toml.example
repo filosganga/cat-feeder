@@ -4,7 +4,7 @@
 #
 # Read by two different things, and the difference matters:
 #
-#   ./dev/provision.sh    writes these values into a board's flash, once.
+#   ./dev/provision       writes these values into a board's flash, once.
 #                         This is how a unit is configured.
 #
 #   build.rs              reads `ap_secret` ONLY. No credential below this
@@ -12,7 +12,7 @@
 #
 # A board with no record raises its own Wi-Fi network and asks to be set up; it
 # does not fall back to anything. Changing a credential here means re-running
-# ./dev/provision.sh, not a rebuild.
+# ./dev/provision, not a rebuild.
 
 wifi_ssid     = "your-wifi"
 wifi_password = "your-wifi-password"
@@ -21,7 +21,7 @@ wifi_password = "your-wifi-password"
 # `Ipv4Addr::from_str` and there is no resolver on the device, so a name would
 # be stored, survive the reboot, and leave the unit retrying forever.
 #
-# `auto` means "this machine's LAN address", worked out by ./dev/provision.sh
+# `auto` means "this machine's LAN address", worked out by ./dev/provision
 # when it builds the record. That is almost always what you want for the local
 # dev stack, because the Mac's address comes from DHCP and moves — and when it
 # moves, every unit provisioned before it keeps the old one and sits flashing
@@ -31,8 +31,8 @@ wifi_password = "your-wifi-password"
 # Override per unit without editing this file — and the credentials too, so a
 # second broker needs no second config file:
 #
-#   ./dev/provision.sh --host <broker>
-#   ./dev/provision.sh --host <broker> --user <name> --password-file <path>
+#   ./dev/provision --host <broker>
+#   ./dev/provision --host <broker> --user <name> --password-file <path>
 #
 # For anything deployed, give the broker's machine a DHCP reservation and write
 # that address here. `auto` is a development convenience, not a fix for an
@@ -53,20 +53,20 @@ mqtt_password = "feeder-dev"
 # read the setup session, which is the one where the Wi-Fi password above gets
 # typed in.
 #
-# `./dev/ap-password.sh <device id>` prints it, for stickers.
+# `./dev/ap-password <device id>` prints it, for stickers.
 #
 # Changing it invalidates every sticker already printed. It is not a secret that
 # protects your network; it only protects the setup window.
 ap_secret     = "change-me"
 
 # ---------------------------------------------------------------------------
-# Per-unit mechanics. Used only by ./dev/provision.sh, never compiled.
+# Per-unit mechanics. Used only by ./dev/provision, never compiled.
 # ---------------------------------------------------------------------------
 #
 # These are defaults. The three feeders are not all the same model, so measure
 # each one and override it on the command line rather than editing this file:
 #
-#   ./dev/provision.sh --detent-ms 900 --portion-scale 133
+#   ./dev/provision --detent-ms 900 --portion-scale 133
 #
 # detent_ms: milliseconds from one switch click to the next, under power. Read
 # it off the console timestamps during a four-portion feed. The minimum click

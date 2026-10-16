@@ -15,7 +15,7 @@ marks itself valid, it marks it aborted and boots the last valid slot.
 - **So the firmware's part is small:** mark itself valid on CONNACK, and on
   the broker timeout simply reset. A hang must reset too, which is the
   watchdog's job; a bootloader only acts on a reset.
-- **Built reproducibly** by `dev/bootloader.sh` in `espressif/idf:v6.0` with
+- **Built reproducibly** by `dev/bootloader` in `espressif/idf:v6.0` with
   `CONFIG_APP_REPRODUCIBLE_BUILD`, so the committed binary can be checked by
   rebuilding it. It is pinned rather than following espflash's releases.
 - **Written only over USB.** OTA never touches it, so it must be right before a

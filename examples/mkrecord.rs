@@ -1,4 +1,4 @@
-//! Builds a provisioning record on the host, for `dev/provision.sh` to flash.
+//! Builds a provisioning record on the host, for `dev/provision` to flash.
 //!
 //! ```sh
 //! cargo run --example mkrecord --target "$(rustc -vV | awk '/^host:/{print $2}')" \
@@ -6,7 +6,7 @@
 //! ```
 //!
 //! `--host` is spelled out because `cfg.toml` ships `mqtt_host = "auto"`, which
-//! only `dev/provision.sh` knows how to resolve — it means *the provisioning
+//! only `dev/provision` knows how to resolve — it means *the provisioning
 //! machine's* address. Run directly, `auto` is rejected rather than stored,
 //! since the firmware parses the field with `Ipv4Addr::from_str` and would
 //! retry a connection it can never make.
@@ -189,7 +189,7 @@ fn build(config: &toml::Table, args: &Args) -> Result<Record, String> {
     // And that the broker address is one the firmware can actually parse.
     // `mqtt.rs` reads it with `Ipv4Addr::from_str` and there is no resolver on
     // the device, so a hostname — or the literal `auto`, when this is run
-    // directly rather than through `provision.sh`, which resolves it — stores
+    // directly rather than through `dev/provision`, which resolves it — stores
     // fine, survives the reboot, and leaves a unit retrying a connection it can
     // never make. `is_usable` cannot catch it: the field is set, just useless.
     if record.mqtt_host.parse::<std::net::Ipv4Addr>().is_err() {
@@ -320,11 +320,11 @@ impl Args {
 /// First line rather than "everything but the trailing newline", for two
 /// reasons that both come from how these files are actually made:
 ///
-/// - `pass show mqtt/feeder` — the pipeline `dev/provision.sh` advertises —
+/// - `pass show mqtt/feeder` — the pipeline `dev/provision` advertises —
 ///   prints the password on line one and metadata beneath it. Taking the whole
 ///   input would store the metadata too, and the unit would be refused by the
 ///   broker with nothing on the console to say why.
-/// - `dev/watch.sh` reads the same file with shell `read`, which stops at the
+/// - `dev/watch` reads the same file with shell `read`, which stops at the
 ///   first newline. The two have to agree, or the pre-flight check and the
 ///   provisioning disagree about the password — and the check is the thing
 ///   that is supposed to catch a wrong one *before* it reaches a unit.

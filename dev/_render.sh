@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Renders a captured serial log. Used by flash.sh and capture.sh; not meant to
-# be called directly.
+# Renders a captured serial log. Used by dev/flash and dev/capture; not meant
+# to be called directly.
 #
 #   _render.sh <logfile> [filter-regex] [listening]
 #
-# `listening` means the capture did not reset the unit (capture.sh without
+# `listening` means the capture did not reset the unit (dev/capture without
 # --reset), so silence is a quiet unit, not a dead one or the wrong port.
 #
 # Strips colour codes, optionally filters, and annotates each line with the
@@ -43,7 +43,7 @@ fi
 
 if [ "$APP_LINES" -eq 0 ] && [ -n "$LISTENING" ]; then
   echo "--- the unit printed nothing while listening; it logs little when idle."
-  echo "    ./dev/capture.sh --reset shows a whole boot (and restarts the unit)."
+  echo "    ./dev/capture --reset shows a whole boot (and restarts the unit)."
   exit 0
 fi
 

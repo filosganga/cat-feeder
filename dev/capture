@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Capture the serial console without reflashing.
 #
-#   ./dev/capture.sh                             # 45 s of what the unit says now
-#   ./dev/capture.sh --reset                     # ...from a fresh boot instead
-#   ./dev/capture.sh --seconds 70 --filter 'feed:|switch:'
-#   ./dev/capture.sh --port /dev/cu.usbmodemXXXX
+#   ./dev/capture                             # 45 s of what the unit says now
+#   ./dev/capture --reset                     # ...from a fresh boot instead
+#   ./dev/capture --seconds 70 --filter 'feed:|switch:'
+#   ./dev/capture --port /dev/cu.usbmodemXXXX
 #
-# The first two are also positional, as they always were: `./dev/capture.sh 70
+# The first two are also positional, as they always were: `./dev/capture 70
 # 'feed:'` still works. --port wins over ESPFLASH_PORT; see dev/_common.sh.
 #
 # **By default it only listens**: the unit keeps running as it was, so a quiet
@@ -28,7 +28,7 @@
 # dev kit's CH343 bridge, opening the port moves DTR and RTS, which drive its
 # auto-reset circuit; if a plain capture resets a dev kit, that is why.
 #
-# Same output shape as dev/flash.sh: each line annotated with the gap since the
+# Same output shape as dev/flash: each line annotated with the gap since the
 # previous one.
 
 set -euo pipefail

@@ -69,7 +69,7 @@ So do not write it down. `cfg.toml` ships with
 mqtt_host = "auto"
 ```
 
-which `./dev/provision.sh` resolves to this machine's current address when it
+which `./dev/provision` resolves to this machine's current address when it
 builds the record — from the default route's interface, not a hardcoded `en0`.
 The value stored in flash is always a literal IPv4, because `mqtt.rs` parses it
 with `Ipv4Addr::from_str` and there is no resolver on the device.
@@ -77,15 +77,15 @@ with `Ipv4Addr::from_str` and there is no resolver on the device.
 Point one unit somewhere else without editing the file:
 
 ```sh
-./dev/provision.sh --host <broker>
+./dev/provision --host <broker>
 ```
 
 A broker that is not this stack usually wants different credentials too, and
 they need no second config file:
 
 ```sh
-./dev/provision.sh --host <broker> --user <name> --password-file <path>
-pass show mqtt/feeder | ./dev/provision.sh --host <broker> --password-file -
+./dev/provision --host <broker> --user <name> --password-file <path>
+pass show mqtt/feeder | ./dev/provision --host <broker> --password-file -
 ```
 
 `--password` exists as well, but it lands in `ps` and in shell history, so the
@@ -141,7 +141,7 @@ Then restart Home Assistant — `docker compose restart homeassistant` — and
 confirm the broker starts filling up, which takes at most a minute:
 
 ```sh
-./dev/watch.sh 'feeder/time' 'feeder/+/schedule/state'
+./dev/watch 'feeder/time' 'feeder/+/schedule/state'
 ```
 
 ```
@@ -184,7 +184,7 @@ Then restart Home Assistant and watch that broker. This needs no feeder, and
 takes credentials if its feeder user differs from the dev stack's:
 
 ```sh
-./dev/watch.sh --host <broker> --user <name> --password-file <path> \
+./dev/watch --host <broker> --user <name> --password-file <path> \
   'feeder/time' 'feeder/+/schedule/state'
 ```
 
@@ -218,7 +218,7 @@ rather than of the broker:
   schedule and the pause live in each unit's flash rather than the broker's;
   the units republish their discovery, state and schedule echo on reconnect.
 
-Each unit points at one broker, and changing it is a `./dev/provision.sh` run
+Each unit points at one broker, and changing it is a `./dev/provision` run
 rather than something that can happen by accident.
 
 What the package sets up:
@@ -275,9 +275,9 @@ Assistant fired at exactly its time, and the unit reported
 ## Everyday commands
 
 ```sh
-./dev/watch.sh                          # tail feeder/# and homeassistant/#
-./dev/watch.sh 'feeder/+/state'         # one filter instead
-./dev/watch.sh --host <broker>          # ...against another broker instead
+./dev/watch                             # tail feeder/# and homeassistant/#
+./dev/watch 'feeder/+/state'            # one filter instead
+./dev/watch --host <broker>             # ...against another broker instead
 
 docker compose logs -f mosquitto        # connects, disconnects, auth failures
 docker compose logs -f homeassistant
@@ -285,14 +285,14 @@ docker compose logs -f homeassistant
 docker compose down                     # stop, keep retained messages
 docker compose down -v                  # stop and wipe every retained message
 
-./dev/ap-password.sh a1b2c3             # a unit's setup/admin password
-./dev/label.sh a1b2c3 d4e5f6            # printable labels with a join-Wi-Fi QR
-./dev/pcb-check.sh                      # check pcb.diy before soldering; see the pcb-review skill
-./dev/pcb-render.sh                     # draw what the check sees: pcb.diy -> target/pcb.svg
-./dev/pcb-render.sh --side solder --true-size   # the bottom, mirrored, to print at 100% and solder from
-./dev/kicad-netlist.sh                  # dev/netlist.toml as a KiCad netlist -> target/kicad/
-./dev/ota.sh --address <ip> --id <id> --board zero   # build and send firmware over the network
-./dev/bootloader.sh                     # rebuild bootloader/bootloader.bin in Docker (ADR-0024); rarely
+./dev/ap-password a1b2c3                # a unit's setup/admin password
+./dev/label a1b2c3 d4e5f6               # printable labels with a join-Wi-Fi QR
+./dev/pcb-check                         # check pcb.diy before soldering; see the pcb-review skill
+./dev/pcb-render                        # draw what the check sees: pcb.diy -> target/pcb.svg
+./dev/pcb-render --side solder --true-size   # the bottom, mirrored, to print at 100% and solder from
+./dev/kicad-netlist                     # dev/netlist.toml as a KiCad netlist -> target/kicad/
+./dev/ota --address <ip> --id <id> --board zero   # build and send firmware over the network
+./dev/bootloader                        # rebuild bootloader/bootloader.bin in Docker (ADR-0024); rarely
 ```
 
 Publishing by hand, standing in for Home Assistant:
@@ -345,12 +345,12 @@ mqtt_password = "feeder-dev"
 when something does not connect:
 
 ```sh
-./dev/provision.sh     # writes these into the board's flash, once. Nothing compiled.
+./dev/provision     # writes these into the board's flash, once. Nothing compiled.
 ```
 
 A provisioned board reads them from flash on every boot and keeps them across
 reflashes — the console says `store: configured for ...`. Changing any of them
-is `./dev/provision.sh` again, with no rebuild.
+is `./dev/provision` again, with no rebuild.
 
 A board with **no** record does not fall back to anything: it says
 `store: no record yet, going to setup` and raises its own Wi-Fi network.
@@ -374,7 +374,7 @@ docker compose logs -f mosquitto
   incoming connections. Check that the Mac and the feeder are on the same
   subnet, and confirm the port is open with `nc -z <lan ip> 1883`.
 - **`New connection` then `not authorised`.** Credentials are wrong. They come
-  from flash, so fix `cfg.toml` and re-run `./dev/provision.sh` — a rebuild
+  from flash, so fix `cfg.toml` and re-run `./dev/provision` — a rebuild
   changes nothing.
 - **Connects and drops in a loop.** Two units are using the same client id, so
   each kicks the other off. The id derives from the MAC, so this means the

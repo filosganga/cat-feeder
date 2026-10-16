@@ -2,17 +2,17 @@
 # Printable labels for units: the setup network, its password, and a QR code
 # that joins it, so the feeder carries everything needed to get back into a unit.
 #
-#   ./dev/label.sh                    # read the id off the board that is plugged in
-#   ./dev/label.sh a1b2c3 d4e5f6 ...  # or name the ids, one label each
-#   ./dev/label.sh --port /dev/cu.usbmodemXXXX
-#   ./dev/label.sh --out labels.html  # somewhere other than a temporary file
+#   ./dev/label                    # read the id off the board that is plugged in
+#   ./dev/label a1b2c3 d4e5f6 ...  # or name the ids, one label each
+#   ./dev/label --port /dev/cu.usbmodemXXXX
+#   ./dev/label --out labels.html  # somewhere other than a temporary file
 #
 # --port wins over ESPFLASH_PORT; see dev/_common.sh.
 #
 # Writes one HTML page and opens it; print it from the browser at 100% scale.
 # Each label is 50 × 30 mm.
 #
-# The password comes from dev/ap-password.sh rather than being derived again
+# The password comes from dev/ap-password rather than being derived again
 # here, so the derivation still exists in exactly two places — that script and
 # `provisioning::ap_password` — and a label cannot disagree with the unit.
 #
@@ -58,7 +58,7 @@ fi
 # Same arguments, same meaning: ids if given, otherwise the board on --port.
 ap_args=()
 [ -n "$PORT_ARG" ] && ap_args+=(--port "$PORT_ARG")
-pairs=$("$DEV_DIR/ap-password.sh" ${ap_args[@]+"${ap_args[@]}"} ${ids[@]+"${ids[@]}"})
+pairs=$("$DEV_DIR/ap-password" ${ap_args[@]+"${ap_args[@]}"} ${ids[@]+"${ids[@]}"})
 
 if [ -z "$OUT" ]; then
   OUT="$(mktemp -t cat-feeder-labels).html"

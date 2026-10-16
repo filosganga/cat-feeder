@@ -322,7 +322,7 @@ Status: observed on the dev kit against the Docker broker, with `LogMotor`
 standing in for the DRV8833.
 
 Action: flash with credentials configured, and watch the console and the broker
-side by side. `./dev/watch.sh` tails the broker.
+side by side. `./dev/watch` tails the broker.
 
 Observed, from a cold boot:
 
@@ -391,7 +391,7 @@ broker.
 Then publish a manual feed and watch both sides:
 
 ```sh
-./dev/watch.sh &
+./dev/watch &
 docker compose exec -T mosquitto \
   mosquitto_pub -h localhost -u feeder -P feeder-dev -t 'feeder/<id>/feed' -m '2'
 ```
@@ -614,7 +614,7 @@ installed.
 it is still holding after a couple of minutes, Home Assistant is not publishing
 — check that its container is up and the publish-the-time automation is
 enabled, including its `mqtt` trigger on `feeder/time/request`.
-`./dev/soak-report.sh` calls this out for exactly that reason.
+`./dev/soak-report` calls this out for exactly that reason.
 
 **Read the offset on that line.** The firmware does not apply it — slots
 are local wall-clock times and the feeders share a house with the broker — so it
@@ -766,9 +766,9 @@ the moment the motor starts is the 220 µF capacitor, not the firmware. See
 Needed constantly while building setup mode, and the order matters:
 
 ```sh
-./dev/flash.sh 5                                    # 1. new firmware FIRST
+./dev/flash 5                                    # 1. new firmware FIRST
 espflash erase-region --port "$ESPFLASH_PORT" 0x9000 0x1000
-./dev/capture.sh --reset 15                         # 2. then look, from boot
+./dev/capture --reset 15                         # 2. then look, from boot
 ```
 
 **Flash before erasing, not after.** `erase-region` hard-resets the chip, so
@@ -777,7 +777,7 @@ first and flashing second gives the *old* firmware a window to write flash, and
 that is exactly how a supposedly-erased record came back. See
 [troubleshooting.md](troubleshooting.md).
 
-`./dev/provision.sh` puts a record back when you want the board feeding again.
+`./dev/provision` puts a record back when you want the board feeding again.
 
 
 Partly built, and **observed**. A provisioned board, on every boot including
@@ -805,10 +805,10 @@ and nothing in between.
 
 Configuration lives in the `nvs` partition and `espflash` rewrites only the app
 partition, so a provisioned unit keeps its credentials across every `cargo run`.
-A board that says `going to setup` twice after a `provision.sh` means the write
+A board that says `going to setup` twice after a `dev/provision` means the write
 is failing — check `store: nvs at ...` reports a partition at all.
 
-Cross-check the password against `./dev/ap-password.sh <id>`, which derives it
+Cross-check the password against `./dev/ap-password <id>`, which derives it
 independently: they must match exactly, or the sticker on the unit is wrong.
 
 The SSID appearing in a phone's Wi-Fi list is the whole of slice 1, and has been
@@ -1151,8 +1151,8 @@ so they have to be deliberate rather than a double-tap.
 
 ### Testing anything below `NoTime` needs care
 
-`flash.sh` and `capture.sh --reset` both **reset the board** when they open
-the serial port; plain `capture.sh` only listens. A reset drops clock trust, so the unit returns to `NoTime` and stays there
+`dev/flash` and `dev/capture --reset` both **reset the board** when they open
+the serial port; plain `dev/capture` only listens. A reset drops clock trust, so the unit returns to `NoTime` and stays there
 until Home Assistant's next once-a-minute publish — anywhere from 0 to 60
 seconds, and observed at 46 s in one run.
 
@@ -1216,7 +1216,7 @@ INFO (401) - watchdog: armed, 5 s
 `CoreUsbUart` is espflash resetting the chip; a power-up says `ChipPowerOn`.
 A watchdog reset resets the chip's own USB too, so on the Zero the monitor
 ends with `Broken pipe` at the moment it fires and the reason is never seen
-live; `./dev/capture.sh --reset` then shows a fresh boot.
+live; `./dev/capture --reset` then shows a fresh boot.
 
 To prove it, add a temporary task that waits 20 s and then spins
 (`loop { core::hint::spin_loop() }`) or panics, flash it, and watch the
@@ -1227,7 +1227,7 @@ connecting every 24–25 s (20 s plus the 5 s timeout). Remove the task after.
 
 Status: done and observed, on a Zero.
 
-Action: `./dev/ota.sh --address <ip> --id <id> --board zero`.
+Action: `./dev/ota --address <ip> --id <id> --board zero`.
 It answers `Updated. Restarting into the new firmware...`; the unit's side:
 
 ```
@@ -1250,9 +1250,9 @@ INFO (303) - firmware: 0.1.0 running Ota1, otadata selects Ota0 (Some(Aborted))
 ```
 
 **Do not reset the unit inside the confirm window** (`CONFIRM_SECS`):
-`flash.sh`, `capture.sh --reset`, `read-flash` and `write-bin` all reset it,
+`dev/flash`, `dev/capture --reset`, `read-flash` and `write-bin` all reset it,
 and a reset while the image is `PendingVerify` is what rolls it back. Plain
-`capture.sh` only listens, so it is safe, and shows the confirmation:
+`dev/capture` only listens, so it is safe, and shows the confirmation:
 
 ```
 INFO (5811) - firmware: reached the broker, image confirmed
@@ -1265,7 +1265,7 @@ selected, and `web: restarting` comes only after the turn ends. Send the feed
 after the unit logs `mqtt: subscribed` — commands are not retained, and one
 sent earlier is simply lost.
 
-`capture.sh` prints its filtered view only when it ends. A script that waits
+`dev/capture` prints its filtered view only when it ends. A script that waits
 on a line must poll the raw log it names (`cat-feeder-capture.*` under
 `$TMPDIR`), which is written live.
 

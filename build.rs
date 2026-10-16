@@ -27,14 +27,14 @@ fn is_embedded_target() -> bool {
 ///
 /// **One value, and deliberately only one.** Wi-Fi and broker credentials used
 /// to be compiled in from here; they are not any more. They reach a unit either
-/// through `dev/provision.sh`, which writes them straight into the `nvs`
+/// through `dev/provision`, which writes them straight into the `nvs`
 /// partition without a compiler, or through the setup form over the unit's own
 /// access point. A release binary therefore carries no network credentials at
 /// all — see `docs/adr/0004-credentials-come-from-flash-only.md`.
 ///
 /// `ap_secret` stays because it is not a credential: it salts the per-unit
 /// setup password, and the firmware has to derive the same string that
-/// `dev/ap-password.sh` prints on a sticker. There is nowhere else it could
+/// `dev/ap-password` prints on a sticker. There is nowhere else it could
 /// live that both sides can read.
 fn inject_config() {
     println!("cargo:rerun-if-changed=cfg.toml");

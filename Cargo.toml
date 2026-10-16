@@ -137,12 +137,12 @@ heapless   = "0.9"
 serde_json = "1"
 toml       = "1"
 
-# Builds a provisioning record for dev/provision.sh to flash.
+# Builds a provisioning record for dev/provision to flash.
 #
 # Host-only, and it needs `std`. A plain `cargo build` does not touch examples,
 # so the board build is unaffected; `--examples` or `--all-targets` against the
 # ESP32-C6 target will fail to find `std`, exactly as the host tests do in
-# reverse. Build it the way dev/provision.sh does:
+# reverse. Build it the way dev/provision does:
 #
 #   cargo run --example mkrecord --target "$(rustc -vV | awk '/^host:/{print $2}')"
 [[example]]

@@ -2,12 +2,12 @@
 //!
 //! [`Config`] comes from the record in flash and nowhere else. There is no
 //! build-time fallback: network credentials are not compiled into this binary,
-//! they are written to the `nvs` partition by `dev/provision.sh` or by the
+//! they are written to the `nvs` partition by `dev/provision` or by the
 //! setup form. See `docs/adr/0004-credentials-come-from-flash-only.md`.
 //!
 //! The one build-time value left is [`AP_SECRET`], which salts the setup
 //! network's password. It is not a credential for any network — it exists so
-//! the firmware and `dev/ap-password.sh` derive the same per-unit string, and
+//! the firmware and `dev/ap-password` derive the same per-unit string, and
 //! there is nowhere else both could read it from.
 
 use core::fmt::Write as _;

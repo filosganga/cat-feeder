@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Build the firmware and send it to a unit over the network (ADR-0022).
 #
-#   ./dev/ota.sh --address 192.168.1.123 --id a1b2c3 --board zero
-#   ./dev/ota.sh --address 192.168.1.123 --id a1b2c3          # a dev kit
+#   ./dev/ota --address 192.168.1.123 --id a1b2c3 --board zero
+#   ./dev/ota --address 192.168.1.123 --id a1b2c3          # a dev kit
 #
 # --address is the unit's own IP (its admin page), not the broker's: --host
 # means the broker in every other script. --id is the unit's id, from which
-# the admin password is derived exactly as dev/ap-password.sh derives it.
+# the admin password is derived exactly as dev/ap-password derives it.
 # --board wins over BOARD; see dev/_common.sh.
 #
-# --board must describe the unit, as for dev/flash.sh: the
+# --board must describe the unit, as for dev/flash: the
 # image is accepted whatever it was built for, and a dev-kit image on a Zero
 # boots with no console and no network — the bootloader then rolls it back
 # after CONFIRM_SECS (src/bin/main.rs), but that is a unit doing nothing.
@@ -21,13 +21,13 @@
 # image, which confirms itself once it reaches the broker; one that does not
 # within CONFIRM_SECS is rolled back by the bootloader (ADR-0024).
 #
-# Do not reset the unit until it has confirmed: dev/flash.sh,
-# dev/capture.sh --reset and every espflash command reset it, and a reset
+# Do not reset the unit until it has confirmed: dev/flash,
+# dev/capture --reset and every espflash command reset it, and a reset
 # before the confirmation is exactly what rolls the update back. Plain
-# dev/capture.sh only listens, so it is safe.
+# dev/capture only listens, so it is safe.
 #
 # A unit still on the old single-slot partition table answers that it has no
-# OTA slots: it needs one USB flash with dev/flash.sh first.
+# OTA slots: it needs one USB flash with dev/flash first.
 #
 # Release build: what a unit in a feeder should run.
 
@@ -66,7 +66,7 @@ case "$BOARD" in
   *) die "ota: --board must be 'devkit' or 'zero', not '$BOARD'" ;;
 esac
 
-PASSWORD=$("$DEV_DIR/ap-password.sh" "$ID" | awk '{print $2}')
+PASSWORD=$("$DEV_DIR/ap-password" "$ID" | awk '{print $2}')
 [ -n "$PASSWORD" ] || { echo "ota: could not derive the password for $ID" >&2; exit 1; }
 
 IMAGE=$(mktemp "${TMPDIR:-/tmp}/cat-feeder-ota.XXXXXX")
@@ -98,5 +98,5 @@ if ! curl --silent --show-error --fail-with-body --config "$CURL_CONFIG" \
   exit 1
 fi
 echo
-echo "Watch it come back: ./dev/watch.sh 'feeder/${ID}/#', or ./dev/capture.sh on USB"
+echo "Watch it come back: ./dev/watch 'feeder/${ID}/#', or ./dev/capture on USB"
 echo "(it listens; --reset before the new image confirms itself would roll it back)."

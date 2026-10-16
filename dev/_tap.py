@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Reads a serial port for a while without resetting what is on the other end.
-Used by capture.sh; not meant to be called directly.
+Used by dev/capture; not meant to be called directly.
 
     _tap.py <port> <seconds>
 

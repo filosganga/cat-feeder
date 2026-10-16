@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks a DIY Layout Creator perfboard drawing. Run it through pcb-check.sh.
+"""Checks a DIY Layout Creator perfboard drawing. Run it through dev/pcb-check.
 
 Reads the layout's XML and reports, in order:
 

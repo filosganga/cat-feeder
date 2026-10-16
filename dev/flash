@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Build, flash, and capture the serial console for a fixed window.
 #
-#   ./dev/flash.sh                          # flash, then capture 45 s
-#   ./dev/flash.sh --seconds 90             # flash, then capture 90 s
-#   ./dev/flash.sh --filter 'feed:|motor:'  # ...showing only matching lines
-#   ./dev/flash.sh --board zero             # ...a Zero rather than the dev kit
-#   ./dev/flash.sh --port /dev/cu.usbmodemXXXX
+#   ./dev/flash                          # flash, then capture 45 s
+#   ./dev/flash --seconds 90             # flash, then capture 90 s
+#   ./dev/flash --filter 'feed:|motor:'  # ...showing only matching lines
+#   ./dev/flash --board zero             # ...a Zero rather than the dev kit
+#   ./dev/flash --port /dev/cu.usbmodemXXXX
 #
-# The first two are also positional, as they always were: `./dev/flash.sh 90
+# The first two are also positional, as they always were: `./dev/flash 90
 # 'feed:'` still works.
 #
 # Each flag has a matching environment variable — BOARD, ESPFLASH_PORT — and the

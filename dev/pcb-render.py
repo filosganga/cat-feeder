@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draws a DIY Layout Creator perfboard as SVG. Run it through pcb-render.sh.
+"""Draws a DIY Layout Creator perfboard as SVG. Run it through dev/pcb-render.
 
 The picture is of what dev/pcb-check.py believes, not of what DIYLC draws: it
 reads the drawing with the check's own parser, so every hole is coloured by the

@@ -24,13 +24,13 @@
 //!
 //! | Offset in `nvs` | Record | Written by |
 //! |---|---|---|
-//! | `0x0000` | credentials and calibration, `FDR2` | `provision.sh`, setup mode, the admin page, the BOOT hold (`Record::without_network`) |
+//! | `0x0000` | credentials and calibration, `FDR2` | `dev/provision`, setup mode, the admin page, the BOOT hold (`Record::without_network`) |
 //! | `0x1000` | the schedule, `FDS1` | a schedule command, a `Meal n` entity, the admin page |
 //! | `0x2000` | the timezone, `FDZ1` | the admin page |
 //! | `0x3000` | the pause, `FDP1` | the admin page, a live `feeder/<id>/paused` |
 //!
 //! A sector each, so writing one never rewrites another, and no format has to
-//! change for another. It also means `provision.sh`, which erases
+//! change for another. It also means `dev/provision`, which erases
 //! only the first sector before writing, keeps a unit's meals and pause across
 //! a re-provision — as does the boot-button reset, which is for re-entering
 //! Wi-Fi details, not for forgetting the cats' schedule. The factory reset,

@@ -21,7 +21,7 @@ feeder is not decided**; for now both are on the board only.
 - **BOOT is reached only by opening the feeder**, unless a hole or a button in
   parallel (the Zero has BOOT on a back pad) brings it outside. It is needed
   only to forget the network of a unit that cannot reach it; until then such a
-  unit is opened up, or re-provisioned over USB (`dev/provision.sh`). A unit
+  unit is opened up, or re-provisioned over USB (`dev/provision`). A unit
   that is online has the network form and the factory reset on its admin page.
 - The USB-C socket and the RTC's coin cell are reached by opening the feeder.
 - The label goes on the outside of the feeder.

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Tails everything the firmware and Home Assistant say to each other.
 #
-#   ./dev/watch.sh                  # feeder/# and homeassistant/#
-#   ./dev/watch.sh 'feeder/#'       # just one filter
+#   ./dev/watch                  # feeder/# and homeassistant/#
+#   ./dev/watch 'feeder/#'       # just one filter
 #
 # Against another broker — a production Home Assistant, say — name it, and give
 # it credentials too if that broker's feeder user differs from the dev stack's:
 #
-#   ./dev/watch.sh --host <broker> 'feeder/time'
-#   ./dev/watch.sh --host <broker> --user <name> --password-file <path> 'feeder/#'
+#   ./dev/watch --host <broker> 'feeder/time'
+#   ./dev/watch --host <broker> --user <name> --password-file <path> 'feeder/#'
 #
 # --password takes the secret inline and lands in `ps` and shell history;
 # --password-file reads it from a file, or from stdin when given `-`. They are
-# alternatives, and the spelling matches dev/provision.sh so the same password
+# alternatives, and the spelling matches dev/provision so the same password
 # reaches the check and the provisioning the same way.
 #
 # MQTT_HOST, MQTT_USER and MQTT_PASS still work; the flags win over them. See
@@ -34,7 +34,7 @@ PASS_FILE_ARG=""
 PASS_SEEN=""
 topics=()
 
-# Once, by one spelling — the same rule provision.sh enforces, for the same
+# Once, by one spelling — the same rule dev/provision enforces, for the same
 # reason: a silently-ignored password reads as an authentication failure on the
 # broker rather than as a mistake on the command line.
 pass_once() {
@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
     --user=*) USER_ARG="${1#*=}"; shift ;;
     --password|--pass) pass_once --password; need_value "$1" "${2:-}"; PASS_ARG="$2"; shift 2 ;;
     --password=*|--pass=*) pass_once --password; PASS_ARG="${1#*=}"; shift ;;
-    # Same spelling as provision.sh, because this is the command that checks a
+    # Same spelling as dev/provision, because this is the command that checks a
     # deployed broker before a unit is pointed at it, and having to retype the
     # password differently for the check and for the provisioning is how one of
     # the two ends up wrong.
@@ -88,13 +88,13 @@ fi
 
 MQTT_HOST="${HOST_ARG:-${MQTT_HOST:-}}"
 
-# Flag, then environment, then cfg.toml — the same chain `provision.sh` uses,
+# Flag, then environment, then cfg.toml — the same chain `dev/provision` uses,
 # and the reason this command can be called a credential test at all. It is
 # documented as the check that catches a wrong password *before* a unit is
 # pointed at a broker, which only holds if it authenticates the way the unit
 # will. Falling straight to the dev-stack literals would have meant
-# `./dev/watch.sh --host <broker>` quietly trying feeder/feeder-dev while
-# `./dev/provision.sh --host <broker>` in the same shell used cfg.toml's.
+# `./dev/watch --host <broker>` quietly trying feeder/feeder-dev while
+# `./dev/provision --host <broker>` in the same shell used cfg.toml's.
 #
 # The literals stay as the last resort, which is what the local stack gets when
 # there is no cfg.toml yet.

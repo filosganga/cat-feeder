@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Capture the serial console for hours, to a file you read the next day.
 #
-#   ./dev/soak.sh                # 12 hours
-#   ./dev/soak.sh --hours 3      # 3 hours
-#   ./dev/soak.sh --port /dev/cu.usbmodemXXXX
+#   ./dev/soak                # 12 hours
+#   ./dev/soak --hours 3      # 3 hours
+#   ./dev/soak --port /dev/cu.usbmodemXXXX
 #
-# The hours are also positional, as they always were: `./dev/soak.sh 3` still
+# The hours are also positional, as they always were: `./dev/soak 3` still
 # works. --port wins over ESPFLASH_PORT; see dev/_common.sh.
 #
 # Everything else in dev/ answers "did this change work", in a couple of
@@ -63,7 +63,7 @@ log: ${LOG}
 The board resets when the monitor attaches, so this starts from boot.
 Leave it. Read it in the morning with:
 
-  ./dev/soak-report.sh ${LOG}
+  ./dev/soak-report ${LOG}
 
 EOS
 

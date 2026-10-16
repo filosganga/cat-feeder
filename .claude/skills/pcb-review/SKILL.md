@@ -1,6 +1,6 @@
 ---
 name: pcb-review
-description: Reviews the perfboard drawing, pcb.diy (DIY Layout Creator), before anything is soldered or powered — runs dev/pcb-check.sh, reads its pinout, netlist (against dev/netlist.toml), firmware-pin and neighbouring-net reports, and says what the check cannot see. Use whenever pcb.diy changes, when asked whether a layout is right or safe to solder, when a new module or header is added to the board, when a soldered unit does nothing at power-on, or when writing the beep-test table in `docs/hardware.md`.
+description: Reviews the perfboard drawing, pcb.diy (DIY Layout Creator), before anything is soldered or powered — runs dev/pcb-check, reads its pinout, netlist (against dev/netlist.toml), firmware-pin and neighbouring-net reports, and says what the check cannot see. Use whenever pcb.diy changes, when asked whether a layout is right or safe to solder, when a new module or header is added to the board, when a soldered unit does nothing at power-on, or when writing the beep-test table in `docs/hardware.md`.
 ---
 
 # Reviewing the perfboard
@@ -10,8 +10,8 @@ drawing can look right on screen and still be wrong in ways that cost a part,
 so it is checked by a script, not by eye.
 
 ```sh
-./dev/pcb-check.sh            # exit 1 on a real fault
-./dev/pcb-check.sh --all      # ...with the signal-to-signal neighbours too
+./dev/pcb-check            # exit 1 on a real fault
+./dev/pcb-check --all      # ...with the signal-to-signal neighbours too
 ```
 
 **Run it after every edit to `pcb.diy`, and always before soldering.** Read the
@@ -81,8 +81,8 @@ Say these out loud in a review; a green run does not cover them.
    `firmware = "<macro>"` on any net that reaches a GPIO.
 2. A new part: its row in `dev/pinouts.toml`, from the part's silkscreen.
 3. Edit and save in DIY Layout Creator.
-4. `./dev/pcb-check.sh` until it passes, then read the neighbours.
-   `./dev/pcb-render.sh` draws the same nets to `target/pcb.svg`, named by the
+4. `./dev/pcb-check` until it passes, then read the neighbours.
+   `./dev/pcb-render` draws the same nets to `target/pcb.svg`, named by the
    netlist, to look at without opening DIYLC.
 5. Update `docs/hardware.md`: the header table, the beep-test table
    (hole names from this board's `A … X`, rows from the bottom), and the list

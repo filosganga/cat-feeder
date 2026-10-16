@@ -2,7 +2,7 @@
 # Rebuild bootloader/bootloader.bin, the second-stage bootloader with rollback
 # enabled (ADR-0024), in ESP-IDF's Docker image.
 #
-#   ./dev/bootloader.sh
+#   ./dev/bootloader
 #
 # Only for changing the bootloader. Everyday work never runs this: the binary
 # is committed and espflash.toml makes every flash use it.

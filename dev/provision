@@ -2,19 +2,19 @@
 # Write this board's settings straight into flash, once, so the firmware never
 # has to carry them.
 #
-#   ./dev/provision.sh                          # the cfg.toml values
-#   ./dev/provision.sh --detent-ms 900          # ...with a measured interval
-#   ./dev/provision.sh --portion-scale 133      # ...and a measured portion size
-#   ./dev/provision.sh --host auto              # ...this machine, whatever its address
-#   ./dev/provision.sh --host <broker>          # ...some other broker
-#   ./dev/provision.sh --port /dev/cu.usbmodemXXXX
-#   ./dev/provision.sh --nvs-offset 0x9000      # if the firmware reports another
+#   ./dev/provision                          # the cfg.toml values
+#   ./dev/provision --detent-ms 900          # ...with a measured interval
+#   ./dev/provision --portion-scale 133      # ...and a measured portion size
+#   ./dev/provision --host auto              # ...this machine, whatever its address
+#   ./dev/provision --host <broker>          # ...some other broker
+#   ./dev/provision --port /dev/cu.usbmodemXXXX
+#   ./dev/provision --nvs-offset 0x9000      # if the firmware reports another
 #
 # Pointing a unit at a broker that is not the dev stack usually means different
 # credentials too, and they need no second config file:
 #
-#   ./dev/provision.sh --host <broker> --user <name> --password-file <path>
-#   pass show mqtt/feeder | ./dev/provision.sh --host <broker> --password-file -
+#   ./dev/provision --host <broker> --user <name> --password-file <path>
+#   pass show mqtt/feeder | ./dev/provision --host <broker> --password-file -
 #
 # --port, --host, --user, --password and --nvs-offset win over ESPFLASH_PORT,
 # MQTT_HOST, MQTT_USER, MQTT_PASS and NVS_OFFSET; see dev/_common.sh. Every
@@ -88,7 +88,7 @@ while [ $# -gt 0 ]; do
     --host=*) HOST_ARG="${1#*=}"; shift ;;
     # Named here rather than forwarded blindly, so they pick up MQTT_USER and
     # MQTT_PASS the way every other setting picks up its variable. The spelling
-    # matches dev/watch.sh exactly, including MQTT_PASS rather than
+    # matches dev/watch exactly, including MQTT_PASS rather than
     # MQTT_PASSWORD, so one broker's credentials work with both scripts.
     --user) need_value "$1" "${2:-}"; USER_ARG="$2"; shift 2 ;;
     --user=*) USER_ARG="${1#*=}"; shift ;;
