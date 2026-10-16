@@ -31,22 +31,11 @@ cd "$DEV_DIR/.."
 HOURS=""
 PORT_ARG=""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
-    --port=*) PORT_ARG="${1#*=}"; shift ;;
-    --hours) need_value "$1" "${2:-}"; HOURS="$2"; shift 2 ;;
-    --hours=*) HOURS="${1#*=}"; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*) die "soak: unknown option '$1'. Try --help." ;;
-    *)
-      if [ -z "$HOURS" ]; then HOURS="$1"
-      else die "soak: unexpected argument '$1'. Try --help."
-      fi
-      shift
-      ;;
-  esac
-done
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  --value port=PORT_ARG --value hours=HOURS --positional HOURS \
+  -- "$@") || exit $?
+eval "$ARGS"
 
 HOURS="${HOURS:-12}"
 SECONDS_TO_CAPTURE=$(awk -v h="$HOURS" 'BEGIN { printf "%d", h * 3600 }')

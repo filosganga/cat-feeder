@@ -43,7 +43,20 @@ DEV_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DEV_DIR/.."
 # shellcheck source=dev/_common.sh
 . "$DEV_DIR/_common.sh"
+
+PORT_ARG=""
+
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  --value port=PORT_ARG \
+  -- "$@") || exit $?
+eval "$ARGS"
 ```
+
+There is no parse loop: `dev/_args.py` parses for every script, bash or
+Python, so the rules below hold by construction (ADR-0031). It prints one
+assignment per setting the command line gave, so set each default first. The
+`|| exit $?` matters: a bare `eval "$(...)"` would swallow the exit 2.
 
 The header comment **is** the usage: `--help` prints it back, so there is one
 copy rather than two that drift. It runs from line 2 to the first empty line,
@@ -52,7 +65,7 @@ which is why that blank line before `set -euo pipefail` is structural.
 `DEV_DIR` is captured **before** the `cd`, because `$0` may be relative to
 wherever the script was invoked from.
 
-The parse loop, the flag names to reuse, and the full annotated template are in
+The spec, the flag names to reuse, and the full annotated template are in
 [references/anatomy.md](references/anatomy.md).
 
 ## A Python tool
@@ -96,11 +109,8 @@ is what a Mac without pyenv has, and CI runs its tests there too; the repo's
 `.python-version` is 3.11, the floor the pcb tools need, so working on it
 catches anything newer.
 
-`_args.py` takes a spec from bash too: `--value`, `--flag`, `--positional`,
-`--list`, `--forward`, `--refuse`, `--alternatives`, described in its
-docstring and tested, with today's scripts, in `dev/_args_test.py`. The bash
-scripts still carry the loop in anatomy.md; moving them onto it is on the
-roadmap.
+A new bash script's spec goes in `dev/_args_test.py` beside the others, with
+the command lines it must accept and refuse.
 
 ## Rules
 
@@ -112,15 +122,16 @@ roadmap.
   `--password`, `--nvs-offset`, `--seconds`, `--filter`, `--hours`, `--log`. A
   synonym for one of these is a bug.
 - **Accept `--flag value` and `--flag=value`**, and `-h|--help`. An unknown
-  `-*` is an error, never a positional.
-- **`--flag` with nothing after it is a typo, not a request for the default.**
-  `need_value` says so.
+  `-*` is an error, never a positional. `_args.py` does all three.
+- **`--flag` with nothing after it, or `--flag=`, is a typo, not a request for
+  the default.** `_args.py` says so.
 - **Keep positionals that already exist.** `./dev/flash 90 'feed:'` predates
   the flags and still works. A *new* script does not need positionals.
 - **Exit 2 when it was called wrong, 1 when it ran and the thing failed.**
   `die` exits 2.
-- **Errors are prefixed with the script's name** — `flash: ...`. `die` and
-  `need_value` do this for you.
+- **Errors are prefixed with the script's name** — `flash: ...`. `_args.py`
+  does this for you; `die` prints what it is given, so start the message with
+  the name (`die "flash: ..."`).
 - **Comment why, not what.** These scripts carry the facts that cost a bench
   session to learn — why `provision` erases before writing, why no capture
   passes `--no-reset`. That is the house style and it is load-bearing: strip

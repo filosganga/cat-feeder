@@ -28,22 +28,10 @@ die() {
   exit 2
 }
 
-# `--foo` with nothing after it, or an empty value, is a typo rather than a
-# request for the default — say so instead of silently using the default.
-need_value() { # need_value <flag> <value>
-  [ -n "${2:-}" ] || die "$(prog): $1 needs a value"
-}
-
 # The calling script's own path, absolute, because every script cds to the repo
 # root before sourcing this and `$0` may be relative to wherever it was invoked
-# from. Reading it back is what --help does.
+# from. dev/_args.py reads its header comment back for --help.
 SCRIPT="${DEV_DIR:?dev scripts must set DEV_DIR before sourcing _common.sh}/$(basename "$0")"
-
-# --help prints the calling script's own header comment, so the usage has one
-# copy rather than two that drift apart.
-usage() {
-  sed -n '2,/^$/p' "$SCRIPT" | sed 's/^#//; s/^ //'
-}
 
 # The serial port, from the flag, the environment, or .cargo/config.toml — the
 # last of which is what `cargo run` already uses, so a board that works there

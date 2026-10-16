@@ -25,13 +25,10 @@ cd "$DEV_DIR/.."
 
 IDF_IMAGE="espressif/idf:v6.0"
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -h|--help) usage; exit 0 ;;
-    -*) die "bootloader: unknown option '$1'. Try --help." ;;
-    *) die "bootloader: unexpected argument '$1'. Try --help." ;;
-  esac
-done
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  -- "$@") || exit $?
+eval "$ARGS"
 
 command -v docker >/dev/null || die "bootloader: needs Docker"
 

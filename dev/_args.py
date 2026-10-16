@@ -30,8 +30,8 @@ setting the command line did not give is not assigned, so set defaults first.
     --refuse a=MESSAGE   --a is refused with MESSAGE
     --alternatives a,b   at most one of --a and --b, once
 
---help prints the script's header comment, from line 2 to the first empty
-line, as `usage` in _common.sh does.
+A bash script's --help is its header comment, from line 2 to the first empty
+line, read from $SCRIPT, which _common.sh sets.
 
 What every script gets, whichever language it is in:
 
@@ -159,6 +159,9 @@ class Parser(argparse.ArgumentParser):
         missing = re.match(r"argument (\S+): (expected one argument|needs a value)$", message)
         if missing:
             self.die(f"{missing.group(1).split('/')[0]} needs a value")
+        extra = re.match(r"argument (\S+): ignored explicit argument ", message)
+        if extra:
+            self.die(f"{extra.group(1).split('/')[0]} takes no value. Try --help.")
         self.die(f"{re.sub(r'^argument ', '', message)}. Try --help.")
 
     def _joined(self, argv):
@@ -295,6 +298,7 @@ def shell(argv):
     # `flash --seconds 5 feed:` filters on feed:, and `soak 3 --hours 4` runs
     # four hours. argparse alone would apply every option before any bare word.
     var_of = {n: var for names, var in values for n in names}
+    known = {s for a in p._actions for s in a.option_strings}
     assigned, rest, bare_only = {}, [], False
     for arg in p._joined(args):
         if not bare_only and arg == "--":
@@ -303,6 +307,10 @@ def shell(argv):
             name, eq, value = arg.partition("=")
             if eq and name in var_of:
                 assigned[var_of[name]] = value
+            elif name not in known and not forwards:
+                # argparse reads -5 as a number, not an option, and lets it
+                # through as a bare word; the loops refused it, and so does this.
+                p.stray(arg)
         elif forwards:
             pass  # checked above: a word here is an unknown option's value
         elif any(v not in assigned for v in positionals):

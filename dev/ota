@@ -42,19 +42,11 @@ ADDRESS=""
 ID=""
 BOARD_ARG=""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --address) need_value "$1" "${2:-}"; ADDRESS="$2"; shift 2 ;;
-    --address=*) ADDRESS="${1#*=}"; shift ;;
-    --id) need_value "$1" "${2:-}"; ID="$2"; shift 2 ;;
-    --id=*) ID="${1#*=}"; shift ;;
-    --board) need_value "$1" "${2:-}"; BOARD_ARG="$2"; shift 2 ;;
-    --board=*) BOARD_ARG="${1#*=}"; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*) die "ota: unknown option '$1'. Try --help." ;;
-    *) die "ota: unexpected argument '$1'. Try --help." ;;
-  esac
-done
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  --value address=ADDRESS --value id=ID --value board=BOARD_ARG \
+  -- "$@") || exit $?
+eval "$ARGS"
 
 [ -n "$ADDRESS" ] || die "ota: --address <unit ip> is required. Try --help."
 [ -n "$ID" ] || die "ota: --id <unit id> is required. Try --help."

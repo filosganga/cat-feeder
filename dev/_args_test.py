@@ -3,8 +3,8 @@
 
 The bash half is tested the way a script uses it: the spec and the command
 line go in, and what comes out is evaluated by bash. The specs under "today's
-scripts" are what each bash script in dev/ would pass, and their cases are
-the command lines that script's own parse loop accepts or refuses now.
+scripts" are the ones the bash scripts in dev/ pass, and their cases are the
+command lines each accepted or refused when it still had its own parse loop.
 """
 
 import contextlib
@@ -76,6 +76,7 @@ class PythonTools(unittest.TestCase):
             ("--layout",): "thing: --layout needs a value\n",
             ("--layout=",): "thing: --layout needs a value\n",
             ("--lay", "x"): "thing: unknown option '--lay'. Try --help.\n",
+            ("--all=1",): "thing: --all takes no value. Try --help.\n",
         }
         for argv, message in cases.items():
             code, out, err, _ = run_python(list(argv))
@@ -202,6 +203,15 @@ class Shell(unittest.TestCase):
             self.assertEqual(self.parse(self.FLASH, argv)[:2], (0, want), argv)
         self.assertEqual(self.parse(self.FLASH, ["1", "2", "3"])[0], 2)
 
+    def test_a_word_like_a_negative_number_is_an_unknown_option(self):
+        for spec, argv in (
+            (["--value", "hours=HOURS", "--positional", "HOURS"], ["-5"]),
+            (self.FLASH, ["90", "-2"]),
+            (["--value", "port=PORT_ARG", "--list", "ids"], ["-1"]),
+        ):
+            code, _, _, err = self.parse(spec, argv)
+            self.assertEqual((code, err), (2, f"thing: unknown option '{argv[-1]}'. Try --help.\n"), argv)
+
     def test_capture_takes_reset_as_a_flag(self):
         spec = self.FLASH[2:] + ["--flag", "reset=RESET"]
         self.assertEqual(self.parse(spec, ["--reset", "15"])[1], {"RESET": "1", "SECONDS_TO_CAPTURE": "15"})
@@ -220,9 +230,10 @@ class Shell(unittest.TestCase):
     def test_watch_takes_topics_and_one_password(self):
         spec = ["--value", "host=HOST_ARG", "--value", "user=USER_ARG",
                 "--value", "password,pass=PASS_ARG", "--value", "password-file=PASS_FILE_ARG",
-                "--alternatives", "password,password-file", "--list", "topics"]
+                "--alternatives", "password,password-file", "--list", "TOPICS"]
         self.assertEqual(self.parse(spec, ["feeder/#", "--pass", "x", "--", "--odd"])[1],
-                         {"PASS_ARG": "x", "topics": ["feeder/#", "--odd"]})
+                         {"PASS_ARG": "x", "TOPICS": ["feeder/#", "--odd"]})
+        self.assertEqual(self.parse(spec, ["--", "-1"])[1], {"TOPICS": ["-1"]})
         code, _, _, err = self.parse(spec, ["--password", "a", "--password-file", "-"])
         self.assertEqual((code, err), (2, "thing: --password and --password-file are alternatives; pass one.\n"))
         code, _, _, err = self.parse(spec, ["--password", "a", "--pass", "b"])

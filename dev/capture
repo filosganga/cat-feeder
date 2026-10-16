@@ -43,26 +43,12 @@ FILTER=""
 PORT_ARG=""
 RESET=""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
-    --port=*) PORT_ARG="${1#*=}"; shift ;;
-    --seconds) need_value "$1" "${2:-}"; SECONDS_TO_CAPTURE="$2"; shift 2 ;;
-    --seconds=*) SECONDS_TO_CAPTURE="${1#*=}"; shift ;;
-    --filter) need_value "$1" "${2:-}"; FILTER="$2"; shift 2 ;;
-    --filter=*) FILTER="${1#*=}"; shift ;;
-    --reset) RESET=1; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*) die "capture: unknown option '$1'. Try --help." ;;
-    *)
-      if [ -z "$SECONDS_TO_CAPTURE" ]; then SECONDS_TO_CAPTURE="$1"
-      elif [ -z "$FILTER" ]; then FILTER="$1"
-      else die "capture: unexpected argument '$1'. Try --help."
-      fi
-      shift
-      ;;
-  esac
-done
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  --value port=PORT_ARG --value seconds=SECONDS_TO_CAPTURE --value filter=FILTER \
+  --flag reset=RESET --positional SECONDS_TO_CAPTURE --positional FILTER \
+  -- "$@") || exit $?
+eval "$ARGS"
 
 SECONDS_TO_CAPTURE="${SECONDS_TO_CAPTURE:-45}"
 PORT="$(require_port "$PORT_ARG")"

@@ -1,6 +1,6 @@
 # Anatomy of a dev script
 
-- [The parse loop](#the-parse-loop)
+- [The command line](#the-command-line)
 - [Flag names already in use](#flag-names-already-in-use)
 - [What `_common.sh` gives you](#what-_commonsh-gives-you)
 - [Resolving a setting](#resolving-a-setting)
@@ -9,52 +9,44 @@
 - [A complete script](#a-complete-script)
 - [Checklist](#checklist)
 
-## The parse loop
+## The command line
 
-Copy this shape. It handles `--flag value` and `--flag=value`, rejects an
-unknown option instead of treating it as a positional, and leaves the defaults
-to be applied afterwards — so "not given" and "given the default" stay
-distinguishable while parsing.
+A script describes its options to `dev/_args.py` and evaluates the
+assignments it prints. Each variable starts empty and gets its default
+*after*, so "not given" and "given the default" stay distinguishable:
 
 ```bash
 PORT_ARG=""
 SECONDS_TO_CAPTURE=""
 FILTER=""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --port) need_value "$1" "${2:-}"; PORT_ARG="$2"; shift 2 ;;
-    --port=*) PORT_ARG="${1#*=}"; shift ;;
-    --seconds) need_value "$1" "${2:-}"; SECONDS_TO_CAPTURE="$2"; shift 2 ;;
-    --seconds=*) SECONDS_TO_CAPTURE="${1#*=}"; shift ;;
-    --filter) need_value "$1" "${2:-}"; FILTER="$2"; shift 2 ;;
-    --filter=*) FILTER="${1#*=}"; shift ;;
-    -h|--help) usage; exit 0 ;;
-    -*) die "thing: unknown option '$1'. Try --help." ;;
-    *)
-      # Only if this script already had positionals. New ones need none.
-      if [ -z "$SECONDS_TO_CAPTURE" ]; then SECONDS_TO_CAPTURE="$1"
-      elif [ -z "$FILTER" ]; then FILTER="$1"
-      else die "thing: unexpected argument '$1'. Try --help."
-      fi
-      shift
-      ;;
-  esac
-done
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  --value port=PORT_ARG --value seconds=SECONDS_TO_CAPTURE --value filter=FILTER \
+  --positional SECONDS_TO_CAPTURE --positional FILTER \
+  -- "$@") || exit $?
+eval "$ARGS"
 
 SECONDS_TO_CAPTURE="${SECONDS_TO_CAPTURE:-45}"
 ```
 
-A list-valued positional — topics in `watch`, device ids in
-`ap-password` — collects into an array instead, and supports `--` so a value
-that starts with `-` can still be passed:
+| Spec | Means |
+|---|---|
+| `--value a[,b]=VAR` | `--a` takes a value, `--a v` or `--a=v`; `--b` is another spelling |
+| `--flag a[,b]=VAR` | `--a` takes none; `VAR=1` when given |
+| `--positional VAR` | a bare word fills the first such `VAR` nothing has set yet; a later option overrides it. Only for scripts that already had positionals |
+| `--list VAR` | every other bare word, into the array `VAR`; `--` lets one start with `-` |
+| `--forward VAR` | unknown options, with the word after each, into the array `VAR` |
+| `--refuse a=MESSAGE` | `--a`, however spelled, exits 2 with `MESSAGE` |
+| `--alternatives a,b` | at most one of `--a` and `--b`, once |
+
+A list-valued positional, such as topics in `watch` or device ids in
+`ap-password`, arrives as a plain array; build what the program needs from it
+afterwards:
 
 ```bash
 topics=()
-# ...in the case:
-    --) shift; while [ $# -gt 0 ]; do topics+=(-t "$1"); shift; done ;;
-    *) topics+=(-t "$1"); shift ;;
-# ...after the loop:
+for t in ${TOPICS[@]+"${TOPICS[@]}"}; do topics+=(-t "$t"); done
 if [ ${#topics[@]} -eq 0 ]; then
   topics=(-t 'feeder/#' -t 'homeassistant/#')
 fi
@@ -88,12 +80,11 @@ variable. A new per-run setting does not need one either.
 |---|---|
 | `prog` | the script's name, for messages |
 | `die "msg"` | print to stderr, exit 2 |
-| `need_value "$1" "${2:-}"` | die unless the flag was given a value |
-| `usage` | print the calling script's header comment (uses `SCRIPT`) |
+| `SCRIPT` | the calling script's absolute path, which `_args.py` reads the header from |
 | `resolve_port "$PORT_ARG"` | flag, then `ESPFLASH_PORT`, then `.cargo/config.toml`; may be empty |
 | `require_port "$PORT_ARG"` | the same, but dies with the `list-ports` hint if empty |
 
-`usage` depends on `DEV_DIR` being set before the source line, and says so
+`SCRIPT` depends on `DEV_DIR` being set before the source line, and says so
 loudly if it is not.
 
 Use `resolve_port` when an empty answer is a legitimate outcome the script
@@ -102,7 +93,7 @@ and its error mentions both ways out. Use `require_port` otherwise.
 
 ## Resolving a setting
 
-One line, after the parse loop, per setting:
+One line, after the command line is parsed, per setting:
 
 ```bash
 NVS_OFFSET="${OFFSET_ARG:-${NVS_OFFSET:-0x9000}}"
@@ -121,18 +112,8 @@ everything else.**
 
 Forwarding is the default, and it is why `provision` needs no change when
 `mkrecord` grows an option — a typo comes back as `mkrecord`'s own usage rather
-than as a guess from the shell:
-
-```bash
-    -*)
-      MKRECORD_ARGS+=("$1")
-      shift
-      if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
-        MKRECORD_ARGS+=("$1")
-        shift
-      fi
-      ;;
-```
+than as a guess from the shell. `--forward MKRECORD_ARGS` collects each
+unknown option, with the word after it unless that is an option too.
 
 Expand a possibly-empty array as `${ARR[@]+"${ARR[@]}"}`; a bare
 `"${ARR[@]}"` is an unbound-variable error under `set -u` on bash 3.2, which is
@@ -147,13 +128,14 @@ Everything else, `--detent-ms` and `--portion-scale` included, is forwarded.
 
 Naming a flag costs something, so do not do it for free: `provision` parses
 `--password` and `--password-file` and therefore has to enforce that they are
-alternatives itself, because `mkrecord`'s own check never sees a duplicate that
-the shell already collapsed.
+alternatives itself (`--alternatives password,password-file`), because
+`mkrecord`'s own check never sees a duplicate that the shell already
+collapsed.
 
 Reject a forwarded option that would break the script's own contract —
 `provision` refuses `--out`, because the record is a temporary file it
 deletes on the way out, and redirecting it would leave the Wi-Fi password
-somewhere nobody cleans up.
+somewhere nobody cleans up: `--refuse 'out=...'`.
 
 ## Working with espflash
 
@@ -178,7 +160,7 @@ exec "$DEV_DIR/_render.sh" "$LOG" "$FILTER"
 ## A complete script
 
 `dev/capture` is the shortest one that uses every convention: header comment
-as usage, `DEV_DIR` before the `cd`, a parse loop with preserved positionals,
+as usage, `DEV_DIR` before the `cd`, a spec with preserved positionals,
 `require_port`, a bounded capture, and `_render.sh` at the end. Read it before
 writing a new one.
 
@@ -189,8 +171,8 @@ writing a new one.
 - [ ] `DEV_DIR` captured before `cd "$DEV_DIR/.."`, then `_common.sh` sourced.
 - [ ] Every setting has a flag; the flag wins over the variable.
 - [ ] Flag names match the table above.
-- [ ] `--flag=value` handled next to `--flag value`, and `-h|--help` present.
-- [ ] Unknown `-*` dies; a stray positional dies.
+- [ ] The command line parsed by `_args.py`, no loop of its own; its spec and
+      cases added to `dev/_args_test.py`.
 - [ ] Messages prefixed with the script name, exit 2 for misuse.
 - [ ] Secrets in `mktemp` with `trap cleanup EXIT`; nothing secret echoed.
 - [ ] `bash -n` clean; `--help` works from the repo root, `dev/` and `/tmp`.

@@ -31,43 +31,26 @@ HOST_ARG=""
 USER_ARG=""
 PASS_ARG=""
 PASS_FILE_ARG=""
-PASS_SEEN=""
+TOPICS=()
+
+# --password and --password-file: once, by one spelling — the same rule
+# dev/provision enforces, for the same reason: a silently-ignored password reads
+# as an authentication failure on the broker rather than as a mistake on the
+# command line. Same spelling as dev/provision, too, because this is the command
+# that checks a deployed broker before a unit is pointed at it, and having to
+# retype the password differently for the check and for the provisioning is how
+# one of the two ends up wrong.
+#
+# The command line, parsed by dev/_args.py (ADR-0031).
+ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" \
+  --value host=HOST_ARG --value user=USER_ARG \
+  --value password,pass=PASS_ARG --value password-file=PASS_FILE_ARG \
+  --alternatives password,password-file --list TOPICS \
+  -- "$@") || exit $?
+eval "$ARGS"
+
 topics=()
-
-# Once, by one spelling — the same rule dev/provision enforces, for the same
-# reason: a silently-ignored password reads as an authentication failure on the
-# broker rather than as a mistake on the command line.
-pass_once() {
-  [ -z "$PASS_SEEN" ] || {
-    if [ "$PASS_SEEN" = "$1" ]; then
-      die "watch: $1 given twice."
-    else
-      die "watch: --password and --password-file are alternatives; pass one."
-    fi
-  }
-  PASS_SEEN="$1"
-}
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --host) need_value "$1" "${2:-}"; HOST_ARG="$2"; shift 2 ;;
-    --host=*) HOST_ARG="${1#*=}"; shift ;;
-    --user) need_value "$1" "${2:-}"; USER_ARG="$2"; shift 2 ;;
-    --user=*) USER_ARG="${1#*=}"; shift ;;
-    --password|--pass) pass_once --password; need_value "$1" "${2:-}"; PASS_ARG="$2"; shift 2 ;;
-    --password=*|--pass=*) pass_once --password; PASS_ARG="${1#*=}"; shift ;;
-    # Same spelling as dev/provision, because this is the command that checks a
-    # deployed broker before a unit is pointed at it, and having to retype the
-    # password differently for the check and for the provisioning is how one of
-    # the two ends up wrong.
-    --password-file) pass_once --password-file; need_value "$1" "${2:-}"; PASS_FILE_ARG="$2"; shift 2 ;;
-    --password-file=*) pass_once --password-file; PASS_FILE_ARG="${1#*=}"; shift ;;
-    -h|--help) usage; exit 0 ;;
-    --) shift; while [ $# -gt 0 ]; do topics+=(-t "$1"); shift; done ;;
-    -*) die "watch: unknown option '$1'. Try --help." ;;
-    *) topics+=(-t "$1"); shift ;;
-  esac
-done
+for t in ${TOPICS[@]+"${TOPICS[@]}"}; do topics+=(-t "$t"); done
 
 if [ -n "$PASS_FILE_ARG" ]; then
   # The first line is the password, with a trailing \r dropped for CRLF files.
