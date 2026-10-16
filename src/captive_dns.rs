@@ -37,6 +37,13 @@ const ANSWER: usize = 16;
 /// The longest name RFC 1035 allows, on the wire.
 const NAME_MAX: usize = 255;
 
+/// The longest label RFC 1035 allows. A length byte above it is a pointer
+/// (`0b11` in the top bits) or reserved.
+const LABEL_MAX: usize = 63;
+
+/// A compression pointer to offset 12, where the question's name starts.
+const QUESTION_NAME: [u8; 2] = [0xc0, HEADER as u8];
+
 const TYPE_A: u16 = 1;
 const CLASS_IN: u16 = 1;
 
@@ -90,8 +97,7 @@ pub fn answer(query: &[u8], addr: [u8; 4], out: &mut [u8]) -> Option<usize> {
 
     if answers == 1 {
         let a = &mut out[question_end..len];
-        // `0xC00C`: the name is the one at offset 12, the question's.
-        a[0..2].copy_from_slice(&[0xc0, 0x0c]);
+        a[0..2].copy_from_slice(&QUESTION_NAME);
         a[2..4].copy_from_slice(&TYPE_A.to_be_bytes());
         a[4..6].copy_from_slice(&CLASS_IN.to_be_bytes());
         a[6..10].copy_from_slice(&0u32.to_be_bytes());
@@ -114,7 +120,7 @@ fn name_end(packet: &[u8], at: usize) -> Option<usize> {
             let end = i + 1;
             return (end - at <= NAME_MAX).then_some(end);
         }
-        if len > 63 {
+        if len > LABEL_MAX {
             return None;
         }
         i += 1 + len;
@@ -174,7 +180,7 @@ mod tests {
         let q = query("captive.apple.com", TYPE_A);
         let r = reply(&q).unwrap();
         let a = &r[q.len()..];
-        assert_eq!(&a[0..2], &[0xc0, 0x0c]);
+        assert_eq!(&a[0..2], &[0xc0, 0x0c], "a pointer to offset 12");
         assert_eq!(be16(a, 2), TYPE_A);
         assert_eq!(be16(a, 4), CLASS_IN);
         assert_eq!(&a[6..10], &[0, 0, 0, 0], "TTL zero");

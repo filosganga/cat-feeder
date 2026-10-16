@@ -25,7 +25,7 @@ its row; git history keeps the record.
 | Item | How to see it |
 |---|---|
 | The setup-mode screen (SSID, password, address) | hold the knob's click through power-on, `./dev/capture.sh --reset --seconds 40` |
-| Setup's trial, network list and captive portal (ADR-0025, ADR-0026) | a phone on a unit in setup; what the console shows is in the `flash-and-verify` skill |
+| Setup's *Save anyway*, and the captive portal on iOS | a phone on a unit in setup: a broker that refuses, then *Save anyway*; an iPhone joining from the label |
 | The `WI-FI`, `BROKER` and `DEVICE` info pages | turn the knob while locked |
 | The BOOT hold's `HOLD TO ERASE WI-FI` banner on a unit with a panel | hold BOOT on a knob unit, then re-provision |
 | *Feed now*, *Run calibration*, *Use this device's time*, the timezone list, and a phone layout on the admin page | use it from a phone |

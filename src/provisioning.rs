@@ -344,6 +344,10 @@ pub const AP_ADDR_OCTETS: [u8; 4] = [192, 168, 4, 1];
 /// [`AP_ADDR_OCTETS`]. Eighteen characters, which fits `display::COLS`.
 pub const AP_URL: &str = "http://192.168.4.1";
 
+/// The port the form starts with: MQTT's registered one, which is what a
+/// broker listens on unless someone changed it.
+pub const DEFAULT_MQTT_PORT: u16 = 1883;
+
 /// What every setup network's name starts with.
 pub const AP_SSID_PREFIX: &str = "cat-feeder-";
 
@@ -861,6 +865,8 @@ pub fn render_form(
          .err{background:#fdecea;border:1px solid #d9534f;border-radius:.3rem;\
          padding:.6rem;margin-bottom:1rem}\
          .hint{color:#666;font-size:.8rem;margin:.2rem 0 0}\
+         .nets button{width:auto;margin:.4rem .4rem 0 0;padding:.35rem .6rem;\
+         font-size:.9rem;background:#e8e4dc;color:#222}\
          .alt{background:#666;margin:0 0 1rem}\
          </style></head><body><h1>cat-feeder setup</h1>",
     );
@@ -951,20 +957,34 @@ pub enum Notice<'a> {
     },
 }
 
-/// The networks a scan found, for the SSID box to suggest.
+/// The networks a scan found, as buttons that fill in the SSID box.
 ///
-/// A `<datalist>` rather than a `<select>`, so the box stays free text: a
-/// hidden network is never in a scan, and its name still has to be typed.
+/// Buttons and a line of script, not a `<datalist>`: Android's captive-portal
+/// browser, which is where this page now opens, shows no datalist at all. The
+/// box stays free text, because a hidden network is never in a scan and its
+/// name still has to be typed. Without script the buttons do nothing and the
+/// box still works.
+///
+/// The script reads the button's `textContent`, which the browser has already
+/// un-escaped, so an SSID never has to be quoted into JavaScript.
 fn networks_list(page: &mut String<PAGE_LEN>, networks: &[Network]) {
     if networks.is_empty() {
         return;
     }
-    let _ = page.push_str("<datalist id=networks>");
+    let _ = page.push_str("<div class=nets>");
     for network in networks {
-        let _ = write!(page, "<option value=\"{}\">", Escaped(&network.ssid));
+        let _ = write!(
+            page,
+            "<button type=button>{}</button>",
+            Escaped(&network.ssid)
+        );
     }
     let _ = page.push_str(
-        "</datalist><p class=hint>Tap the box to pick a nearby network. \
+        "</div><script>document.querySelector('.nets').onclick=function(e){\
+         if(e.target.tagName=='BUTTON'){\
+         document.getElementById('wifi_ssid').value=e.target.textContent;\
+         document.getElementById('wifi_password').focus()}}</script>\
+         <p class=hint>Tap a nearby network, or type its name. \
          <a href=/rescan>Scan again</a></p>",
     );
 }
@@ -980,6 +1000,21 @@ pub struct Network {
     pub ssid: String<SSID_LEN>,
     /// The strongest signal heard for this name, in dBm.
     pub rssi: i8,
+    /// Where that strongest one was: its channel and its BSSID. A trial joins
+    /// it directly rather than searching every channel, because every channel
+    /// searched is time the setup network is off its own, and a phone on it
+    /// gives up — seen on the first phone test (ADR-0025).
+    pub channel: u8,
+    pub bssid: [u8; 6],
+}
+
+/// One access point a scan heard: what [`add_network`] is given.
+#[derive(Debug, Clone, Copy)]
+pub struct Heard<'a> {
+    pub ssid: &'a str,
+    pub rssi: i8,
+    pub channel: u8,
+    pub bssid: [u8; 6],
 }
 
 /// Adds one scan result to `list`, which stays one entry per name, strongest
@@ -990,17 +1025,32 @@ pub struct Network {
 /// signal. Hidden networks (an empty name) and other feeders' setup networks
 /// are left out: neither is a network to put a feeder on. When the list is
 /// full, a stronger newcomer replaces the weakest.
-pub fn add_network(list: &mut heapless::Vec<Network, MAX_NETWORKS>, ssid: &str, rssi: i8) {
+pub fn add_network(list: &mut heapless::Vec<Network, MAX_NETWORKS>, heard: Heard<'_>) {
+    let Heard {
+        ssid,
+        rssi,
+        channel,
+        bssid,
+    } = heard;
     if ssid.is_empty() || ssid.starts_with(AP_SSID_PREFIX) {
         return;
     }
     if let Some(known) = list.iter_mut().find(|n| n.ssid == ssid) {
-        known.rssi = known.rssi.max(rssi);
+        if rssi > known.rssi {
+            known.rssi = rssi;
+            known.channel = channel;
+            known.bssid = bssid;
+        }
     } else {
         let Ok(ssid) = String::try_from(ssid) else {
             return;
         };
-        let network = Network { ssid, rssi };
+        let network = Network {
+            ssid,
+            rssi,
+            channel,
+            bssid,
+        };
         if let Err(network) = list.push(network) {
             match list.last_mut() {
                 Some(weakest) if weakest.rssi < network.rssi => *weakest = network,
@@ -1026,10 +1076,17 @@ fn text_field(
 ) {
     // A field that failed to decode comes back empty rather than taking the
     // whole page down with it: the rest of the form is still worth showing.
-    let value = field::<PASSWORD_LEN>(submitted, name)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
+    let value = match field::<PASSWORD_LEN>(submitted, name) {
+        Ok(Some(value)) => value,
+        // Absent, which is a first visit rather than a field left blank: the
+        // port starts at the one nearly every broker uses.
+        Ok(None) if name == "mqtt_port" => {
+            let mut port = String::new();
+            let _ = write!(port, "{DEFAULT_MQTT_PORT}");
+            port
+        }
+        _ => String::new(),
+    };
 
     // `autocapitalize`/`autocorrect`/`spellcheck` off on every field, and this
     // is the root of a real bug rather than polish: a phone keyboard offered
@@ -1049,9 +1106,6 @@ fn text_field(
     // it saves a keyboard switch.
     if name == "mqtt_port" {
         let _ = page.push_str(" inputmode=numeric");
-    }
-    if name == "wifi_ssid" {
-        let _ = page.push_str(" list=networks");
     }
     let _ = page.push_str(">");
 
@@ -1099,10 +1153,12 @@ pub const TESTING_REFRESH_SECS: u8 = 2;
 
 /// The page shown while the network is being tried.
 ///
-/// It reloads itself (`/status`) rather than holding the request open until
-/// the answer: when the feeder joins the router, its own network moves to the
-/// router's channel, and a phone can drop off for a moment. A held request
-/// would die with it; a page that asks again just asks again.
+/// **It says up front that the phone will drop**, because on the phone test it
+/// did, on every trial: starting one re-applies the access point's config,
+/// which restarts it (`setup::follow` has why). The phone came back by itself
+/// within seconds, and `/` shows the outcome when it does. The page reloads
+/// itself (`/status`) rather than holding the request open, since a held
+/// request would die with the connection.
 ///
 /// `max_secs` is the longest a trial can take, which `setup.rs` adds up from
 /// its own timeouts, so the page never promises less than the code allows.
@@ -1119,8 +1175,9 @@ pub fn render_testing(page: &mut String<PAGE_LEN>, ssid: &str, setup_ssid: &str,
          </style></head><body><h1>Testing…</h1>\
          <p>Joining <b>{}</b> and logging in to the broker. This can take up \
          to {max_secs} seconds.</p>\
-         <p>If this page stops changing, your phone may have left \
-         <b>{}</b>: rejoin it and the answer will be here.</p>\
+         <p>Your phone will leave <b>{}</b> for a few seconds while this \
+         happens. If it does not rejoin by itself, rejoin it: the answer will \
+         be here.</p>\
          </body></html>",
         Escaped(ssid),
         Escaped(setup_ssid),
@@ -1620,6 +1677,8 @@ mod tests {
             .map(|i| Network {
                 ssid: String::try_from(std::format!("{i:\"<32}").as_str()).unwrap(),
                 rssi: -40,
+                channel: 1,
+                bssid: [0; 6],
             })
             .collect();
         render_form(
@@ -1940,9 +1999,53 @@ mod tests {
     fn heard(results: &[(&str, i8)]) -> heapless::Vec<Network, MAX_NETWORKS> {
         let mut list = heapless::Vec::new();
         for (ssid, rssi) in results {
-            add_network(&mut list, ssid, *rssi);
+            add_network(
+                &mut list,
+                Heard {
+                    ssid,
+                    rssi: *rssi,
+                    channel: 1,
+                    bssid: [0; 6],
+                },
+            );
         }
         list
+    }
+
+    #[test]
+    fn a_mesh_is_joined_at_its_strongest_node() {
+        let mut list = heapless::Vec::new();
+        for (rssi, channel, last) in [(-82, 1, 1), (-45, 6, 2), (-70, 11, 3)] {
+            add_network(
+                &mut list,
+                Heard {
+                    ssid: "MyWiFi",
+                    rssi,
+                    channel,
+                    bssid: [0, 0, 0, 0, 0, last],
+                },
+            );
+        }
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].rssi, list[0].channel), (-45, 6));
+        assert_eq!(list[0].bssid[5], 2);
+    }
+
+    #[test]
+    fn the_port_starts_at_mqtts_and_a_cleared_one_stays_cleared() {
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(&mut page, "", Notice::None, &[]);
+        assert!(page.contains("name=mqtt_port type=text autocapitalize=off autocorrect=off spellcheck=false value=\"1883\""));
+
+        // A port someone emptied and submitted comes back empty, beside the
+        // error saying it is needed, not silently refilled.
+        render_form(
+            &mut page,
+            "mqtt_port=",
+            Notice::Invalid(FormError::BadPort),
+            &[],
+        );
+        assert!(page.contains("name=mqtt_port type=text autocapitalize=off autocorrect=off spellcheck=false value=\"\""));
     }
 
     fn names(list: &[Network]) -> std::vec::Vec<&str> {
@@ -1993,11 +2096,14 @@ mod tests {
             page.contains("name=wifi_ssid type=text"),
             "still typed into"
         );
-        assert!(page.contains("list=networks"));
-        assert!(page.contains("<option value=\"My &quot;Home&quot;\">"));
+        assert!(page.contains("<button type=button>My &quot;Home&quot;</button>"));
+        assert!(
+            page.contains("getElementById('wifi_ssid')"),
+            "fills the SSID box"
+        );
 
         render_form(&mut page, "", Notice::None, &[]);
-        assert!(!page.contains("<datalist"), "no empty list without a scan");
+        assert!(!page.contains("class=nets"), "no empty list without a scan");
     }
 
     #[test]
@@ -2040,7 +2146,10 @@ mod tests {
         assert!(page.contains("url=/status"));
         assert!(page.contains("up to 57 seconds"));
         assert!(page.contains("MyWiFi"));
-        assert!(page.contains("cat-feeder-a1b2c3"));
+        assert!(
+            page.contains("will leave <b>cat-feeder-a1b2c3</b>"),
+            "warns before the drop, not after"
+        );
         assert!(page.ends_with("</html>"));
     }
 }

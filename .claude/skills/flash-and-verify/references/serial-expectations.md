@@ -982,34 +982,52 @@ device's half. Watch particularly for what a real browser does and a test client
 does not: captive-portal probe requests to odd paths, several connections at
 once, and connections opened and dropped without a request.
 
-### Testing before saving, and the captive portal — *expected, not yet observed*
+### Testing before saving, and the captive portal — *observed*
 
 ADR-0025 and ADR-0026. The transcripts above predate both: there, `/save`
-wrote flash at once and the address was typed. What the code prints now, in
-order, for a phone that joins from the label's QR code and gets everything
-right (addresses are placeholders):
+wrote flash at once and the address was typed. One Android phone, joining
+from the label's QR code, then two trials: right Wi-Fi with a wrong broker
+password, then everything right. Network name and addresses are the usual
+placeholders; the timings are the board's. The DNS and `/generate_204` lines,
+dozens of them, are cut.
 
 ```
-INFO - setup: access point up
-INFO - setup: dhcp on 192.168.4.1, pool 192.168.4.2-192.168.4.9
-INFO - setup: dns on 192.168.4.1, every name is 192.168.4.1
-INFO - setup: form on http://192.168.4.1/, 3 connections
-INFO - setup: scan heard 14 access points, 5 networks
-INFO - setup: station aa:bb:cc:dd:ee:ff associated
-INFO - setup: dhcp 192.168.4.2 -> aa:bb:cc:dd:ee:ff
-INFO - setup: dns answered 192.168.4.2:53211 (47 bytes)
-INFO - setup: [0] Get /generate_204 (0 byte body)
-INFO - setup: [1] Get / (0 byte body)
-INFO - setup: [0] Post /save (117 byte body)
-INFO - setup: trying MyWiFi then 192.168.1.10:1883
-INFO - setup: joined MyWiFi on channel 6
-INFO - setup: given 192.168.1.42
-INFO - mqtt: checking 192.168.1.10:1883
-INFO - mqtt: 192.168.1.10:1883 accepted the login
-INFO - setup: saved MyWiFi via 192.168.1.10:1883
-INFO - setup: [1] Get /status (0 byte body)
-INFO - setup: saved, restarting
+INFO (1232) - setup: access point up
+INFO (2969) - setup: scan heard 14 access points, 11 networks
+INFO (2976) - setup: access point moved to channel 8, for the strongest network
+INFO (122122) - setup: station aa:bb:cc:dd:ee:ff associated
+INFO (122864) - setup: dhcp 192.168.4.2 -> aa:bb:cc:dd:ee:ff
+INFO (123585) - setup: [0] Get / (0 byte body)
+INFO (171775) - setup: [0] Post /save (125 byte body)
+INFO (171777) - setup: trying MyWiFi then 192.168.1.10:1883
+INFO (171777) - setup: MyWiFi was heard on channel 8
+WARN (171788) - esp_wifi_internal_tx returned error: 12309
+INFO (174709) - setup: joined MyWiFi on channel 8
+INFO (176927) - setup: given 192.168.1.42
+INFO (176928) - mqtt: checking 192.168.1.10:1883
+WARN (180091) - mqtt: connect failed: Disconnect { reason: NotAuthorized, reason_string: None, server_reference: None }
+INFO (180091) - setup: the broker check failed (BadLogin); nothing saved
+INFO (185728) - setup: station aa:bb:cc:dd:ee:ff associated
+INFO (186990) - setup: [0] Get / (0 byte body)
+INFO (233996) - setup: [0] Post /save (129 byte body)
+INFO (233998) - setup: trying MyWiFi then 192.168.1.10:1883
+INFO (236053) - setup: joined MyWiFi on channel 8
+INFO (238068) - setup: given 192.168.1.42
+INFO (238131) - mqtt: 192.168.1.10:1883 accepted the login
+INFO (239266) - setup: saved MyWiFi via 192.168.1.10:1883
+INFO (245267) - setup: saved, restarting
 ```
+
+then a normal boot onto it, `mqtt: connected` at 4.9 s.
+
+**The phone leaves on every trial**, which is the `12309`
+(`ESP_ERR_WIFI_NOT_ASSOC`): the unit sending to a phone that has just been
+dropped, 11 ms after `trying`. It is the access point restarting when the
+trial re-applies its config (`setup::follow`), not a channel move — there is
+no `access point moved` line in either trial. The phone came back by itself,
+5–6 s after the trial ended (`associated`, then `Get /` — the outcome, not a
+blank form). Mosquitto refuses a bad login with `NotAuthorized`, not
+`BadUserNameOrPassword`; both read as a refused login.
 
 **What to check, beyond the lines being there:**
 
@@ -1020,15 +1038,15 @@ INFO - setup: saved, restarting
   `dns answered` lines are there at all.
 - **The network list.** The scan count is access points heard, the second
   number distinct names; on a mesh the first is several times the second.
-  `Tap the box` on the form shows the names, one per network.
-- **The phone stays on through the trial.** Between `trying` and `saved` the
-  access point moves to the router's channel. The console cannot show a drop
-  inside that window — the radio is not listening for station events while it
-  tries a network — so watch the phone, and the console just after: a
-  `station ... associated` straight after the trial's last line is a phone
-  that dropped and rejoined, and `Get /status` lines carrying on are the page
-  still polling. If it does not rejoin, that is the cost ADR-0025 names, and
-  the page tells the person to rejoin.
+  The form shows one button per name under the Wi-Fi box, and tapping one
+  fills it in. A rescan adds to the list, never empties it.
+- **No `access point moved` line during a trial** on the network the boot
+  scan heard strongest: the access point is already on its channel.
+- **The phone comes back.** The console cannot show the drop itself — the
+  radio is not listening for station events while it tries a network — so
+  look just after: `station ... associated` within seconds of the trial's
+  last line, then `Get /`. A phone that does not rejoin by itself is the case
+  the testing page tells the person about.
 - **`REBOOT_DELAY`** — three of the testing page's polls — from `saved MyWiFi`
   to `saved, restarting`, so the page shows the address before the network
   disappears.
@@ -1041,7 +1059,7 @@ INFO - setup: saved, restarting
 | `MyWiFi refused (NoAccessPointFound)` | no such network; mentions 2.4 GHz |
 | `did not answer in <JOIN_TIMEOUT>s` | could not join; console says why |
 | `joined, no lease in <ADDRESS_TIMEOUT>s` | joined, router gave no address |
-| `a N-character key cannot be a WPA2 key` | password refused; the radio was not touched |
+| `a N-character key cannot be a WPA2 key` | "a Wi-Fi password is 8 to 63 characters"; the radio was not touched, so a wrong network name is not noticed yet |
 | `mqtt: tcp connect failed: ConnectionReset` then `the broker check failed (Refused)` | nothing listening at that port; *Save anyway* offered |
 | `mqtt: connect failed: Disconnect { reason: BadUserNameOrPassword .. }` | the broker refused the login; *Save anyway* offered |
 | `the driver refused that network (...); raising the access point again` | the phone drops off once; the access point should come back |

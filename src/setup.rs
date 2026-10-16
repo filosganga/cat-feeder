@@ -28,21 +28,19 @@
 //! is the socket loop.
 //!
 //! 1. ✅ raise the access point — the SSID appears in a phone's Wi-Fi list
-//! 2. ✅ a second network stack on it, DHCP, so a phone gets an address — it
-//!    now also names the unit as DNS server, which is slice 5's to verify
-//! 3. ✅ the form on TCP 80 — saving no longer happens here but after a
-//!    trial, which is slice 6's
+//! 2. ✅ a second network stack on it, DHCP, so a phone gets an address
+//! 3. ✅ the form on TCP 80
 //! 4. ⬜ the panel says what to join and what to type into it — written and
 //!    host-tested, **not yet seen on glass**
-//! 5. ⬜ DNS answers every name with the unit, so a phone opens the form by
-//!    itself (ADR-0026)
-//! 6. ⬜ access point *and* station: a scan for the SSID box, and a trial —
-//!    join, lease, broker login — before anything is saved (ADR-0025)
+//! 5. ✅ DNS answers every name with the unit, so a phone opens the form by
+//!    itself (ADR-0026) — on Android; iOS not yet tried
+//! 6. ✅ access point *and* station: a scan for the SSID box, and a trial —
+//!    join, lease, broker login — before anything is saved (ADR-0025). Not
+//!    yet run: *Save anyway* (`/keep`)
 //!
-//! The first three ✅ mean verified on hardware, with a phone. A ⬜ does not
-//! mean unbuilt: each is wired, its pure half host-tested, and what is missing
-//! is a phone session. The fourth also needs a unit with no record and
-//! therefore a button held through power-on.
+//! A ✅ means verified on hardware, with a phone. The ⬜ does not mean
+//! unbuilt: it is wired and its layout is host-tested, and what is missing is
+//! a capture, because seeing it needs a unit with a panel and no record.
 //!
 //! The fourth is also not a network slice at all. It is owned by `main.rs`:
 //! the boot path spawns `display_task` before calling
@@ -74,7 +72,7 @@ use esp_radio::wifi::{
     AccessPointStationEventInfo, AuthenticationMethod, Config as WifiConfig, ControllerConfig,
     DisconnectReason, Interface, WifiController, WifiError,
     ap::AccessPointConfig,
-    scan::ScanConfig,
+    scan::{ScanConfig, ScanTypeConfig},
     sta::{ScanMethod, StationConfig},
 };
 use heapless::String;
@@ -86,7 +84,7 @@ use crate::config::dhcp_config;
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
 use crate::http;
 use crate::provisioning::{
-    AP_ADDR_OCTETS, AP_URL, MAX_NETWORKS, Method, Network, Notice, PAGE_LEN, Record,
+    AP_ADDR_OCTETS, AP_URL, Heard, MAX_NETWORKS, Method, Network, Notice, PAGE_LEN, Record,
     TESTING_REFRESH_SECS, add_network, record_from_form, render_form, render_saved, render_testing,
 };
 use crate::store::Store;
@@ -160,6 +158,24 @@ const TRIAL_MAX_SECS: u32 = (LINK_TIMEOUT.as_secs()
     + JOIN_TIMEOUT.as_secs()
     + ADDRESS_TIMEOUT.as_secs()
     + 2 * crate::mqtt::CONNECT_TIMEOUT.as_secs()) as u32;
+
+/// How long a scan listens on each channel. esp-radio's default is 10–20 ms,
+/// and on the first phone test a rescan at that, with a phone on the access
+/// point, heard 2 access points where the boot scan heard 10. Thirteen
+/// channels at the maximum is still about two seconds.
+const SCAN_DWELL_MIN: esp_hal::time::Duration = esp_hal::time::Duration::from_millis(60);
+const SCAN_DWELL_MAX: esp_hal::time::Duration = esp_hal::time::Duration::from_millis(150);
+
+/// The broker check's socket buffers: a CONNECT, a CONNACK and a DISCONNECT,
+/// none more than a few dozen bytes.
+const PROBE_BUF: usize = 512;
+
+/// How many DNS answers are logged, so a capture shows the probe arriving
+/// without a phone's background chatter filling it.
+const DNS_LOGGED: u32 = 8;
+
+/// How often `/rescan` looks for its scan to have finished.
+const RESCAN_POLL: Duration = Duration::from_millis(250);
 
 /// How long `/rescan` waits for its scan before showing the form anyway.
 const RESCAN_WAIT: Duration = Duration::from_secs(12);
@@ -239,7 +255,12 @@ pub async fn run(
         // Wi-Fi password gets typed in. The salted password is worthless
         // without it.
         .with_auth_method(AuthenticationMethod::Wpa2Personal)
-        .with_password(password.into());
+        .with_password(password.into())
+        .with_channel(AP_START_CHANNEL);
+    let ap = AccessPoint {
+        config: ap,
+        channel: AP_START_CHANNEL,
+    };
 
     // Access point *and* station from the start, the station half naming no
     // network and so doing nothing until a trial connects it. Starting in the
@@ -249,7 +270,7 @@ pub async fn run(
     // No separate start call: `set_config` calls `esp_wifi_start()` whenever
     // the mode changes, so applying this as the initial config is what brings
     // the network up.
-    let initial = WifiConfig::AccessPointStation(StationConfig::default(), ap.clone());
+    let initial = WifiConfig::AccessPointStation(StationConfig::default(), ap.config.clone());
     let (controller, interfaces) = match esp_radio::wifi::new(
         wifi,
         ControllerConfig::default().with_initial_config(initial),
@@ -306,6 +327,17 @@ fn previous_record(store: &mut Store) -> Option<Record> {
     store.load().ok()
 }
 
+/// Where the access point starts, before the boot scan says where the networks
+/// are: esp-radio's own default, written down so `follow` can know it.
+const AP_START_CHANNEL: u8 = 1;
+
+/// The access point's config and the channel in it, which esp-radio does not
+/// let anything read back.
+struct AccessPoint {
+    config: AccessPointConfig,
+    channel: u8,
+}
+
 /// Owns the controller: scans, trials, and the console's record of who joined.
 ///
 /// One owner because a scan and a connect need the controller `&mut`, and the
@@ -314,20 +346,28 @@ fn previous_record(store: &mut Store) -> Option<Record> {
 /// arrives and taken again afterwards.
 async fn radio(
     mut controller: WifiController<'static>,
-    ap: AccessPointConfig,
+    mut ap: AccessPoint,
     station: Stack<'static>,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
     id: &str,
 ) -> ! {
-    static PROBE_RX: StaticCell<[u8; 512]> = StaticCell::new();
-    static PROBE_TX: StaticCell<[u8; 512]> = StaticCell::new();
-    let rx = PROBE_RX.init([0; 512]);
-    let tx = PROBE_TX.init([0; 512]);
+    static PROBE_RX: StaticCell<[u8; PROBE_BUF]> = StaticCell::new();
+    static PROBE_TX: StaticCell<[u8; PROBE_BUF]> = StaticCell::new();
+    let rx = PROBE_RX.init([0; PROBE_BUF]);
+    let tx = PROBE_TX.init([0; PROBE_BUF]);
 
     // Before any phone has joined, ideally: a scan takes the radio off the
     // access point's channel for a moment.
     scan(&mut controller).await;
+
+    // Then move the access point to where the strongest network is — most
+    // likely the one it will be given — while there is still nobody on it to
+    // drop. See `follow`.
+    let strongest = SHARED.lock().await.networks.first().map(|n| n.channel);
+    if let Some(channel) = strongest {
+        follow(&mut controller, &mut ap, channel, "the strongest network");
+    }
 
     loop {
         // A `let`, not a `match` on the expression: temporaries in a match
@@ -345,8 +385,17 @@ async fn radio(
         match next {
             Either3::Second(()) => scan(&mut controller).await,
             Either3::First(()) => {
-                let outcome =
-                    attempt(&mut controller, &ap, station, store, previous, id, rx, tx).await;
+                let outcome = attempt(
+                    &mut controller,
+                    &mut ap,
+                    station,
+                    store,
+                    previous,
+                    id,
+                    rx,
+                    tx,
+                )
+                .await;
                 SHARED.lock().await.trial = outcome;
                 if let Trial::Saved { .. } = outcome {
                     Timer::after(REBOOT_DELAY).await;
@@ -389,24 +438,41 @@ fn log_station(event: Result<AccessPointStationEventInfo, WifiError>) {
 }
 
 /// Lists the networks in range, for the form.
+///
+/// Longer per channel than esp-radio's default — see [`SCAN_DWELL_MIN`].
+///
+/// **A rescan adds to the list rather than replacing it**, so a scan that
+/// hears less cannot empty a list that was right. Each name keeps its
+/// strongest signal; nothing drops out within one setup session, which lasts
+/// minutes.
 async fn scan(controller: &mut WifiController<'static>) {
-    let found =
-        match with_timeout(SCAN_TIMEOUT, controller.scan_async(&ScanConfig::default())).await {
-            Ok(Ok(found)) => found,
-            Ok(Err(e)) => {
-                warn!("setup: scan failed ({e:?})");
-                return;
-            }
-            Err(_) => {
-                warn!("setup: scan did not finish in {}s", SCAN_TIMEOUT.as_secs());
-                return;
-            }
-        };
+    let config = ScanConfig::default().with_scan_type(ScanTypeConfig::Active {
+        min: SCAN_DWELL_MIN,
+        max: SCAN_DWELL_MAX,
+    });
+    let found = match with_timeout(SCAN_TIMEOUT, controller.scan_async(&config)).await {
+        Ok(Ok(found)) => found,
+        Ok(Err(e)) => {
+            warn!("setup: scan failed ({e:?})");
+            return;
+        }
+        Err(_) => {
+            warn!("setup: scan did not finish in {}s", SCAN_TIMEOUT.as_secs());
+            return;
+        }
+    };
 
     let mut shared = SHARED.lock().await;
-    shared.networks.clear();
     for ap in &found {
-        add_network(&mut shared.networks, ap.ssid.as_str(), ap.signal_strength);
+        add_network(
+            &mut shared.networks,
+            Heard {
+                ssid: ap.ssid.as_str(),
+                rssi: ap.signal_strength,
+                channel: ap.channel,
+                bssid: ap.bssid,
+            },
+        );
     }
     shared.scans = shared.scans.wrapping_add(1);
     info!(
@@ -426,7 +492,7 @@ async fn scan(controller: &mut WifiController<'static>) {
 #[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
 async fn attempt(
     controller: &mut WifiController<'static>,
-    ap: &AccessPointConfig,
+    ap: &mut AccessPoint,
     station: Stack<'static>,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
@@ -449,7 +515,7 @@ async fn attempt(
             "setup: a {}-character key cannot be a WPA2 key",
             record.wifi_password.len()
         );
-        return Trial::WifiFailed(JoinFailure::WrongPassword);
+        return Trial::WifiFailed(JoinFailure::UnusableKey);
     }
 
     // A previous trial that joined and then failed at the broker is still
@@ -467,11 +533,40 @@ async fn attempt(
         // The same as the station mode it is rehearsing: the strongest node
         // of a mesh, not the first heard.
         .with_scan_method(ScanMethod::AllChannels);
-    if let Err(e) = controller.set_config(&WifiConfig::AccessPointStation(candidate, ap.clone())) {
+    // **Straight to the node the scan heard best, if it heard one.** Searching
+    // every channel takes the access point off its own for each, and on the
+    // first phone test that cost the phone the setup network for the whole of
+    // a 20 s trial. A network the scan never heard — a hidden one — is still
+    // searched for.
+    let heard = SHARED
+        .lock()
+        .await
+        .networks
+        .iter()
+        .find(|n| n.ssid == record.wifi_ssid)
+        .map(|n| (n.channel, n.bssid));
+    let candidate = match heard {
+        Some((channel, bssid)) => {
+            info!("setup: {} was heard on channel {channel}", record.wifi_ssid);
+            follow(controller, ap, channel, &record.wifi_ssid);
+            candidate.with_channel(channel).with_bssid(bssid)
+        }
+        None => {
+            info!(
+                "setup: {} was not heard; searching every channel",
+                record.wifi_ssid
+            );
+            candidate
+        }
+    };
+    if let Err(e) = controller.set_config(&WifiConfig::AccessPointStation(
+        candidate,
+        ap.config.clone(),
+    )) {
         // `set_config` stops Wi-Fi when it fails, access point included. Put
         // the access point back, or the phone has nothing to show this on.
         error!("setup: the driver refused that network ({e:?}); raising the access point again");
-        let restore = WifiConfig::AccessPointStation(StationConfig::default(), ap.clone());
+        let restore = WifiConfig::AccessPointStation(StationConfig::default(), ap.config.clone());
         if let Err(e) = controller.set_config(&restore) {
             error!("setup: could not raise the access point again ({e:?})");
         }
@@ -552,6 +647,36 @@ async fn attempt(
     }
 }
 
+/// Puts the access point on `channel`, if it is not there already.
+///
+/// **Every trial re-applies the access point's config.** esp-radio has no way
+/// to set the station half alone: `set_config` in this mode writes both, the
+/// access point's channel included, and an access point whose config changes
+/// restarts and drops its clients. A station joining on another channel drags
+/// the access point there too. On the second phone test both cost the phone
+/// the setup network on every trial.
+///
+/// So the access point's channel is kept equal to the network's: once after
+/// the boot scan, and again by a trial on a network elsewhere. That keeps a
+/// trial from also dragging the access point across channels — but on the
+/// third phone test the phone still dropped on every trial with the channel
+/// already right, most likely because re-applying even an unchanged config
+/// restarts the access point. The testing page warns of it; the phone came
+/// back by itself within seconds, and `/` has the outcome when it does.
+/// Setting the station half alone would need esp-radio's private bindings.
+fn follow(controller: &mut WifiController<'static>, ap: &mut AccessPoint, channel: u8, why: &str) {
+    if ap.channel == channel {
+        return;
+    }
+    ap.config = ap.config.clone().with_channel(channel);
+    ap.channel = channel;
+    let config = WifiConfig::AccessPointStation(StationConfig::default(), ap.config.clone());
+    match controller.set_config(&config) {
+        Ok(()) => info!("setup: access point moved to channel {channel}, for {why}"),
+        Err(e) => error!("setup: could not move the access point to channel {channel} ({e:?})"),
+    }
+}
+
 /// The record under trial, re-read from the body that was submitted.
 async fn submitted_record(previous: Option<&Record>) -> Option<Record> {
     record_from_form(&SHARED.lock().await.submitted, previous).ok()
@@ -609,7 +734,8 @@ fn start_ap_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static
 /// the broker check's one TCP socket.
 fn start_station_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
     // DHCP and the broker check, and a spare.
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    const SOCKETS: usize = 3;
+    static RESOURCES: StaticCell<StackResources<SOCKETS>> = StaticCell::new();
 
     let (stack, runner) = embassy_net::new(
         device,
@@ -821,9 +947,7 @@ async fn serve_dns(stack: Stack<'static>) -> ! {
             continue;
         };
 
-        // The first few, so a capture shows the probe arriving without a
-        // phone's background chatter filling it.
-        if answered < 8 {
+        if answered < DNS_LOGGED {
             info!("setup: dns answered {} ({len} bytes)", from.endpoint);
         }
         answered = answered.saturating_add(1);
@@ -938,7 +1062,7 @@ enum Outcome {
 ///
 /// | | |
 /// |---|---|
-/// | `GET /` | the form, suggesting what the last scan heard |
+/// | `GET /` | the last trial's outcome, or the form with what the scan heard |
 /// | `POST /save` | starts a trial, then `303` to `/status` |
 /// | `GET /status` | testing, the form again with what failed, or saved |
 /// | `POST /keep` | *Save anyway*: the tested record, broker unchecked |
@@ -1015,7 +1139,7 @@ async fn handle(
             SCAN.signal(());
             let _ = with_timeout(RESCAN_WAIT, async {
                 while SHARED.lock().await.scans == before {
-                    Timer::after(Duration::from_millis(250)).await;
+                    Timer::after(RESCAN_POLL).await;
                 }
             })
             .await;
@@ -1028,8 +1152,16 @@ async fn handle(
             http::send("setup", socket, "405 Method Not Allowed", "", page).await;
             Outcome::Continue
         }
+        // The last trial's outcome if there was one, not a blank form. A phone
+        // that lost the setup network mid-trial closes the portal, and the
+        // page it opens on rejoining is this one; the answer must be here.
         (Method::Get, "/") => {
-            render_form(page, "", Notice::None, &SHARED.lock().await.networks);
+            {
+                let shared = SHARED.lock().await;
+                if !render_status(page, &shared, previous, setup_ssid) {
+                    render_form(page, "", Notice::None, &shared.networks);
+                }
+            }
             http::send("setup", socket, "200 OK", "", page).await;
             Outcome::Continue
         }

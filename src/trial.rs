@@ -27,6 +27,10 @@ pub enum JoinFailure {
     /// The network answered and refused the password: a handshake timeout or
     /// an authentication failure, which is what a wrong WPA2 key looks like.
     WrongPassword,
+    /// The password cannot be a WPA2 key at all — under eight characters, or
+    /// 64 that are not hex — so the radio was not even asked. See
+    /// [`usable_key`].
+    UnusableKey,
     /// Nothing by that name answered, or nothing with a security this unit can
     /// use.
     NotFound,
@@ -85,11 +89,17 @@ pub enum Trial {
 /// which it is.
 pub fn usable_key(password: &str) -> bool {
     match password.len() {
-        0 | 8..=63 => true,
-        64 => password.bytes().all(|b| b.is_ascii_hexdigit()),
+        0 | PASSPHRASE_MIN..=PASSPHRASE_MAX => true,
+        PSK_HEX_LEN => password.bytes().all(|b| b.is_ascii_hexdigit()),
         _ => false,
     }
 }
+
+/// A WPA2 passphrase's length, inclusive (IEEE 802.11i).
+pub const PASSPHRASE_MIN: usize = 8;
+pub const PASSPHRASE_MAX: usize = 63;
+/// A raw 256-bit PSK, written as hex.
+pub const PSK_HEX_LEN: usize = 64;
 
 /// Whether a press of *Test and save* starts a trial: not while one runs, and
 /// not after one saved, when the unit is about to restart.
@@ -124,6 +134,12 @@ pub fn message(trial: Trial, ssid: &str, host: &str, port: u16) -> Option<String
             m,
             "<b>{ssid}</b> refused the password. Check it and try again; \
              it is case sensitive."
+        ),
+        Trial::WifiFailed(JoinFailure::UnusableKey) => write!(
+            m,
+            "That cannot be the password for <b>{ssid}</b>: a Wi-Fi password \
+             is {PASSPHRASE_MIN} to {PASSPHRASE_MAX} characters. Nothing was \
+             tried."
         ),
         Trial::WifiFailed(JoinFailure::NotFound) => write!(
             m,
@@ -197,6 +213,15 @@ mod tests {
     fn a_wrong_password_names_the_network() {
         let m = says(Trial::WifiFailed(JoinFailure::WrongPassword));
         assert!(m.contains("<b>MyWiFi</b> refused the password"), "{m}");
+    }
+
+    #[test]
+    fn a_short_password_is_not_called_refused() {
+        // Seen on the first phone test: a mistyped network name with a short
+        // password read "refused the password", though nothing was asked.
+        let m = says(Trial::WifiFailed(JoinFailure::UnusableKey));
+        assert!(m.contains("8 to 63 characters"), "{m}");
+        assert!(!m.contains("refused"), "{m}");
     }
 
     #[test]

@@ -159,9 +159,10 @@ A unit with no configuration raises its own Wi-Fi network and waits.
    in its password and your MQTT broker. The broker must be an **IP address**:
    the firmware has no DNS resolver. Give the broker's machine a DHCP
    reservation.
-3. Press *Test and save*. The unit tries your Wi-Fi and logs in to the broker
-   while your phone stays on its network, then says what happened: a wrong
-   Wi-Fi password or a refused broker login comes back to the form, and
+3. Press *Test and save*. The unit tries your Wi-Fi and logs in to the broker.
+   Your phone drops off the setup network for a few seconds while it does;
+   it normally rejoins by itself, and the setup page reopens on the answer. A
+   wrong Wi-Fi password or a refused broker login comes back to the form, and
    nothing is saved. If only the broker failed — it is not running yet, say —
    *Save anyway* keeps the settings and the unit retries the broker on its own.
 4. Once it works, the page shows the address the unit was given, which is
