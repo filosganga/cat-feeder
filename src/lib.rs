@@ -26,20 +26,29 @@ extern crate alloc;
 pub mod admin;
 pub mod calibrate;
 pub mod captive_dns;
+pub mod crc32;
 pub mod dhcp;
 pub mod discovery;
 pub mod ds3231;
 pub mod events;
 pub mod feeder;
+pub mod health;
 pub mod indicator;
+pub mod page;
 pub mod portions;
 pub mod provisioning;
+pub mod record;
+pub mod request;
 pub mod reset;
 pub mod schedule;
 pub mod sha256;
 pub mod trial;
 pub mod tz;
 pub mod update;
+
+// ADR-0028's layers, checked against CLAUDE.md. Host tests only.
+#[cfg(test)]
+mod layers;
 
 // Hardware. Only built for the board.
 #[cfg(target_os = "none")]

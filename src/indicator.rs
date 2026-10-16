@@ -50,6 +50,8 @@
 //! count, and a jam is the one state where a permanently lit LED is warranted:
 //! food is not being dispensed and somebody has to come and fix it.
 
+use crate::health::Health;
+
 /// A colour, in the order humans write it. [`crate::led`] reorders for the
 /// WS2812, which wants green first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,29 +91,6 @@ pub const WHITE: Rgb = Rgb::new(16, 16, 16);
 const FLASH_ON_MS: u64 = 120;
 const FLASH_GAP_MS: u64 = 200;
 const FLASH_MS: u64 = FLASH_ON_MS + FLASH_GAP_MS;
-
-/// Everything the LED is allowed to know, sampled together.
-///
-/// A plain snapshot rather than references to the live atomics, so
-/// [`Indicator::poll`] cannot observe a value changing underneath it and cannot
-/// be tested only on hardware.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Health {
-    /// The BOOT button is being held towards a reset. See `reset.rs`.
-    pub reset_held: bool,
-    /// Setup mode: this unit has raised its own access point. Roadmap step 9.
-    pub setup: bool,
-    /// Associated with the configured Wi-Fi network.
-    pub link: bool,
-    /// Connected to the MQTT broker.
-    pub broker: bool,
-    /// The clock has been given a *live* time, so the schedule is armed. A
-    /// retained time does not count — see `schedule.rs`.
-    pub armed: bool,
-    pub paused: bool,
-    pub feeding: bool,
-    pub jammed: bool,
-}
 
 /// The one thing the LED is showing. Exactly one, ever.
 ///

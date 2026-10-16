@@ -43,7 +43,8 @@ use crate::config::AP_SECRET;
 use crate::events::{Event, Source};
 use crate::firmware::{self, SECTOR, Target};
 use crate::http;
-use crate::provisioning::{Head, Method, PAGE_LEN, erase_confirmed};
+use crate::page::{PAGE_LEN, erase_confirmed};
+use crate::request::{Head, Method};
 use crate::schedule::ScheduleCommand;
 use crate::store::SharedStore;
 use crate::tz::Zone;
@@ -435,24 +436,18 @@ async fn save_pause(
     }
 }
 
-/// Stores a timezone and puts it in force. `Ok(true)` if it changed.
-///
-/// Flash first, then `Bus::zone`, which the schedule task reads every tick:
-/// with no live time from Home Assistant, the clock moves into the zone's
-/// offset within a second, and the RTC follows.
+/// Stores a timezone through [`Bus::set_zone`]. `Ok(true)` if it changed.
 async fn save_zone(
     zone: Zone,
     store: &'static SharedStore,
     bus: &'static Bus,
 ) -> Result<bool, &'static str> {
-    if bus.zone.get().as_ref() == Some(&zone) {
-        return Ok(false);
-    }
-    match store.lock().await.save_zone(Some(&zone)) {
-        Ok(()) => {
-            info!("web: timezone {} ({})", zone.name, zone.rule);
-            bus.zone.set(Some(zone));
-            Ok(true)
+    match bus.set_zone(&mut *store.lock().await, zone.clone()) {
+        Ok(changed) => {
+            if changed {
+                info!("web: timezone {} ({})", zone.name, zone.rule);
+            }
+            Ok(changed)
         }
         Err(e) => {
             warn!("web: timezone not saved ({e:?})");
@@ -461,28 +456,19 @@ async fn save_zone(
     }
 }
 
-/// Stores a calibration and puts it in force: flash first, then
-/// `Bus::calibration`, which the feeder task applies at its next idle moment.
+/// Reads the calibration form and saves it through [`Bus::set_calibration`].
 async fn save_calibration(
     body: &str,
     store: &'static SharedStore,
     bus: &'static Bus,
 ) -> Notice<'static> {
-    let current = bus.calibration.get();
-    let wanted = match calibration_from_form(body, current) {
+    let wanted = match calibration_from_form(body, bus.calibration.get()) {
         Ok(wanted) => wanted,
         Err(message) => return Notice::Problem(message),
     };
-    if wanted == current {
-        return Notice::Done("Nothing changed.");
-    }
-    let saved = store.lock().await.update(|record| {
-        record.detent_ms = wanted.detent_ms;
-        record.portion_scale_pct = wanted.portion_scale_pct;
-    });
-    match saved {
-        Ok(()) => {
-            bus.calibration.set(wanted);
+    match bus.set_calibration(&mut *store.lock().await, wanted) {
+        Ok(false) => Notice::Done("Nothing changed."),
+        Ok(true) => {
             info!(
                 "web: saved detent {}ms, portion scale {}%",
                 wanted.detent_ms, wanted.portion_scale_pct

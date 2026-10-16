@@ -34,7 +34,22 @@
 
 use heapless::Vec;
 
-use crate::provisioning::{MAX_DETENT_MS, MIN_DETENT_MS};
+/// A detent interval for a mechanism nobody has measured yet.
+///
+/// The figure from the two matching feeders. It is a starting point, not a
+/// default worth relying on — the whole reason this is in the record is that
+/// the third unit is a different brand.
+pub const DEFAULT_DETENT_MS: u16 = 1_900;
+
+/// Below this, the derived minimum click spacing would collide with the 30 ms
+/// debounce in `switch.rs` and start rejecting real clicks.
+pub const MIN_DETENT_MS: u16 = 200;
+
+/// The slowest detent anything will store, by hand, by a calibration run or
+/// through `mkrecord`. The matching pair of feeders take about
+/// 2 s; the third, a cheaper mechanism, measured 5.3 s at 4.7 V, and turns
+/// slower still on batteries or with a full hopper. Twice that, with room over.
+pub const MAX_DETENT_MS: u16 = 10_000;
 
 /// Clicks in a run, and so portions dispensed by it. Five gives four clean
 /// gaps in about ten seconds on a 2 s mechanism, twenty-five on the slow one.

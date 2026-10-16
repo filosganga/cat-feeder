@@ -382,7 +382,7 @@ impl Zone {
         let at = 5 + NAME_LEN;
         out[at] = self.rule.len() as u8;
         out[at + 1..at + 1 + self.rule.len()].copy_from_slice(self.rule.as_bytes());
-        let crc = crate::provisioning::crc32(&out[..ZONE_RECORD_LEN - 4]);
+        let crc = crate::crc32::crc32(&out[..ZONE_RECORD_LEN - 4]);
         out[ZONE_RECORD_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
         out
     }
@@ -395,7 +395,7 @@ impl Zone {
             return Err(ZoneRecordError::NotStored);
         }
         let crc = u32::from_le_bytes(bytes[ZONE_RECORD_LEN - 4..].try_into().unwrap());
-        if crc != crate::provisioning::crc32(&bytes[..ZONE_RECORD_LEN - 4]) {
+        if crc != crate::crc32::crc32(&bytes[..ZONE_RECORD_LEN - 4]) {
             return Err(ZoneRecordError::Corrupt);
         }
         let text = |at: usize, max: usize| {

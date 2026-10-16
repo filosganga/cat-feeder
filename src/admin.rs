@@ -46,11 +46,11 @@ use core::fmt::Write as _;
 use heapless::String;
 
 use crate::calibrate::{Calibration, DETENTS, Failure, Field, Progress};
+use crate::page::{ERASE_FORM, Escaped, FAVICON, PAGE_LEN};
 use crate::portions::MAX_CLICKS;
-use crate::provisioning::{
-    AP_URL, ERASE_FORM, Escaped, FAVICON, FormError, PAGE_LEN, PASSWORD_LEN, Record, ap_ssid,
-    field, record_from_form,
-};
+use crate::provisioning::{AP_URL, FormError, ap_ssid, record_from_form};
+use crate::record::{PASSWORD_LEN, Record};
+use crate::request::{FieldError, field};
 use crate::schedule::{
     Date, EditError, MAX_SLOTS, Schedule, Slot, SlotChange, SlotEdit, Wall, parse_slot_time,
 };
@@ -241,15 +241,15 @@ pub fn schedule_from_form(body: &str) -> Result<Schedule, ScheduleFormError> {
 
 /// `field` wants a `&'static str` name, for its error; the schedule rows are
 /// built at runtime, so they are looked up by hand with the same decoding.
-fn named_field(body: &str, name: &str) -> Result<Option<String<8>>, FormError> {
+fn named_field(body: &str, name: &str) -> Result<Option<String<8>>, FieldError> {
     for pair in body.split('&') {
         if let Some((key, value)) = pair.split_once('=')
             && key == name
         {
             // Reuse the real decoder by handing it a one-field body.
             let mut one: String<64> = String::new();
-            one.push_str("v=").map_err(|_| FormError::TooLong("v"))?;
-            one.push_str(value).map_err(|_| FormError::TooLong("v"))?;
+            one.push_str("v=").map_err(|_| FieldError::TooLong("v"))?;
+            one.push_str(value).map_err(|_| FieldError::TooLong("v"))?;
             return field::<8>(&one, "v");
         }
     }
@@ -397,7 +397,8 @@ pub fn calibration_from_form(
     current: Calibration,
 ) -> Result<Calibration, &'static str> {
     let read = |name: &'static str, field: Field, message: &'static str| {
-        match crate::provisioning::field::<8>(body, name).ok().flatten() {
+        // Qualified: the closure's `field` is the calibration field.
+        match crate::request::field::<8>(body, name).ok().flatten() {
             None => Ok(current.get(field)),
             Some(text) => {
                 let (min, max, step) = field.range();

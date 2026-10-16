@@ -15,7 +15,7 @@
 //!
 //! Credentials are never compiled into the firmware
 //! (`docs/adr/0004-credentials-come-from-flash-only.md`). The alternative is
-//! not "a different build" but **no build at all**: `provisioning::Record::encode` is pure and host-tested, so the same
+//! not "a different build" but **no build at all**: `record::Record::encode` is pure and host-tested, so the same
 //! code the firmware reads with can produce the bytes here, and `espflash`
 //! writes them straight into the `nvs` partition — the one partition an
 //! application reflash never touches.
@@ -27,16 +27,15 @@
 //!
 //! It is an example rather than a second `[[bin]]` because `[[bin]]` is the
 //! firmware and is built for the ESP32-C6. Examples build for the host, which
-//! is what lets this share `provisioning.rs` instead of reimplementing the
+//! is what lets this share `record.rs` instead of reimplementing the
 //! format — and sharing it is the whole point, since a second implementation
 //! that drifted would write records the firmware rejects.
 
 use std::process::ExitCode;
 
+use cat_feeder::calibrate::{DEFAULT_DETENT_MS, MAX_DETENT_MS, MIN_DETENT_MS};
 use cat_feeder::portions::SCALE_UNCHANGED;
-use cat_feeder::provisioning::{
-    DEFAULT_DETENT_MS, MAX_DETENT_MS, MAX_RECORD_LEN, MIN_DETENT_MS, Record,
-};
+use cat_feeder::record::{MAX_RECORD_LEN, Record};
 
 const USAGE: &str = "\
 usage: mkrecord [options]

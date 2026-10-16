@@ -143,7 +143,7 @@ read as *unconfigured*. A missing `nvs` partition is a loud error.
 
 `setup.rs` (never returns; reboots after saving) and `web.rs` (station mode)
 both serve over `http.rs`; the pure halves are `provisioning.rs` and
-`admin.rs`.
+`admin.rs`, sharing `request.rs` and `page.rs`.
 
 - SSID `cat-feeder-<id>`, password `base32(sha256("<ap_secret>:<id>"))` as
   `XXXX-XXXX-XXXX` (Crockford), address 192.168.4.1 from
@@ -295,21 +295,21 @@ Pure versus hardware is a separate axis; `admin.rs` is pure and is a control.
 
 | Layer | Modules | May know |
 |---|---|---|
-| core | `feeder` `portions` `calibrate` `schedule` `tz` `ds3231` `events` `update` `sha256` | core only |
-| state | `provisioning::Record`, `config`, `store`, `wiring::Bus` | core |
-| controls | `web`+`admin`, `setup`+`trial`+`captive_dns`+`dhcp`+`http`, `mqtt`+`discovery`, `indicator`+`led`, `reset` | core, state |
-| drivers | `motor` `switch` `rtc` `i2c` `firmware` `board` | core |
+| core | `feeder` `portions` `calibrate` `schedule` `tz` `ds3231` `events` `update` `sha256` `crc32` | core only |
+| state | `record` `config` `health` `store` `wiring` | core |
+| controls | `web`+`admin`, `setup`+`provisioning`+`trial`+`captive_dns`+`dhcp`, `http`+`request`+`page`, `mqtt`+`discovery`, `indicator`+`led`, `reset` | core, state, drivers |
+| drivers | `motor` `switch` `rtc` `i2c` `firmware` `board` | core, state |
 | wiring | `src/bin/main.rs` | everything |
 
-Known exceptions, on the roadmap: `provisioning.rs` spans all three layers,
-and `Bus::health` returns the LED's `indicator::Health`.
-
-- One operation per state change, called by every control (`Bus::set_pause`);
-  a control parses, calls it, renders the result.
+- One operation per state change, called by every control (`Bus::set_pause`,
+  `set_calibration`, `set_zone`, `set_clock_by_hand`); a control parses,
+  calls it, renders the result.
 - A control's own state stays in its task, never on `Bus`. A type a control
   and the core share is defined in the core.
 - Core comments name the input ("set by hand"), not the control that sends it.
 - Removing a control should touch the control, `main.rs` and its docs.
+- `src/layers.rs` (host tests) reads this table and fails on an upward
+  `crate::` path or a module with no row. A new module needs one.
 
 ```
 src/bin/main.rs  wiring: peripherals, tasks, executor, clock following, zone
@@ -317,7 +317,10 @@ board.rs         pin map per board feature
 -- pure, host-tested --
 feeder.rs        align, spacing, count, brake, jam; DEBOUNCE_MS
 portions.rs      pending clicks, MAX_CLICKS, portions -> clicks
-calibrate.rs     the Run calibration measurement; Calibration, Field ranges
+calibrate.rs     the Run calibration measurement; Calibration, Field ranges, detent limits
+crc32.rs         the checksum every flash record carries
+record.rs        the credentials record: fields, encode, decode, without_network
+health.rs        the unit's status snapshot, `Bus::health`
 schedule.rs      Schedule, LocalClock, Scheduler, double-feed guard
 tz.rs            POSIX rules, offsets, the stored zone
 reset.rs         BOOT 5 s hold
@@ -325,7 +328,9 @@ indicator.rs     LED priority and patterns
 events.rs        feeder/<id>/event payloads
 discovery.rs     Home Assistant discovery configs, JSON-checked
 ds3231.rs        DS3231 registers
-provisioning.rs  flash record, setup identity, form, minimal HTTP parsing
+provisioning.rs  setup identity, the network form -> Record, setup's pages
+request.rs       HTTP request head, form-field decoding
+page.rs          what both pages share: PAGE_LEN, Escaped, FAVICON, the reset form
 trial.rs         setup's trial outcomes and what the page says about them
 captive_dns.rs   setup's DNS answers: every name is the unit
 admin.rs         admin page: auth, forms, rendering

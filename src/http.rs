@@ -19,7 +19,8 @@ use heapless::String;
 use log::warn;
 use static_cell::StaticCell;
 
-use crate::provisioning::{Head, PAGE_LEN, parse_head};
+use crate::page::PAGE_LEN;
+use crate::request::{Head, parse_head};
 
 /// Plain HTTP, on both. There is no certificate a unit could present that a
 /// browser would not shout about.

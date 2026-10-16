@@ -42,7 +42,7 @@ use log::warn;
 
 use crate::calibrate::{Calibration, Progress};
 use crate::events::Event;
-use crate::indicator::Health;
+use crate::health::Health;
 use crate::schedule::{Schedule, ScheduleCommand, Slot, TimeSource, Wall};
 use crate::store::{Store, StoreError};
 use crate::tz::Zone;
@@ -481,7 +481,7 @@ impl Bus {
             calibration_progress: Shared::new(Progress::None),
             calibration: Shared::new(Calibration {
                 portion_scale_pct: crate::portions::SCALE_UNCHANGED,
-                detent_ms: crate::provisioning::DEFAULT_DETENT_MS,
+                detent_ms: crate::calibrate::DEFAULT_DETENT_MS,
             }),
             net: Connectivity::new(),
             setup: AtomicBool::new(false),
@@ -534,6 +534,44 @@ impl Bus {
     /// The pause as read from flash at boot. Nothing is written or published.
     pub fn seed_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// The calibration in force, from whichever control saved it.
+    ///
+    /// Flash first, then in force, as [`Bus::set_pause`]: nothing claims a
+    /// figure the record does not hold, and a failed write changes nothing.
+    /// The feeder task applies it at its next idle moment. An unchanged value
+    /// is not rewritten. `Ok(true)` when it changed.
+    pub fn set_calibration(
+        &self,
+        store: &mut Store,
+        wanted: Calibration,
+    ) -> Result<bool, StoreError> {
+        if self.calibration.get() == wanted {
+            return Ok(false);
+        }
+        store.update(|record| {
+            record.detent_ms = wanted.detent_ms;
+            record.portion_scale_pct = wanted.portion_scale_pct;
+        })?;
+        self.calibration.set(wanted);
+        Ok(true)
+    }
+
+    /// The timezone followed when nobody publishes the time, from whichever
+    /// control set it.
+    ///
+    /// Flash first, then in force: the schedule task reads `zone` every tick,
+    /// so with no live time from Home Assistant the clock moves into the
+    /// zone's offset within a second, and the RTC follows. An unchanged zone
+    /// is not rewritten. `Ok(true)` when it changed.
+    pub fn set_zone(&self, store: &mut Store, zone: Zone) -> Result<bool, StoreError> {
+        if self.zone.get().as_ref() == Some(&zone) {
+            return Ok(false);
+        }
+        store.save_zone(Some(&zone))?;
+        self.zone.set(Some(zone));
+        Ok(true)
     }
 
     /// Pauses or resumes the schedule, from whichever control asked.

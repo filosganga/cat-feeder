@@ -77,11 +77,14 @@ use crate::captive_dns;
 use crate::config::{AP_SECRET, dhcp_config};
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
 use crate::http;
+use crate::page::{PAGE_LEN, erase_confirmed};
 use crate::provisioning::{
-    AP_ADDR_OCTETS, AP_URL, Heard, MAX_NETWORKS, Method, Network, Notice, PAGE_LEN, Record,
-    TESTING_REFRESH_SECS, add_network, ap_password, ap_ssid, erase_confirmed, record_from_form,
-    render_erased, render_form, render_saved, render_testing,
+    AP_ADDR_OCTETS, AP_URL, Heard, MAX_NETWORKS, Network, Notice, TESTING_REFRESH_SECS,
+    add_network, ap_password, ap_ssid, record_from_form, render_erased, render_form, render_saved,
+    render_testing,
 };
+use crate::record::Record;
+use crate::request::Method;
 use crate::store::Store;
 use crate::trial::{
     BrokerFailure, JoinFailure, Trial, keepable, may_erase, may_start, message, usable_key,

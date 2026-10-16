@@ -800,7 +800,7 @@ impl Schedule {
             out[at..at + 2].copy_from_slice(&slot.minute_of_day.to_le_bytes());
             out[at + 2] = slot.portions;
         }
-        let crc = crate::provisioning::crc32(&out[..SCHEDULE_RECORD_LEN - 4]);
+        let crc = crate::crc32::crc32(&out[..SCHEDULE_RECORD_LEN - 4]);
         out[SCHEDULE_RECORD_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
         out
     }
@@ -821,7 +821,7 @@ impl Schedule {
             return Err(ScheduleRecordError::Corrupt);
         }
         let crc = u32::from_le_bytes(bytes[SCHEDULE_RECORD_LEN - 4..].try_into().unwrap());
-        if crc != crate::provisioning::crc32(&bytes[..SCHEDULE_RECORD_LEN - 4]) {
+        if crc != crate::crc32::crc32(&bytes[..SCHEDULE_RECORD_LEN - 4]) {
             return Err(ScheduleRecordError::Corrupt);
         }
 
@@ -885,7 +885,7 @@ pub fn encode_paused(paused: bool) -> [u8; PAUSE_RECORD_LEN] {
     let mut out = [0u8; PAUSE_RECORD_LEN];
     out[..4].copy_from_slice(&PAUSE_MAGIC);
     out[4] = u8::from(paused);
-    let crc = crate::provisioning::crc32(&out[..PAUSE_RECORD_LEN - 4]);
+    let crc = crate::crc32::crc32(&out[..PAUSE_RECORD_LEN - 4]);
     out[PAUSE_RECORD_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
     out
 }
@@ -899,7 +899,7 @@ pub fn decode_paused(bytes: &[u8]) -> Option<bool> {
         return None;
     }
     let crc = u32::from_le_bytes(bytes[PAUSE_RECORD_LEN - 4..].try_into().ok()?);
-    if crc != crate::provisioning::crc32(&bytes[..PAUSE_RECORD_LEN - 4]) {
+    if crc != crate::crc32::crc32(&bytes[..PAUSE_RECORD_LEN - 4]) {
         return None;
     }
     match bytes[4] {

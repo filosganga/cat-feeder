@@ -652,7 +652,7 @@ mod tests {
         // The threshold has to sit in the empty middle between contact bounce
         // and a real detent. Too close to the debounce and it starts rejecting
         // real clicks, which looks exactly like a mechanism that has stalled.
-        for detent_ms in 1..=crate::provisioning::MAX_DETENT_MS {
+        for detent_ms in 1..=crate::calibrate::MAX_DETENT_MS {
             let t = Timings::from_detent(detent_ms);
             assert!(
                 t.min_click_spacing_ms >= 4 * DEBOUNCE_MS,
@@ -668,7 +668,7 @@ mod tests {
         // The other half: the window must never be so wide that a genuine
         // detent is rejected as bounce. Below the floor the clamp dominates,
         // which is why that range is excluded rather than asserted over.
-        for detent_ms in 300..=crate::provisioning::MAX_DETENT_MS {
+        for detent_ms in 300..=crate::calibrate::MAX_DETENT_MS {
             let t = Timings::from_detent(detent_ms);
             assert!(
                 t.min_click_spacing_ms < detent_ms as u64,

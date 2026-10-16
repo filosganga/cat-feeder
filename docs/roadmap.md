@@ -11,9 +11,6 @@ its row; git history keeps the record.
 | OTA updates | built and seen working on a Zero (ADR-0022, ADR-0024): `dev/ota.sh`. What is left is below |
 | An external WS2812 on GPIO8 | no firmware change: it sits in parallel with the onboard LED |
 | The printed enclosure | one design for every feeder (ADR-0012) |
-| Split `provisioning.rs` along ADR-0028's layers | it holds the flash record and `crc32` (state), the detent limits (core), and HTTP parsing and the setup page (controls); the core imports it for `crc32` and the limits |
-| Move `indicator::Health` below the controls | `wiring::Bus::health` returns it, so the state layer imports the LED's module (ADR-0028) |
-| A `Bus` operation for saving the calibration | the logic is inside `web.rs`, so a second control would copy it (ADR-0028) |
 
 ### OTA, in order
 

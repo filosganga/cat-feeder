@@ -18,7 +18,8 @@ use cat_feeder::indicator::{Indicator, Rgb, Status};
 use cat_feeder::led::Led;
 use cat_feeder::motor::{Drv8833, MotorDriver};
 use cat_feeder::portions::{Added, MAX_CLICKS};
-use cat_feeder::provisioning::{AP_PASSWORD_LEN, DecodeError, Record, ap_password};
+use cat_feeder::provisioning::{AP_PASSWORD_LEN, ap_password};
+use cat_feeder::record::{DecodeError, Record};
 use cat_feeder::reset::{Hold, HoldToReset};
 use cat_feeder::rtc::Rtc;
 use cat_feeder::schedule::{

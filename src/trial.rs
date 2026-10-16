@@ -16,7 +16,7 @@ use core::fmt::Write as _;
 
 use heapless::String;
 
-use crate::provisioning::Escaped;
+use crate::page::Escaped;
 
 /// Why the Wi-Fi was not joined.
 ///
@@ -288,8 +288,8 @@ mod tests {
     fn the_longest_message_fits_with_every_character_escaped() {
         // An SSID of `"` escapes to six bytes a character, a host of `&` to
         // five; the message must come out whole, not cut mid-tag.
-        let ssid = "\"".repeat(crate::provisioning::SSID_LEN);
-        let host = "&".repeat(crate::provisioning::HOST_LEN);
+        let ssid = "\"".repeat(crate::record::SSID_LEN);
+        let host = "&".repeat(crate::record::HOST_LEN);
         for trial in [
             Trial::WifiFailed(JoinFailure::NotFound),
             Trial::BrokerFailed {

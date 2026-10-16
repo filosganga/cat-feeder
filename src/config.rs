@@ -17,7 +17,7 @@ use esp_hal::efuse::{self, InterfaceMacAddress};
 use heapless::String;
 
 use crate::feeder::Timings;
-use crate::provisioning::Record;
+use crate::record::Record;
 
 /// Wi-Fi and broker settings.
 ///

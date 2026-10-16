@@ -43,7 +43,7 @@ use esp_bootloader_esp_idf::partitions::{
 use esp_hal::peripherals::FLASH;
 use esp_storage::FlashStorage;
 
-use crate::provisioning::{DecodeError, MAX_RECORD_LEN, Record};
+use crate::record::{DecodeError, MAX_RECORD_LEN, Record};
 use crate::schedule::{
     PAUSE_RECORD_LEN, SCHEDULE_RECORD_LEN, Schedule, ScheduleRecordError, decode_paused,
     encode_paused,
