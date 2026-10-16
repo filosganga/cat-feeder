@@ -1,22 +1,6 @@
-#!/usr/bin/env python3
-"""Checks a DIY Layout Creator perfboard drawing. Run it through dev/pcb-check.
-
-Reads the layout's XML and reports, in order:
-
-  pinouts     each header's pin names against dev/pinouts.toml, the parts' own
-              silkscreen order
-  power       nets that join ground to a supply, 5 V to 3V3, or hold a polarised
-              capacitor the wrong way round
-  nets        every net with its pins, and the pins connected to nothing
-  netlist     the drawing's nets against dev/netlist.toml, what is meant to
-              connect to what: a net split, two joined, a pin where none belongs
-  firmware    each net's GPIO against the pin src/board.rs hands out for it
-  labels      printed labels that disagree with the pin they sit on
-  neighbours  holes a pitch apart on different nets, worst first — where a solder
-              blob does damage
-
-Exits 1 if anything in pinouts, power, netlist, firmware or labels is wrong, 0
-otherwise. Neighbours are for reading, not failing: a perfboard always has them.
+"""The perfboard drawing as the dev tools read it: one parser, shared by
+dev/pcb-check, dev/pcb-render and dev/kicad-netlist, because two parsers would
+be two opinions about the board. Not meant to be run.
 
 Why each rule is shaped the way it is:
 
@@ -30,15 +14,15 @@ Why each rule is shaped the way it is:
 - A drawing can be self-consistent and still connect the wrong things: every
   rule above passes a data line run to the wrong resistor. Only a statement of
   what is meant, made apart from the drawing, catches that (ADR-0030).
+
+Needs Python 3.11 for tomllib; a tool checks that before importing this.
 """
 
-import argparse
 import re
-import sys
 import tomllib
 import xml.etree.ElementTree as ET
-from collections import defaultdict
-from itertools import combinations
+
+from _args import die as fail  # a broken input is reported as the tool's own error
 
 # Pin names that are a supply rail, and what kind. Lower-case, as compared.
 GROUND = {"gnd"}
@@ -46,11 +30,6 @@ RAIL_5V = {"5v", "vcc", "vbatt", "vin", "vm"}
 RAIL_3V3 = {"3v3", "3.3v"}
 
 SEVERITY = {"short": 0, "high": 1, "medium": 2, "low": 3}
-
-
-def fail(msg):
-    print(f"pcb-check: {msg}", file=sys.stderr)
-    sys.exit(2)
 
 
 class Board:
@@ -377,195 +356,3 @@ def classify(names):
     if low & RAIL_5V or any(n.endswith(".+") for n in names):
         return "5V"
     return None
-
-
-def main():
-    ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--layout", default="pcb.diy")
-    ap.add_argument("--pinouts", default="dev/pinouts.toml")
-    ap.add_argument("--netlist", default="dev/netlist.toml")
-    ap.add_argument("--board-rs", default="src/board.rs")
-    ap.add_argument("--all", action="store_true")
-    args = ap.parse_args()
-
-    board, nets, pins, headers, labels, notes, symmetric = load(args.layout)
-    netlist = load_netlist(args.netlist)
-    macros = board_pins(args.board_rs)
-    try:
-        with open(args.pinouts, "rb") as f:
-            reference = tomllib.load(f)
-    except OSError as e:
-        fail(f"cannot read {args.pinouts}: {e}")
-    except tomllib.TOMLDecodeError as e:
-        fail(f"{args.pinouts} is not TOML: {e}")
-
-    errors = 0
-
-    # Group holes into nets; a net's name is its pins.
-    members = defaultdict(list)
-    for g in list(nets.parent):
-        members[nets.find(g)].append(g)
-    net_pins = {root: sorted(pins[g] for g in holes if g in pins) for root, holes in members.items()}
-
-    print(f"{args.layout}: {board.cols} x {board.rows} holes, {len(headers)} headers, {len(pins)} pins\n")
-
-    # --- pinouts ---------------------------------------------------------
-    print("Pinouts, against the parts' silkscreen")
-    directions = defaultdict(set)
-    for name, drawn in headers.items():
-        ref = reference.get(name)
-        if ref is None:
-            print(f"  ??    {name}: no entry in {args.pinouts}, so unchecked")
-            continue
-        want = [p.lower() for p in ref["pins"]]
-        got = [p.lower() for p in drawn]
-        module = ref.get("module", name)
-        if got == want:
-            directions[module].add("forward")
-            print(f"  ok    {name}")
-        elif got == want[::-1]:
-            directions[module].add("reversed")
-            print(f"  ok    {name} (reversed)")
-        else:
-            errors += 1
-            print(f"  FAIL  {name}: drawn   {' '.join(drawn)}")
-            print(f"        {' ' * len(name)}  the part {' '.join(ref['pins'])}")
-    for module, ways in directions.items():
-        if len(ways) > 1:
-            errors += 1
-            print(f"  FAIL  {module}: some rows match forwards and some backwards, which no placement of one part does")
-    for name in reference:
-        if name not in headers:
-            print(f"  --    {name} is in {args.pinouts} but not in the drawing")
-    # Which pins are spare is the design, not the part, and the netlist says it
-    # now: a pin in no net. Two lists of the same thing would drift apart.
-    for name, ref in reference.items():
-        if "unused" in ref:
-            errors += 1
-            print(f"  FAIL  {name}: `unused` belongs to {args.netlist} now; a pin in no net is spare")
-
-    # --- power -----------------------------------------------------------
-    print("\nPower")
-    power_ok = True
-    for root, names in net_pins.items():
-        low = {n.rsplit(".", 1)[-1].lower() for n in names}
-        if low & GROUND and (low & (RAIL_5V | RAIL_3V3) or any(n.endswith(".+") for n in names)):
-            errors += 1
-            power_ok = False
-            print(f"  FAIL  ground joined to a supply: {' '.join(names)}")
-        elif low & RAIL_5V - {"vcc"} and low & RAIL_3V3:
-            errors += 1
-            power_ok = False
-            print(f"  FAIL  5 V joined to 3V3: {' '.join(names)}")
-        minus = [n for n in names if n.endswith(".-")]
-        if minus and not low & GROUND and classify(names) is not None:
-            errors += 1
-            power_ok = False
-            print(f"  FAIL  a capacitor's - lead on a supply: {' '.join(names)}")
-    if power_ok:
-        print("  ok    no supply joined to ground or to another supply")
-
-    # --- nets ------------------------------------------------------------
-    print("\nNets")
-    connected = sorted((n for n in net_pins.values() if len(n) > 1), key=lambda n: (classify(n) is None, n))
-    for names in connected:
-        kind = classify(names) or ""
-        print(f"  {kind:4}  {' '.join(names)}")
-    alone = sorted(n[0] for n in net_pins.values() if len(n) == 1)
-    print(f"\n  connected to nothing: {' '.join(alone) if alone else 'none'}")
-
-    # --- netlist ---------------------------------------------------------
-    # What is meant against what is drawn. This is what catches a signal that
-    # never arrives (a switch line one hole short of its jumper: split), one
-    # that arrives somewhere else (a data line on the wrong resistor: joined),
-    # and a pin wired that was meant to be spare.
-    print(f"\nNetlist, against {args.netlist}")
-    problems, _ = compare([n for n in net_pins.values() if n], netlist, symmetric)
-    for p in problems:
-        errors += 1
-        print(f"  FAIL  {p}")
-    if not problems:
-        print(f"  ok    the drawing makes the {len(netlist)} nets meant, and no others")
-
-    # --- firmware --------------------------------------------------------
-    print(f"\nFirmware pins, against {args.board_rs}")
-    problems = firmware(netlist, macros)
-    for p in problems:
-        errors += 1
-        print(f"  FAIL  {p}")
-    if not problems:
-        print(f"  ok    every pin board.rs hands out is wired where a net says, and only those")
-
-    # --- labels ----------------------------------------------------------
-    print("\nLabels")
-    labels_ok = True
-    for g, text in labels:
-        if g is None or not board.on_board(g):
-            print(f"  --    '{text}' is off the board")
-            continue
-        at = pins.get(g)
-        if at is None:
-            continue
-        pin_name = at.rsplit(".", 1)[-1]
-        if pin_name.lower() != text.lower() and not (
-            {pin_name.lower(), text.lower()} <= RAIL_5V
-        ):
-            errors += 1
-            labels_ok = False
-            print(f"  FAIL  {board.name(g)} is labelled '{text}' but the pin is {at}")
-    if labels_ok:
-        print("  ok    every label on a pin names that pin")
-
-    # --- neighbours ------------------------------------------------------
-    def describe(root):
-        # A kind alone is ambiguous: USB, the battery and the rail are all 5 V
-        # nets, and a bridge between two of them is its own fault.
-        names = net_pins[root]
-        if not names:
-            return "unnamed"
-        kind = classify(names)
-        return f"{kind} {names[0]}" if kind else names[0]
-
-    def severity(a, b):
-        ca, cb = classify(net_pins[a]), classify(net_pins[b])
-        kinds = {ca, cb}
-        if "GND" in kinds and kinds & {"5V", "3V3"}:
-            return "short"
-        if "5V" in kinds:
-            return "high"
-        if "3V3" in kinds:
-            return "medium"
-        return "low"
-
-    pairs = defaultdict(list)
-    for g in nets.parent:
-        for d in ((1, 0), (0, 1)):
-            h = (g[0] + d[0], g[1] + d[1])
-            if h in nets.parent and nets.find(h) != nets.find(g):
-                a, b = sorted((nets.find(g), nets.find(h)), key=describe)
-                pairs[(a, b)].append(f"{board.name(g)}|{board.name(h)}")
-
-    print("\nNeighbours a hole apart on different nets, worst first")
-    ranked = sorted(pairs.items(), key=lambda kv: (SEVERITY[severity(*kv[0])], -len(kv[1])))
-    hidden = 0
-    for (a, b), holes in ranked:
-        level = severity(a, b)
-        if level == "low" and not args.all:
-            hidden += 1
-            continue
-        shown = " ".join(sorted(holes)[:8]) + (" ..." if len(holes) > 8 else "")
-        print(f"  {level:6}  {describe(a)} | {describe(b)}  x{len(holes)}  {shown}")
-    if hidden:
-        print(f"  ({hidden} signal-to-signal pairs not shown; --all lists them)")
-
-    if notes:
-        print("\nNot checked")
-        for n in notes:
-            print(f"  --    {n}")
-
-    print(f"\n{'FAILED' if errors else 'ok'}: {errors} problem{'s' if errors != 1 else ''}")
-    return 1 if errors else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

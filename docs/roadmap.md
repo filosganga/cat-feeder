@@ -86,43 +86,39 @@ lines as they come; Ctrl-C mid-capture prints the summary and leaves the log;
 commit until I say.
 ```
 
-### Python dev tools as extensionless executables
+### Bash scripts parse their command line through `dev/_args.py`
 
-`pcb-check`, `pcb-render` and `kicad-netlist` are each a bash wrapper around a
-`.py` that parses the same flags again. One Python executable per tool, with
-the conventions in a shared `dev/_common.py`, removes the duplication.
+Each bash script in `dev/` still has its own parse loop, and the copies had
+drifted (an empty `--flag=` accepted by the nine that take options). `dev/_args.py` takes a spec
+from bash and prints the assignments to `eval` (ADR-0031); the Python tools
+already use it, and `dev/_args_test.py` already holds each script's spec.
 
 ```text
-Turn each Python dev tool into one extensionless Python executable, rather
-than a bash wrapper and a .py.
+Move every bash script in dev/ onto dev/_args.py, so none has its own parse
+loop (ADR-0031).
 
-Today dev/pcb-check, dev/pcb-render and dev/kicad-netlist are each a bash
-wrapper (flag parsing, --help from the header comment, cd to the repo root,
-the Python 3.11 check, all through dev/_common.sh) around a .py that parses the
-same flags a second time. pcb-render and kicad-netlist load pcb-check.py by
-path to reuse its parser.
+Each of ap-password, bootloader, capture, flash, label, ota, provision,
+soak, soak-report and watch replaces its while/case loop with:
 
-Replace each pair with one executable file of the same name,
-`#!/usr/bin/env python3`, no extension, so no caller changes:
-- dev/_common.py, mirroring dev/_common.sh: --help prints the header,
-  errors start with the tool's name, exit 2 when called wrong and 1 when it
-  ran and failed, a flag beats its environment variable, run from the repo
-  root, refuse Python < 3.11 in one line;
-- dev/_pcb.py, holding what pcb-check.py shares today (load, load_netlist,
-  compare, board_pins, firmware, classify), imported by all three;
-- every flag, default and output kept as it is; no __pycache__ left in dev/.
+  ARGS=$(python3 "$DEV_DIR/_args.py" "$SCRIPT" <spec> -- "$@") || exit $?
+  eval "$ARGS"
 
-Update every reference to the .py files and to the wrappers being bash (git
-grep pcb-check.py, pcb-render.py, kicad-netlist.py): CLAUDE.md, the
-pcb-review and dev-script skills (document the Python convention in
-dev-script), dev/README.md, docs/hardware.md, ADR-0030 and this roadmap.
+using the spec dev/_args_test.py already tests for it ("today's scripts").
+Keep the defaults set before it, everything after it, and every comment that
+says why an option is shaped as it is (provision's --out refusal and its
+forwarding to mkrecord, the --password/--password-file pair). Remove from
+_common.sh what nothing calls any more (need_value, usage, probably
+pass_once in provision and watch); keep prog, die and the port, broker and
+LAN helpers. Update the dev-script skill and its anatomy.md: the parse loop
+becomes the spec.
 
-Verify: --help from the repo root, from dev/ and from /tmp; an unknown flag,
-a missing value and a stray argument each exit 2. pcb-check passes on pcb.diy
-and still fails on broken copies: the Ext ground trace removed, Pads GP8
-joined to GP9, led_pin moved to GPIO7 in a copy of board.rs, and the first
-draft (git show f90156f:pcb-v2.diy). pcb-render's four views and
-kicad-netlist's output are byte-identical to before: take that baseline by
-running the current tools first, since what is in target/ may be older.
-Branch first; don't commit until I say.
+Verify: bash -n on every script; python3 dev/_args_test.py; --help on each
+from the repo root, dev/ and /tmp; an unknown flag, a missing value, an empty
+--port= and a stray argument each exit 2. The old forms still work: flash 90
+'feed:', capture --reset 15, ap-password and label with several ids, watch
+'feeder/#' and watch -- '-odd', provision --detent-ms 900 forwarded to
+mkrecord, --password with --password-file refused. A password piped to
+provision --password-file - still arrives (op read ... | ./dev/provision
+...). flash and capture run against the bench Zero. Branch first; don't
+commit until I say.
 ```

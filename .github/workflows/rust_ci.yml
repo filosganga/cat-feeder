@@ -25,6 +25,23 @@ jobs:
           echo "CLAUDE.md: $lines lines (budget 400)"
           test "$lines" -le 400
 
+  # The dev scripts' argument parser (ADR-0031): on 3.9, which is what a Mac
+  # without pyenv has and which _args.py promises to run on, on the 3.11 the
+  # repo pins, and on the newest, which is what Homebrew installs.
+  dev-args:
+    name: Dev script arguments (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.x"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python3 dev/_args_test.py
+
   rust-checks:
     name: Rust Checks
     runs-on: ubuntu-latest

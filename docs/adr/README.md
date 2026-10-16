@@ -32,3 +32,4 @@ One file per decision that is hard to reverse, surprising without context, and t
 - [Dependencies point down: core, state, controls](0028-dependencies-point-down.md)
 - [The electronics go inside the feeder](0029-the-electronics-go-inside-the-feeder.md)
 - [The netlist is written down, and the drawing is checked against it](0030-the-netlist-is-written-down.md)
+- [The dev scripts' command lines are parsed in Python, bash ones included](0031-dev-scripts-parse-in-python.md)

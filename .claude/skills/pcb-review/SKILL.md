@@ -71,7 +71,7 @@ Say these out loud in a review; a green run does not cover them.
 - **Anything DIYLC does not draw**: wire gauge, current, a part's value (R1 is a
   1 kΩ only because the drawing says so), mechanical fit, a header's keying.
 - **Parts the script does not know.** They are listed under *Not checked*;
-  extend `load()` in `dev/pcb-check.py` rather than ignoring the line.
+  extend `load()` in `dev/_pcb.py` rather than ignoring the line.
 - **The module's own header order on the bench**: socketed modules can still be
   plugged in a row off. That is the beep test's job, with modules in.
 

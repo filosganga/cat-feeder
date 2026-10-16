@@ -282,7 +282,8 @@ placeholder `ap_secret` when `cfg.toml` is absent **and** `CI` is set.
 - **Dev scripts take flags, and a flag wins over its environment variable**
   (`--board`, `--port`, `--host`, `--user`, `--password`, `--nvs-offset`,
   `--seconds`, `--filter`, `--hours`). An `ENV=value` prefix defeats permission
-  allow-rules. See `dev/_common.sh` and the `dev-script` skill.
+  allow-rules. See `dev/_common.sh` and the `dev-script` skill. Python tools
+  parse through `dev/_args.py` (ADR-0031); bash scripts still loop.
 - **When a constant becomes configurable, grep the whole repo for its old
   value** — log strings, doc comments, READMEs, skill transcripts. Use the
   `drift-check` agent.

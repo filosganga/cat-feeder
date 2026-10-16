@@ -87,8 +87,9 @@ layout and before soldering.
 ## Flashing
 
 You need Rust stable (the `riscv32imac-unknown-none-elf` target is installed
-by `rust-toolchain.toml`) and [espflash](https://github.com/esp-rs/espflash).
-No `espup`: the C6 is RISC-V.
+by `rust-toolchain.toml`), [espflash](https://github.com/esp-rs/espflash), and
+Python 3.11 or later for the scripts in `dev/` (`.python-version` names it, for
+pyenv). No `espup`: the C6 is RISC-V.
 
 ```sh
 cargo install espflash

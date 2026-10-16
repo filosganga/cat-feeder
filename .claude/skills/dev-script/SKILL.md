@@ -55,14 +55,59 @@ wherever the script was invoked from.
 The parse loop, the flag names to reuse, and the full annotated template are in
 [references/anatomy.md](references/anatomy.md).
 
+## A Python tool
+
+The command-line rules live in `dev/_args.py` (ADR-0031), and a Python tool
+uses them rather than argparse directly. Its docstring is its `--help`:
+
+```python
+#!/usr/bin/env python3
+"""One line saying what this does.
+
+  ./dev/thing                    # the common case
+  ./dev/thing --layout other.diy
+"""
+
+import sys
+
+sys.dont_write_bytecode = True  # importing _args would leave a __pycache__ in dev/
+import _args  # noqa: E402
+
+_args.need_python(3, 11, "tomllib")  # only if it needs more than 3.9
+
+
+def main():
+    ap = _args.Parser(__doc__)
+    ap.add_argument("--layout", default="pcb.diy")
+    args = ap.parse_args()
+    _args.to_repo_root()
+    _args.need_file(args.layout, "layout")
+    ...
+    return 0  # 1 when it ran and the thing failed
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+Imports that need the newer Python go below `need_python`, or the one-line
+refusal never gets to print. `_args.py` itself stays within Python 3.9, which
+is what a Mac without pyenv has, and CI runs its tests there too; the repo's
+`.python-version` is 3.11, the floor the pcb tools need, so working on it
+catches anything newer.
+
+`_args.py` takes a spec from bash too: `--value`, `--flag`, `--positional`,
+`--list`, `--forward`, `--refuse`, `--alternatives`, described in its
+docstring and tested, with today's scripts, in `dev/_args_test.py`. The bash
+scripts still carry the loop in anatomy.md; moving them onto it is on the
+roadmap.
+
 ## Rules
 
 - **A script meant to be run has no extension** — `dev/flash`, not
   `dev/flash.sh` — so a caller never needs to know its language. A helper that
   is only sourced or called by other scripts starts with `_` and keeps its
-  extension (`_common.sh`, `_render.sh`, `_tap.py`). The `.py` files behind
-  `pcb-check`, `pcb-render` and `kicad-netlist` are the exception until the
-  roadmap's Python-tools item merges each pair into one executable.
+  extension (`_common.sh`, `_render.sh`, `_tap.py`, `_args.py`, `_pcb.py`).
 - **Reuse the flag names.** `--port`, `--board`, `--host`, `--user`,
   `--password`, `--nvs-offset`, `--seconds`, `--filter`, `--hours`, `--log`. A
   synonym for one of these is a bug.
@@ -89,7 +134,8 @@ The parse loop, the flag names to reuse, and the full annotated template are in
 ## Finishing
 
 1. `chmod +x`, then `bash -n` on every bash script:
-   `grep -l '^#!/usr/bin/env bash' dev/* | xargs -n1 bash -n`.
+   `grep -l '^#!/usr/bin/env bash' dev/* | xargs -n1 bash -n`. After any
+   change to `_args.py`, `python3 dev/_args_test.py`.
 2. Run `--help` from the repo root, from `dev/`, and from `/tmp`. All three
    must work; two of them catch the `$0` mistake above.
 3. Exercise the error paths — unknown flag, missing value, one positional too
