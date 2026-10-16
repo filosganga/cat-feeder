@@ -148,6 +148,14 @@ both serve over `http.rs`; the pure halves are `provisioning.rs` and
   `XXXX-XXXX-XXXX` (Crockford), address 192.168.4.1 from
   `provisioning::AP_ADDR_OCTETS` — the one constant the socket, the panel and a
   test all use. `dev/ap-password.sh` must agree byte for byte.
+- Setup runs AP+STA and **tests before it saves** (ADR-0025): `/save` starts a
+  trial (join, lease, `mqtt::probe`), the page polls `/status`; only a joined
+  Wi-Fi is saved, a broker failure offers `/keep`. One `radio` future owns the
+  controller; a trial never changes Wi-Fi mode, since `set_config` restarts
+  Wi-Fi on a mode change and **stops it on any error**.
+- Setup is a captive portal (ADR-0026): DHCP names the unit as DNS,
+  `captive_dns.rs` answers every name, other paths `302` to `/`. Not DHCP
+  option 114, which names an HTTPS JSON API.
 - Form fields must match `record_from_form`: `wifi_ssid`, `wifi_password`,
   `mqtt_host`, `mqtt_port`, `mqtt_user`, `mqtt_password`. `mqtt_host` is IPv4
   only (ADR-0019). `provisioning::trimmed` strips whitespace from SSID, host,
@@ -228,7 +236,7 @@ Pure logic: `button.rs` (holds, taps), `menu.rs` (pages and menu), `encoder.rs`,
 - `AccessPointConfig::default()` is an **open** network; set `Wpa2Personal`.
   Applying the config starts Wi-Fi; there is no separate start call.
 - `edge-dhcp` is a codec, not a server. `Server::new` defaults its pool to
-  .50–.200; set `range_start`/`range_end`. Advertise the unit as gateway; no DNS.
+  .50–.200; set `range_start`/`range_end`. Advertise the unit as gateway and DNS.
 - Log association separately from DHCP, or "never joined" and "DHCP broken"
   look identical.
 - `StationConfig` defaults to `ScanMethod::Fast`, which joins the first mesh
@@ -306,6 +314,8 @@ events.rs        feeder/<id>/event payloads
 discovery.rs     Home Assistant discovery configs, JSON-checked
 ds3231.rs        DS3231 registers
 provisioning.rs  flash record, setup identity, form, minimal HTTP parsing
+trial.rs         setup's trial outcomes and what the page says about them
+captive_dns.rs   setup's DNS answers: every name is the unit
 admin.rs         admin page: auth, forms, rendering
 update.rs        checking an uploaded firmware image as it streams in
 dhcp.rs sha256.rs
@@ -314,7 +324,7 @@ motor.rs switch.rs led.rs oled.rs rtc.rs i2c.rs store.rs
 mqtt.rs setup.rs http.rs web.rs
 firmware.rs      the OTA slots and otadata: idle slot, write, select, confirm
 wiring.rs        the Bus static: every shared handle and who writes it
-config.rs        Config from the flash record
+config.rs        Config from the flash record; `dhcp_config`, shared with setup
 examples/mkrecord.rs  host-only record builder for provision.sh
 homeassistant/packages/cat_feeder.yaml  the HA half: time, pause, copy schedule
 pcb.diy          the perfboard (component side); docs/hardware.md

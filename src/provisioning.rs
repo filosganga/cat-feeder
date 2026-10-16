@@ -323,8 +323,9 @@ pub(crate) fn crc32(bytes: &[u8]) -> u32 {
 
 /// The address the setup form is answered on, as four octets.
 ///
-/// Fixed rather than negotiated: it is typed in by hand, so it has to be the
-/// same on every unit and knowable before one is first powered on.
+/// Fixed rather than negotiated: it is printed on the label and the panel for
+/// a browser that does not open the form by itself (ADR-0026), so it has to be
+/// the same on every unit and knowable before one is first powered on.
 ///
 /// It lives here, with the rest of the setup network's identity, because **two
 /// modules have to agree on it and only one of them may hold an `Ipv4Addr`**.
@@ -334,13 +335,17 @@ pub(crate) fn crc32(bytes: &[u8]) -> u32 {
 /// spelling is the one both sides can be built from.
 pub const AP_ADDR_OCTETS: [u8; 4] = [192, 168, 4, 1];
 
-/// What to type into a phone, spelled out, because neither the screen nor a
-/// log line wants to format an address at the point of use.
+/// The form's address spelled out: what the panel shows, and the base of every
+/// redirect setup sends, because neither wants to format an address at the
+/// point of use.
 ///
 /// A literal, and safe as one only because
 /// `tests::the_setup_url_spells_the_address` pins it against
 /// [`AP_ADDR_OCTETS`]. Eighteen characters, which fits `display::COLS`.
 pub const AP_URL: &str = "http://192.168.4.1";
+
+/// What every setup network's name starts with.
+pub const AP_SSID_PREFIX: &str = "cat-feeder-";
 
 /// `cat-feeder-` plus the six-character device id.
 pub const AP_SSID_LEN: usize = 17;
@@ -356,7 +361,7 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// apart while holding a phone in front of them.
 pub fn ap_ssid(device_id: &str) -> String<AP_SSID_LEN> {
     let mut ssid = String::new();
-    let _ = ssid.push_str("cat-feeder-");
+    let _ = ssid.push_str(AP_SSID_PREFIX);
     let _ = ssid.push_str(device_id);
     ssid
 }
@@ -832,8 +837,8 @@ pub const PAGE_LEN: usize = 12 * 1024;
 pub fn render_form(
     page: &mut String<PAGE_LEN>,
     submitted: &str,
-    error: Option<FormError>,
-    failure: Option<&str>,
+    notice: Notice<'_>,
+    networks: &[Network],
 ) {
     page.clear();
 
@@ -856,20 +861,37 @@ pub fn render_form(
          .err{background:#fdecea;border:1px solid #d9534f;border-radius:.3rem;\
          padding:.6rem;margin-bottom:1rem}\
          .hint{color:#666;font-size:.8rem;margin:.2rem 0 0}\
+         .alt{background:#666;margin:0 0 1rem}\
          </style></head><body><h1>cat-feeder setup</h1>",
     );
 
-    // The failure, if there was one, above the fields rather than beside them:
+    // The notice, if there is one, above the fields rather than beside them:
     // there is only ever one, and a phone screen is short.
-    if let Some(message) = failure {
-        let _ = write!(page, "<p class=err>{}</p>", Escaped(message));
-    } else if let Some(error) = error {
-        let _ = write!(page, "<p class=err>{error}</p>");
+    match notice {
+        Notice::None => {}
+        Notice::Invalid(error) => {
+            let _ = write!(page, "<p class=err>{error}</p>");
+        }
+        Notice::Failed(message) => {
+            let _ = write!(page, "<p class=err>{}</p>", Escaped(message));
+        }
+        Notice::Trial { html, offer_keep } => {
+            let _ = write!(page, "<p class=err>{html}</p>");
+            // Its own form, before the fields: it saves what was *tested*,
+            // which `setup.rs` holds, not whatever the boxes say now.
+            if offer_keep {
+                let _ = page.push_str(
+                    "<form method=post action=/keep>\
+                     <button type=submit class=alt>Save anyway</button></form>",
+                );
+            }
+        }
     }
 
     let _ = page.push_str("<form method=post action=/save>");
 
     text_field(page, "wifi_ssid", "Wi-Fi network", submitted, "text", None);
+    networks_list(page, networks);
     text_field(
         page,
         "wifi_password",
@@ -904,7 +926,89 @@ pub fn render_form(
         None,
     );
 
-    let _ = page.push_str("<button type=submit>Save and restart</button></form></body></html>");
+    let _ = page.push_str(
+        "<button type=submit>Test and save</button>\
+         <p class=hint>The feeder joins the network and logs in to the broker \
+         before it saves anything. It restarts only once that works.</p>\
+         </form></body></html>",
+    );
+}
+
+/// What, if anything, `render_form` says above the fields.
+#[derive(Debug, Clone, Copy)]
+pub enum Notice<'a> {
+    None,
+    /// The form did not parse.
+    Invalid(FormError),
+    /// Plain text, escaped on the way in.
+    Failed(&'a str),
+    /// A `trial::message`, which is already HTML and has escaped what it
+    /// quotes. `offer_keep` adds *Save anyway*, for a Wi-Fi that joined and a
+    /// broker that did not.
+    Trial {
+        html: &'a str,
+        offer_keep: bool,
+    },
+}
+
+/// The networks a scan found, for the SSID box to suggest.
+///
+/// A `<datalist>` rather than a `<select>`, so the box stays free text: a
+/// hidden network is never in a scan, and its name still has to be typed.
+fn networks_list(page: &mut String<PAGE_LEN>, networks: &[Network]) {
+    if networks.is_empty() {
+        return;
+    }
+    let _ = page.push_str("<datalist id=networks>");
+    for network in networks {
+        let _ = write!(page, "<option value=\"{}\">", Escaped(&network.ssid));
+    }
+    let _ = page.push_str(
+        "</datalist><p class=hint>Tap the box to pick a nearby network. \
+         <a href=/rescan>Scan again</a></p>",
+    );
+}
+
+/// How many networks the form suggests. A house rarely shows more than a
+/// dozen distinct names, and the page has room for the worst case of these
+/// — see `the_widest_possible_form_still_fits`.
+pub const MAX_NETWORKS: usize = 12;
+
+/// One network a scan heard, for the form.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Network {
+    pub ssid: String<SSID_LEN>,
+    /// The strongest signal heard for this name, in dBm.
+    pub rssi: i8,
+}
+
+/// Adds one scan result to `list`, which stays one entry per name, strongest
+/// first.
+///
+/// **A mesh shows one name many times**, once per node and band, and a list
+/// of six identical `MyWiFi` entries is noise. Each name keeps its strongest
+/// signal. Hidden networks (an empty name) and other feeders' setup networks
+/// are left out: neither is a network to put a feeder on. When the list is
+/// full, a stronger newcomer replaces the weakest.
+pub fn add_network(list: &mut heapless::Vec<Network, MAX_NETWORKS>, ssid: &str, rssi: i8) {
+    if ssid.is_empty() || ssid.starts_with(AP_SSID_PREFIX) {
+        return;
+    }
+    if let Some(known) = list.iter_mut().find(|n| n.ssid == ssid) {
+        known.rssi = known.rssi.max(rssi);
+    } else {
+        let Ok(ssid) = String::try_from(ssid) else {
+            return;
+        };
+        let network = Network { ssid, rssi };
+        if let Err(network) = list.push(network) {
+            match list.last_mut() {
+                Some(weakest) if weakest.rssi < network.rssi => *weakest = network,
+                _ => return,
+            }
+        }
+    }
+    list.sort_unstable_by_key(|n| core::cmp::Reverse(n.rssi));
 }
 
 /// One labelled input, with its previous value escaped back into it.
@@ -946,6 +1050,9 @@ fn text_field(
     if name == "mqtt_port" {
         let _ = page.push_str(" inputmode=numeric");
     }
+    if name == "wifi_ssid" {
+        let _ = page.push_str(" list=networks");
+    }
     let _ = page.push_str(">");
 
     if let Some(hint) = hint {
@@ -954,7 +1061,13 @@ fn text_field(
 }
 
 /// The page shown once, on the way out.
-pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
+///
+/// `addr` is where the trial was given an address. After the restart the
+/// router almost always hands the same one back, to the same MAC, so it is
+/// worth printing: it is the admin page, and nothing else on a headless unit
+/// would say where that is.
+pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record, addr: [u8; 4]) {
+    let [a, b, c, d] = addr;
     page.clear();
     let _ = write!(
         page,
@@ -966,6 +1079,9 @@ pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
          </style></head><body><h1>Saved</h1>\
          <p>This feeder is restarting and will join <b>{}</b>, then connect to \
          the broker at <b>{}:{}</b>.</p>\
+         <p>It was given the address <b>{a}.{b}.{c}.{d}</b>, so its own page \
+         will most likely be at <a href=\"http://{a}.{b}.{c}.{d}/\">\
+         http://{a}.{b}.{c}.{d}/</a>.</p>\
          <p>Its setup network is about to disappear — that is what success \
          looks like. Rejoin your own Wi-Fi.</p>\
          <p>If it does not appear in Home Assistant, hold the board's BOOT \
@@ -975,6 +1091,39 @@ pub fn render_saved(page: &mut String<PAGE_LEN>, record: &Record) {
         Escaped(&record.wifi_ssid),
         Escaped(&record.mqtt_host),
         record.mqtt_port,
+    );
+}
+
+/// How often the testing page asks again, in seconds.
+pub const TESTING_REFRESH_SECS: u8 = 2;
+
+/// The page shown while the network is being tried.
+///
+/// It reloads itself (`/status`) rather than holding the request open until
+/// the answer: when the feeder joins the router, its own network moves to the
+/// router's channel, and a phone can drop off for a moment. A held request
+/// would die with it; a page that asks again just asks again.
+///
+/// `max_secs` is the longest a trial can take, which `setup.rs` adds up from
+/// its own timeouts, so the page never promises less than the code allows.
+pub fn render_testing(page: &mut String<PAGE_LEN>, ssid: &str, setup_ssid: &str, max_secs: u32) {
+    page.clear();
+    let _ = write!(
+        page,
+        "<!doctype html><html lang=en><head><meta charset=utf-8>\
+         <meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <meta http-equiv=refresh content=\"{TESTING_REFRESH_SECS};url=/status\">\
+         <title>cat-feeder setup</title>{FAVICON}<style>\
+         body{{font:16px/1.5 system-ui,sans-serif;margin:0 auto;padding:1.5rem;\
+         max-width:26rem;background:#faf9f7;color:#222}}\
+         </style></head><body><h1>Testing…</h1>\
+         <p>Joining <b>{}</b> and logging in to the broker. This can take up \
+         to {max_secs} seconds.</p>\
+         <p>If this page stops changing, your phone may have left \
+         <b>{}</b>: rejoin it and the answer will be here.</p>\
+         </body></html>",
+        Escaped(ssid),
+        Escaped(setup_ssid),
     );
 }
 
@@ -1393,7 +1542,7 @@ mod tests {
         // reports as `Missing`, blaming the person typing. Nothing else checks
         // this: the two lists are written out in different files.
         let mut page = String::<PAGE_LEN>::new();
-        render_form(&mut page, "", None, None);
+        render_form(&mut page, "", Notice::None, &[]);
 
         for name in FIELDS {
             assert!(
@@ -1418,7 +1567,7 @@ mod tests {
         let body = "wifi_ssid=My+Network&wifi_password=p%40ss&mqtt_host=10.0.0.1\
                     &mqtt_port=1883&mqtt_user=feeder&mqtt_password=dev";
         let mut page = String::<PAGE_LEN>::new();
-        render_form(&mut page, body, Some(FormError::BadPort), None);
+        render_form(&mut page, body, Notice::Invalid(FormError::BadPort), &[]);
 
         assert!(page.contains(r#"value="My Network""#));
         assert!(page.contains(r#"value="p@ss""#));
@@ -1431,7 +1580,7 @@ mod tests {
         // Not a hypothetical: an SSID may contain a quote, and unescaped it
         // ends the attribute early and silently truncates the field.
         let mut page = String::<PAGE_LEN>::new();
-        render_form(&mut page, "wifi_ssid=a%22b%3Cc", None, None);
+        render_form(&mut page, "wifi_ssid=a%22b%3Cc", Notice::None, &[]);
 
         assert!(page.contains(r#"value="a&quot;b&lt;c""#));
         // The raw quote must not survive anywhere in the rendered attribute.
@@ -1455,11 +1604,32 @@ mod tests {
         }
 
         let mut page = String::<PAGE_LEN>::new();
+        // The longest notice, too, which is a trial's, with *Save anyway*;
+        // and a full list of networks with the widest names.
+        let trial = crate::trial::message(
+            crate::trial::Trial::BrokerFailed {
+                addr: [192, 168, 100, 100],
+                why: crate::trial::BrokerFailure::NoAnswer,
+            },
+            &"\"".repeat(SSID_LEN),
+            &"&".repeat(HOST_LEN),
+            65535,
+        )
+        .unwrap();
+        let networks: std::vec::Vec<Network> = (0..MAX_NETWORKS)
+            .map(|i| Network {
+                ssid: String::try_from(std::format!("{i:\"<32}").as_str()).unwrap(),
+                rssi: -40,
+            })
+            .collect();
         render_form(
             &mut page,
             &body,
-            Some(FormError::NotAnIp("mqtt_host")),
-            None,
+            Notice::Trial {
+                html: &trial,
+                offer_keep: true,
+            },
+            &networks,
         );
 
         assert!(
@@ -1475,7 +1645,7 @@ mod tests {
         // it does not say where the unit went, a phone losing the access point
         // is indistinguishable from a crash.
         let mut page = String::<PAGE_LEN>::new();
-        render_saved(&mut page, &sample());
+        render_saved(&mut page, &sample(), [192, 168, 1, 42]);
 
         assert!(
             page.contains("MyWiFi"),
@@ -1483,6 +1653,10 @@ mod tests {
         );
         assert!(page.contains("192.168.1.108"));
         assert!(page.contains("1883"));
+        assert!(
+            page.contains("http://192.168.1.42/"),
+            "where the admin page will be"
+        );
         assert!(page.ends_with("</html>"));
         // The password reached this function inside the record and must not
         // reach the page: unlike the form, nobody needs to read it back.
@@ -1761,5 +1935,112 @@ mod tests {
                 .authorization
                 .is_empty()
         );
+    }
+
+    fn heard(results: &[(&str, i8)]) -> heapless::Vec<Network, MAX_NETWORKS> {
+        let mut list = heapless::Vec::new();
+        for (ssid, rssi) in results {
+            add_network(&mut list, ssid, *rssi);
+        }
+        list
+    }
+
+    fn names(list: &[Network]) -> std::vec::Vec<&str> {
+        list.iter().map(|n| n.ssid.as_str()).collect()
+    }
+
+    #[test]
+    fn a_mesh_is_listed_once_at_its_strongest() {
+        let list = heard(&[
+            ("MyWiFi", -82),
+            ("Other", -60),
+            ("MyWiFi", -45),
+            ("MyWiFi", -70),
+        ]);
+        assert_eq!(names(&list), ["MyWiFi", "Other"]);
+        assert_eq!(list[0].rssi, -45);
+    }
+
+    #[test]
+    fn hidden_networks_and_other_feeders_are_not_offered() {
+        let list = heard(&[("", -30), ("cat-feeder-a1b2c3", -35), ("MyWiFi", -50)]);
+        assert_eq!(names(&list), ["MyWiFi"]);
+    }
+
+    #[test]
+    fn a_full_list_keeps_the_strongest() {
+        let mut results: std::vec::Vec<(std::string::String, i8)> = (0..MAX_NETWORKS)
+            .map(|i| (std::format!("net{i}"), -60 - i as i8))
+            .collect();
+        results.push(("near".into(), -20));
+        results.push(("far".into(), -95));
+        let borrowed: std::vec::Vec<(&str, i8)> =
+            results.iter().map(|(s, r)| (s.as_str(), *r)).collect();
+        let list = heard(&borrowed);
+
+        assert_eq!(list.len(), MAX_NETWORKS);
+        assert_eq!(list[0].ssid, "near");
+        assert!(!names(&list).contains(&"far"));
+        assert!(!names(&list).contains(&"net11"), "the weakest made room");
+    }
+
+    #[test]
+    fn the_ssid_box_suggests_the_networks_and_stays_free_text() {
+        let list = heard(&[("My \"Home\"", -50)]);
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(&mut page, "", Notice::None, &list);
+        assert!(
+            page.contains("name=wifi_ssid type=text"),
+            "still typed into"
+        );
+        assert!(page.contains("list=networks"));
+        assert!(page.contains("<option value=\"My &quot;Home&quot;\">"));
+
+        render_form(&mut page, "", Notice::None, &[]);
+        assert!(!page.contains("<datalist"), "no empty list without a scan");
+    }
+
+    #[test]
+    fn save_anyway_is_offered_only_when_asked_for() {
+        let mut page = String::<PAGE_LEN>::new();
+        render_form(
+            &mut page,
+            "",
+            Notice::Trial {
+                html: "<b>x</b>",
+                offer_keep: true,
+            },
+            &[],
+        );
+        assert!(
+            page.contains("<p class=err><b>x</b></p>"),
+            "trial HTML is not re-escaped"
+        );
+        assert!(page.contains("action=/keep"));
+
+        render_form(
+            &mut page,
+            "",
+            Notice::Trial {
+                html: "x",
+                offer_keep: false,
+            },
+            &[],
+        );
+        assert!(!page.contains("action=/keep"));
+
+        render_form(&mut page, "", Notice::Failed("<b>"), &[]);
+        assert!(page.contains("&lt;b&gt;"), "plain failures are escaped");
+    }
+
+    #[test]
+    fn the_testing_page_asks_again_and_says_what_to_rejoin() {
+        let mut page = String::<PAGE_LEN>::new();
+        render_testing(&mut page, "MyWiFi", "cat-feeder-a1b2c3", 57);
+        assert!(page.contains("url=/status"));
+        assert!(page.contains("up to 57 seconds"));
+        assert!(page.contains("MyWiFi"));
+        assert!(page.contains("cat-feeder-a1b2c3"));
+        assert!(page.ends_with("</html>"));
     }
 }

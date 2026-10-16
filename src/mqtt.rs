@@ -22,21 +22,22 @@ use core::num::NonZero;
 use core::str::FromStr as _;
 
 use embassy_futures::select::{Either, Either4, select, select4};
-use embassy_net::tcp::TcpSocket;
+use embassy_net::tcp::{ConnectError, TcpSocket};
 use embassy_net::{IpAddress, IpEndpoint, Stack};
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::String;
 use log::{error, info, warn};
 use rust_mqtt::Bytes;
 use rust_mqtt::buffer::AllocBuffer;
-use rust_mqtt::client::Client;
 use rust_mqtt::client::event::Event;
 use rust_mqtt::client::options::{
-    ConnectOptions, PublicationOptions, SubscriptionOptions, TopicReference, WillOptions,
+    ConnectOptions, DisconnectOptions, PublicationOptions, SubscriptionOptions, TopicReference,
+    WillOptions,
 };
+use rust_mqtt::client::{Client, MqttError};
 use rust_mqtt::config::KeepAlive;
 use rust_mqtt::io::Transport;
-use rust_mqtt::types::{MqttBinary, MqttString, TopicFilter, TopicName};
+use rust_mqtt::types::{MqttBinary, MqttString, ReasonCode, TopicFilter, TopicName};
 
 use crate::config::Config;
 use crate::discovery::{self, DISCOVERY_LEN, TOPIC_LEN};
@@ -44,6 +45,7 @@ use crate::schedule::{
     PauseRefused, Schedule, ScheduleCommand, SlotEdit, TimeSource, Wall, parse_time, pause_command,
 };
 use crate::store::{SharedStore, Store};
+use crate::trial::BrokerFailure;
 use crate::wiring::{Bus, TimeSync, now_ms};
 
 const PAYLOAD_LEN: usize = 128;
@@ -59,7 +61,7 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 /// `mqtt: connecting` for over 100 s — silent, and never reaching the retry
 /// below. A healthy connect to a LAN broker takes well under a second, so ten
 /// is generous, and the failure then lands in the ordinary 5 s retry loop.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long to let retained messages land after subscribing, before the first
 /// state payload.
@@ -226,8 +228,7 @@ pub async fn run(
 ) -> ! {
     let topics = Topics::new(id);
 
-    let mut client_id: String<CLIENT_ID_LEN> = String::new();
-    let _ = write!(client_id, "feeder_{id}");
+    let client_id = client_id(id);
 
     // No DNS resolver in the firmware yet, so the broker is an address.
     let Ok(host) = Ipv4Addr::from_str(cfg.mqtt_host) else {
@@ -272,23 +273,9 @@ async fn session(
 ) -> Result<(), ()> {
     let mut rx_buffer = [0u8; 1024];
     let mut tx_buffer = [0u8; 1024];
-    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+    let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 
     info!("mqtt: connecting to {}:{}", cfg.mqtt_host, cfg.mqtt_port);
-    match with_timeout(CONNECT_TIMEOUT, socket.connect(endpoint)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            warn!("mqtt: tcp connect failed: {e:?}");
-            return Err(());
-        }
-        Err(_) => {
-            warn!(
-                "mqtt: tcp connect timed out after {}s",
-                CONNECT_TIMEOUT.as_secs()
-            );
-            return Err(());
-        }
-    }
 
     let availability = topic(&topics.availability)?;
 
@@ -304,24 +291,10 @@ async fn session(
     let mut buffer = AllocBuffer;
     let mut client = FeederClient::new(&mut buffer);
 
-    // The broker accepted TCP but may never answer CONNECT — a half-dead link,
-    // or a broker wedged under load. Same bound, same retry.
-    match with_timeout(
-        CONNECT_TIMEOUT,
-        client.connect(socket, &options, Some(string(client_id)?)),
-    )
-    .await
-    {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => {
-            warn!("mqtt: connect failed: {e:?}");
-            return Err(());
-        }
-        Err(_) => {
-            warn!("mqtt: no CONNACK within {}s", CONNECT_TIMEOUT.as_secs());
-            return Err(());
-        }
-    }
+    // Already logged, in the words the console has always used.
+    handshake(&mut client, socket, endpoint, &options, client_id)
+        .await
+        .map_err(|_| ())?;
     info!("mqtt: connected, id={client_id}");
 
     // TCP plus CONNACK, which is the honest meaning of "reaching the broker".
@@ -703,6 +676,116 @@ async fn publish<N: Transport>(
             Err(())
         }
     }
+}
+
+/// TCP connect, then CONNECT and its CONNACK, each bounded by
+/// [`CONNECT_TIMEOUT`].
+///
+/// Shared by [`session`] and [`probe`], so the running unit and setup mode's
+/// check agree on what "reaching the broker" means and classify a failure the
+/// same way. Every failure is logged here.
+async fn handshake<'c, 's>(
+    client: &mut FeederClient<'c, TcpSocket<'s>>,
+    mut socket: TcpSocket<'s>,
+    endpoint: IpEndpoint,
+    options: &ConnectOptions<'_>,
+    client_id: &str,
+) -> Result<(), BrokerFailure> {
+    match with_timeout(CONNECT_TIMEOUT, socket.connect(endpoint)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!("mqtt: tcp connect failed: {e:?}");
+            return Err(match e {
+                ConnectError::ConnectionReset => BrokerFailure::Refused,
+                ConnectError::TimedOut | ConnectError::NoRoute => BrokerFailure::Unreachable,
+                ConnectError::InvalidState => BrokerFailure::Other,
+            });
+        }
+        Err(_) => {
+            warn!(
+                "mqtt: tcp connect timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            );
+            return Err(BrokerFailure::Unreachable);
+        }
+    }
+
+    let id = string(client_id).map_err(|()| BrokerFailure::Other)?;
+
+    // The broker accepted TCP but may never answer CONNECT — a half-dead link,
+    // or a broker wedged under load. Same bound.
+    match with_timeout(CONNECT_TIMEOUT, client.connect(socket, options, Some(id))).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => {
+            warn!("mqtt: connect failed: {e:?}");
+            Err(match e {
+                MqttError::Disconnect {
+                    reason: ReasonCode::BadUserNameOrPassword | ReasonCode::NotAuthorized,
+                    ..
+                } => BrokerFailure::BadLogin,
+                MqttError::Disconnect { .. } => BrokerFailure::Other,
+                _ => BrokerFailure::NoAnswer,
+            })
+        }
+        Err(_) => {
+            warn!("mqtt: no CONNACK within {}s", CONNECT_TIMEOUT.as_secs());
+            Err(BrokerFailure::NoAnswer)
+        }
+    }
+}
+
+/// Logs in to a broker and leaves at once: setup mode's check that the broker
+/// it was given will take this unit (ADR-0025).
+///
+/// No will, no subscriptions, nothing published. The broker sees a client
+/// connect and say goodbye, under the id the unit will use for real. The
+/// socket buffers are the caller's, so they need not sit in its async frame.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site, all of it a record"
+)]
+pub async fn probe(
+    stack: Stack<'static>,
+    host: Ipv4Addr,
+    port: u16,
+    user: &str,
+    password: &str,
+    id: &str,
+    rx: &mut [u8],
+    tx: &mut [u8],
+) -> Result<(), BrokerFailure> {
+    let client_id = client_id(id);
+
+    let socket = TcpSocket::new(stack, rx, tx);
+
+    info!("mqtt: checking {host}:{port}");
+
+    let options = ConnectOptions::new()
+        .clean_start()
+        .keep_alive(KEEP_ALIVE)
+        .user_name(string(user).map_err(|()| BrokerFailure::Other)?)
+        .password(binary(password).map_err(|()| BrokerFailure::Other)?);
+
+    let mut buffer = AllocBuffer;
+    let mut client = FeederClient::new(&mut buffer);
+    let endpoint = IpEndpoint::new(IpAddress::Ipv4(host), port);
+    handshake(&mut client, socket, endpoint, &options, &client_id).await?;
+
+    info!("mqtt: {host}:{port} accepted the login");
+    let _ = with_timeout(
+        CONNECT_TIMEOUT,
+        client.disconnect(&DisconnectOptions::new()),
+    )
+    .await;
+    Ok(())
+}
+
+/// The client id this unit logs in under, in service and in setup's check
+/// alike, so a broker ACL keyed on it sees one client, not two.
+fn client_id(id: &str) -> String<CLIENT_ID_LEN> {
+    let mut client_id = String::new();
+    let _ = write!(client_id, "feeder_{id}");
+    client_id
 }
 
 fn string(text: &str) -> Result<MqttString<'_>, ()> {

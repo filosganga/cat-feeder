@@ -152,13 +152,21 @@ minutes, not a trip to the feeder.
 
 A unit with no configuration raises its own Wi-Fi network and waits.
 
-1. Join `cat-feeder-<id>` from a phone, with the password on the label (a unit
-   with a panel shows it too).
-2. Browse to `http://192.168.4.1`.
-3. Fill in your Wi-Fi and your MQTT broker, and save. The broker must be an
-   **IP address**: the firmware has no DNS resolver. Give the broker's machine
-   a DHCP reservation.
-4. The unit reboots onto your network and appears in Home Assistant.
+1. Join `cat-feeder-<id>` from a phone: scan the label's QR code, or type the
+   password on it (a unit with a panel shows it too). The setup page opens by
+   itself; if it does not, browse to `http://192.168.4.1`.
+2. Pick your Wi-Fi from the list (or type it, for a hidden network), and fill
+   in its password and your MQTT broker. The broker must be an **IP address**:
+   the firmware has no DNS resolver. Give the broker's machine a DHCP
+   reservation.
+3. Press *Test and save*. The unit tries your Wi-Fi and logs in to the broker
+   while your phone stays on its network, then says what happened: a wrong
+   Wi-Fi password or a refused broker login comes back to the form, and
+   nothing is saved. If only the broker failed — it is not running yet, say —
+   *Save anyway* keeps the settings and the unit retries the broker on its own.
+4. Once it works, the page shows the address the unit was given, which is
+   where its admin page will be, and the unit reboots onto your network and
+   appears in Home Assistant.
 
 With a USB cable to hand, `./dev/provision.sh` does the same without the setup
 network: fill in Wi-Fi and the broker in `cfg.toml`, then

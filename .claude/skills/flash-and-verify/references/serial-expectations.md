@@ -879,8 +879,9 @@ SSID, so rejoining reuses the same lease.
 | `dhcp refused ...` | the client asked for an address outside the pool — usually a remembered lease from another ESP access point, which all use 192.168.4.x. It should retry from scratch and succeed |
 | `could not bind udp/67` | something else holds the port; it cannot serve at all |
 
-An association line is evidence, not proof: `watch_stations` re-subscribes on
-each event, so one published in the gap is dropped. A `dhcp` line with no
+An association line is evidence, not proof: the radio re-subscribes on each
+event, and does not listen at all while it scans or tries a network, so one
+published in a gap is dropped. A `dhcp` line with no
 association above it is not a contradiction — the socket cannot miss those.
 
 ### The form — *observed*
@@ -980,6 +981,75 @@ submitting the form needs a phone in someone's hand; the console only shows the
 device's half. Watch particularly for what a real browser does and a test client
 does not: captive-portal probe requests to odd paths, several connections at
 once, and connections opened and dropped without a request.
+
+### Testing before saving, and the captive portal — *expected, not yet observed*
+
+ADR-0025 and ADR-0026. The transcripts above predate both: there, `/save`
+wrote flash at once and the address was typed. What the code prints now, in
+order, for a phone that joins from the label's QR code and gets everything
+right (addresses are placeholders):
+
+```
+INFO - setup: access point up
+INFO - setup: dhcp on 192.168.4.1, pool 192.168.4.2-192.168.4.9
+INFO - setup: dns on 192.168.4.1, every name is 192.168.4.1
+INFO - setup: form on http://192.168.4.1/, 3 connections
+INFO - setup: scan heard 14 access points, 5 networks
+INFO - setup: station aa:bb:cc:dd:ee:ff associated
+INFO - setup: dhcp 192.168.4.2 -> aa:bb:cc:dd:ee:ff
+INFO - setup: dns answered 192.168.4.2:53211 (47 bytes)
+INFO - setup: [0] Get /generate_204 (0 byte body)
+INFO - setup: [1] Get / (0 byte body)
+INFO - setup: [0] Post /save (117 byte body)
+INFO - setup: trying MyWiFi then 192.168.1.10:1883
+INFO - setup: joined MyWiFi on channel 6
+INFO - setup: given 192.168.1.42
+INFO - mqtt: checking 192.168.1.10:1883
+INFO - mqtt: 192.168.1.10:1883 accepted the login
+INFO - setup: saved MyWiFi via 192.168.1.10:1883
+INFO - setup: [1] Get /status (0 byte body)
+INFO - setup: saved, restarting
+```
+
+**What to check, beyond the lines being there:**
+
+- **The form opened by itself.** A `Get /generate_204` (Android) or
+  `Get /hotspot-detect.html` (iOS) right after the `dns answered` lines, and
+  the phone showing the form with no address typed. If the phone instead says
+  "no internet" and stays quiet, the probe never reached the unit: check the
+  `dns answered` lines are there at all.
+- **The network list.** The scan count is access points heard, the second
+  number distinct names; on a mesh the first is several times the second.
+  `Tap the box` on the form shows the names, one per network.
+- **The phone stays on through the trial.** Between `trying` and `saved` the
+  access point moves to the router's channel. The console cannot show a drop
+  inside that window — the radio is not listening for station events while it
+  tries a network — so watch the phone, and the console just after: a
+  `station ... associated` straight after the trial's last line is a phone
+  that dropped and rejoined, and `Get /status` lines carrying on are the page
+  still polling. If it does not rejoin, that is the cost ADR-0025 names, and
+  the page tells the person to rejoin.
+- **`REBOOT_DELAY`** — three of the testing page's polls — from `saved MyWiFi`
+  to `saved, restarting`, so the page shows the address before the network
+  disappears.
+
+**Failure signatures:**
+
+| What the console shows | What the page says |
+|---|---|
+| `MyWiFi refused (FourWayHandshakeTimeout)` or `(AuthenticationFailed)` | the password was refused; form back, filled in |
+| `MyWiFi refused (NoAccessPointFound)` | no such network; mentions 2.4 GHz |
+| `did not answer in <JOIN_TIMEOUT>s` | could not join; console says why |
+| `joined, no lease in <ADDRESS_TIMEOUT>s` | joined, router gave no address |
+| `a N-character key cannot be a WPA2 key` | password refused; the radio was not touched |
+| `mqtt: tcp connect failed: ConnectionReset` then `the broker check failed (Refused)` | nothing listening at that port; *Save anyway* offered |
+| `mqtt: connect failed: Disconnect { reason: BadUserNameOrPassword .. }` | the broker refused the login; *Save anyway* offered |
+| `the driver refused that network (...); raising the access point again` | the phone drops off once; the access point should come back |
+| `saved ... , broker unchecked` | *Save anyway* was pressed |
+
+A second trial after a broker failure starts with the station still joined;
+it leaves first, so expect no `given` line to repeat the old address unless
+the router really did hand out the same one.
 
 ## The status LED
 

@@ -28,51 +28,69 @@
 //! is the socket loop.
 //!
 //! 1. ✅ raise the access point — the SSID appears in a phone's Wi-Fi list
-//! 2. ✅ a second network stack on it, DHCP, so a phone gets an address
-//! 3. ✅ the form on TCP 80, and a saved record reboots into normal mode
+//! 2. ✅ a second network stack on it, DHCP, so a phone gets an address — it
+//!    now also names the unit as DNS server, which is slice 5's to verify
+//! 3. ✅ the form on TCP 80 — saving no longer happens here but after a
+//!    trial, which is slice 6's
 //! 4. ⬜ the panel says what to join and what to type into it — written and
 //!    host-tested, **not yet seen on glass**
+//! 5. ⬜ DNS answers every name with the unit, so a phone opens the form by
+//!    itself (ADR-0026)
+//! 6. ⬜ access point *and* station: a scan for the SSID box, and a trial —
+//!    join, lease, broker login — before anything is saved (ADR-0025)
 //!
-//! The first three ✅ mean verified on hardware, with a phone. The fourth ⬜
-//! does not mean unbuilt: it is wired and its layout is host-tested, and what
-//! is missing is a capture, because seeing it needs a unit with no record and
+//! The first three ✅ mean verified on hardware, with a phone. A ⬜ does not
+//! mean unbuilt: each is wired, its pure half host-tested, and what is missing
+//! is a phone session. The fourth also needs a unit with no record and
 //! therefore a button held through power-on.
 //!
-//! It is also not a network slice at all, which is why it is listed last and
-//! owned by `main.rs`: the boot path spawns `display_task` before calling
+//! The fourth is also not a network slice at all. It is owned by `main.rs`:
+//! the boot path spawns `display_task` before calling
 //! [`run`], because this function never returns and could not spawn it
 //! afterwards. It is the one screen whose contents exist nowhere else — a unit
 //! that has raised a network with a derived password can otherwise only say so
 //! over a serial cable.
 
+use core::fmt::Write as _;
 use core::net::{Ipv4Addr, SocketAddrV4};
+
+use core::str::FromStr as _;
 
 use edge_dhcp::server::{Server, ServerOptions};
 use edge_dhcp::{Options, Packet};
 use embassy_executor::Spawner;
-use embassy_futures::join::join3;
+use embassy_futures::join::{join3, join4};
+use embassy_futures::select::{Either3, select3};
 use embassy_net::tcp::TcpSocket;
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Instant, Timer};
+use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Rng;
 use esp_radio::wifi::{
     AccessPointStationEventInfo, AuthenticationMethod, Config as WifiConfig, ControllerConfig,
-    Interface, WifiController, ap::AccessPointConfig,
+    DisconnectReason, Interface, WifiController, WifiError,
+    ap::AccessPointConfig,
+    scan::ScanConfig,
+    sta::{ScanMethod, StationConfig},
 };
 use heapless::String;
 use log::{error, info, warn};
 use static_cell::StaticCell;
 
+use crate::captive_dns;
+use crate::config::dhcp_config;
 use crate::dhcp::{Mac, SERVER_PORT, Via, reply_to};
 use crate::http;
 use crate::provisioning::{
-    AP_ADDR_OCTETS, Method, PAGE_LEN, Record, record_from_form, render_form, render_saved,
+    AP_ADDR_OCTETS, AP_URL, MAX_NETWORKS, Method, Network, Notice, PAGE_LEN, Record,
+    TESTING_REFRESH_SECS, add_network, record_from_form, render_form, render_saved, render_testing,
 };
 use crate::store::Store;
+use crate::trial::{BrokerFailure, JoinFailure, Trial, keepable, may_start, message, usable_key};
 
 /// The address the unit answers on, and the one printed on the console.
 ///
@@ -115,6 +133,74 @@ const LEASE_SECS: u32 = 600;
 /// explains — cannot happen.
 const DHCP_BUF: usize = 1536;
 
+/// A DNS datagram. 512 bytes is the classic UDP limit, and a phone's query for
+/// one name is a fraction of it; an EDNS query that says it *could* take more
+/// is still a small packet. The reply is the query plus one 16-byte answer.
+const DNS_BUF: usize = 512;
+
+/// How long a trial waits for the Wi-Fi to accept it. An all-channel scan and
+/// a WPA2 handshake take a few seconds; a wrong password is reported by the
+/// driver well inside this, so reaching it means nothing answered at all.
+const JOIN_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a trial waits for a DHCP lease once joined. `dhcp_config` resends
+/// DISCOVER every two seconds, so this is several tries.
+const ADDRESS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long to let the station stack see its link go down between trials.
+const LINK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long a scan may take. One pass over thirteen channels is a couple of
+/// seconds; this only stops a scan that never finishes holding the radio.
+const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The longest a trial can take, for the testing page to promise: leaving a
+/// previous join, joining, a lease, then the broker's TCP connect and CONNACK.
+const TRIAL_MAX_SECS: u32 = (LINK_TIMEOUT.as_secs()
+    + JOIN_TIMEOUT.as_secs()
+    + ADDRESS_TIMEOUT.as_secs()
+    + 2 * crate::mqtt::CONNECT_TIMEOUT.as_secs()) as u32;
+
+/// How long `/rescan` waits for its scan before showing the form anyway.
+const RESCAN_WAIT: Duration = Duration::from_secs(12);
+
+/// How long a unit that saved waits before restarting: three of the testing
+/// page's polls, so it shows where the unit went before the network goes.
+const REBOOT_DELAY: Duration = Duration::from_secs(3 * TESTING_REFRESH_SECS as u64);
+
+/// What the radio and the form share.
+struct Shared {
+    trial: Trial,
+    /// The form body under trial, or last tried. Re-read for the record to
+    /// save, and to fill the form back in when the trial failed. A body is
+    /// never longer than the request it came in, so this cannot truncate.
+    submitted: String<{ http::REQUEST_LEN }>,
+    /// What the last scan heard, for the SSID box.
+    networks: heapless::Vec<Network, MAX_NETWORKS>,
+    /// Bumped by every scan that finishes, so `/rescan` can tell a new list
+    /// from the old one.
+    scans: u32,
+}
+
+static SHARED: Mutex<CriticalSectionRawMutex, Shared> = Mutex::new(Shared {
+    trial: Trial::Idle,
+    submitted: String::new(),
+    networks: heapless::Vec::new(),
+    scans: 0,
+});
+
+/// The form asking the radio to try `Shared::submitted`. The radio owns the
+/// controller, and this and [`SCAN`] are the only things anything else wants
+/// from it.
+///
+/// Signals rather than a queue: a second request before the first is taken
+/// is the same request, and a signal cannot fill up and refuse the one that
+/// matters while the page goes on saying *Testing*.
+static TRY: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// The form asking the radio for a fresh list of networks.
+static SCAN: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
 /// Raises this unit's setup network and stays there.
 ///
 /// Never returns. It reboots once a record is saved, so the normal boot path
@@ -127,11 +213,11 @@ const DHCP_BUF: usize = 1536;
 /// could not actually disagree — the functions are pure — but a single
 /// derivation is what makes that obvious to a reader.
 ///
-/// The controller is kept alive for the life of setup mode: dropping it takes
-/// the network down, and a phone mid-form would simply lose its connection.
+/// `id` is the device id, which the broker check logs in under.
 pub async fn run(
     spawner: Spawner,
     wifi: WIFI<'static>,
+    id: &str,
     ssid: &str,
     password: &str,
     mut store: Store,
@@ -145,7 +231,7 @@ pub async fn run(
     info!("setup: password {password}");
     info!("setup: then browse to http://{AP_ADDR}");
 
-    let config = AccessPointConfig::default()
+    let ap = AccessPointConfig::default()
         .with_ssid(ssid)
         // **Not optional.** `AccessPointConfig::default()` is an *open*
         // network, so leaving this out would broadcast a setup portal anyone
@@ -155,12 +241,18 @@ pub async fn run(
         .with_auth_method(AuthenticationMethod::Wpa2Personal)
         .with_password(password.into());
 
+    // Access point *and* station from the start, the station half naming no
+    // network and so doing nothing until a trial connects it. Starting in the
+    // mode a trial needs is what keeps the phone on: `set_config` stops and
+    // restarts Wi-Fi only when the mode changes, and a trial then never does.
+    //
     // No separate start call: `set_config` calls `esp_wifi_start()` whenever
     // the mode changes, so applying this as the initial config is what brings
     // the network up.
+    let initial = WifiConfig::AccessPointStation(StationConfig::default(), ap.clone());
     let (controller, interfaces) = match esp_radio::wifi::new(
         wifi,
-        ControllerConfig::default().with_initial_config(WifiConfig::AccessPoint(config)),
+        ControllerConfig::default().with_initial_config(initial),
     ) {
         Ok(pair) => pair,
         Err(e) => {
@@ -174,12 +266,8 @@ pub async fn run(
 
     info!("setup: access point up");
 
-    // Named, not `let _ = ...`. A wildcard pattern drops the controller here
-    // and takes the network down with it; a named binding keeps it in this
-    // frame, which never returns.
-    let controller: WifiController<'static> = controller;
-
-    let stack = start_stack(spawner, interfaces.access_point);
+    let ap_stack = start_ap_stack(spawner, interfaces.access_point);
+    let station = start_station_stack(spawner, interfaces.station);
 
     // What the unit knew before, if anything decoded. It is *not* usable — that
     // is why we are here — but it may still carry this unit's bench-measured
@@ -190,16 +278,18 @@ pub async fn run(
         info!("setup: keeping this unit's measured timings from the old record");
     }
 
-    // Shared because the connection slots below all serve `/save`. Contended
-    // only in the moment one of them writes, and that moment ends in a reboot.
+    // Shared because the radio saves a trial that passed, and the connection
+    // slots save one kept by *Save anyway*. Contended only in the moment one
+    // of them writes, and that moment ends in a reboot.
     let store = Mutex::<CriticalSectionRawMutex, _>::new(store);
 
     // `.0` is `!`: every branch diverges, so the tuple is uninhabited and this
     // expression is the function's divergence rather than a value.
-    join3(
-        serve_dhcp(stack),
-        watch_stations(&controller),
-        serve_form(stack, &store, previous.as_ref()),
+    join4(
+        serve_dhcp(ap_stack),
+        serve_dns(ap_stack),
+        radio(controller, ap, station, &store, previous.as_ref(), id),
+        serve_form(ap_stack, &store, previous.as_ref(), ssid),
     )
     .await
     .0
@@ -216,6 +306,59 @@ fn previous_record(store: &mut Store) -> Option<Record> {
     store.load().ok()
 }
 
+/// Owns the controller: scans, trials, and the console's record of who joined.
+///
+/// One owner because a scan and a connect need the controller `&mut`, and the
+/// station events need it `&` — they cannot be three futures at once. The
+/// event wait is the idle branch of a `select`, dropped whenever a command
+/// arrives and taken again afterwards.
+async fn radio(
+    mut controller: WifiController<'static>,
+    ap: AccessPointConfig,
+    station: Stack<'static>,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
+    previous: Option<&Record>,
+    id: &str,
+) -> ! {
+    static PROBE_RX: StaticCell<[u8; 512]> = StaticCell::new();
+    static PROBE_TX: StaticCell<[u8; 512]> = StaticCell::new();
+    let rx = PROBE_RX.init([0; 512]);
+    let tx = PROBE_TX.init([0; 512]);
+
+    // Before any phone has joined, ideally: a scan takes the radio off the
+    // access point's channel for a moment.
+    scan(&mut controller).await;
+
+    loop {
+        // A `let`, not a `match` on the expression: temporaries in a match
+        // scrutinee live to the end of the match, and the event future's
+        // borrow of the controller would outlast the arms that need it `&mut`.
+        //
+        // A trial is listed first, so it wins when both are waiting.
+        let next = select3(
+            TRY.wait(),
+            SCAN.wait(),
+            controller.wait_for_access_point_connected_event_async(),
+        )
+        .await;
+
+        match next {
+            Either3::Second(()) => scan(&mut controller).await,
+            Either3::First(()) => {
+                let outcome =
+                    attempt(&mut controller, &ap, station, store, previous, id, rx, tx).await;
+                SHARED.lock().await.trial = outcome;
+                if let Trial::Saved { .. } = outcome {
+                    Timer::after(REBOOT_DELAY).await;
+                    info!("setup: saved, restarting");
+                    esp_hal::system::software_reset()
+                }
+            }
+            Either3::Third(event) => log_station(event),
+        }
+    }
+}
+
 /// Says on the console who has joined the setup network.
 ///
 /// Nothing else needs this — the DHCP server neither knows nor cares whether a
@@ -227,45 +370,217 @@ fn previous_record(store: &mut Store) -> Option<Record> {
 /// (nothing at all)                       <- the phone never joined: radio, SSID or password
 /// ```
 ///
-/// Without it both look identical — a capture with nothing in it — and the
-/// wrong half gets debugged. `wifi::new` already enables these events, so this
-/// costs a subscription and no configuration.
-///
-/// **Read it as evidence, not proof.** `wait_for_access_point_connected_event_async`
-/// takes a fresh subscription on every call, so an event published in the gap
-/// between one returning and the next subscribing is dropped. A missing
-/// association line is therefore *probably* a phone that never joined, and a
-/// DHCP line without one above it is not a contradiction. The DHCP lines are
-/// the ones that cannot be missed, because they come from the socket itself.
-async fn watch_stations(controller: &WifiController<'static>) -> ! {
-    loop {
-        match controller
-            .wait_for_access_point_connected_event_async()
-            .await
-        {
-            Ok(AccessPointStationEventInfo::Connected(info)) => {
-                info!("setup: station {} associated", Mac(info.mac));
-            }
-            Ok(AccessPointStationEventInfo::Disconnected(info)) => {
-                info!("setup: station {} left ({:?})", Mac(info.mac), info.reason);
-            }
-            Err(e) => warn!("setup: station event failed ({e:?})"),
+/// **Read it as evidence, not proof.** The wait takes a fresh subscription
+/// every time, and is not running at all while the radio scans or tries a
+/// network, so an event in those gaps is dropped. A missing association line
+/// is therefore *probably* a phone that never joined, and a DHCP line without
+/// one above it is not a contradiction. The DHCP lines are the ones that
+/// cannot be missed, because they come from the socket itself.
+fn log_station(event: Result<AccessPointStationEventInfo, WifiError>) {
+    match event {
+        Ok(AccessPointStationEventInfo::Connected(info)) => {
+            info!("setup: station {} associated", Mac(info.mac));
         }
+        Ok(AccessPointStationEventInfo::Disconnected(info)) => {
+            info!("setup: station {} left ({:?})", Mac(info.mac), info.reason);
+        }
+        Err(e) => warn!("setup: station event failed ({e:?})"),
+    }
+}
+
+/// Lists the networks in range, for the form.
+async fn scan(controller: &mut WifiController<'static>) {
+    let found =
+        match with_timeout(SCAN_TIMEOUT, controller.scan_async(&ScanConfig::default())).await {
+            Ok(Ok(found)) => found,
+            Ok(Err(e)) => {
+                warn!("setup: scan failed ({e:?})");
+                return;
+            }
+            Err(_) => {
+                warn!("setup: scan did not finish in {}s", SCAN_TIMEOUT.as_secs());
+                return;
+            }
+        };
+
+    let mut shared = SHARED.lock().await;
+    shared.networks.clear();
+    for ap in &found {
+        add_network(&mut shared.networks, ap.ssid.as_str(), ap.signal_strength);
+    }
+    shared.scans = shared.scans.wrapping_add(1);
+    info!(
+        "setup: scan heard {} access points, {} networks",
+        found.len(),
+        shared.networks.len()
+    );
+}
+
+/// Tries the submitted settings: join, address, broker. Saves them only if the
+/// Wi-Fi joined and the broker took the login (ADR-0025).
+///
+/// The Wi-Fi is tried on the station half while the access point stays up.
+/// Once it joins, the access point moves to the router's channel, which a
+/// phone may notice as a moment off the network — the reason the testing page
+/// polls rather than waits.
+#[allow(clippy::too_many_arguments, reason = "one call site, all of it wiring")]
+async fn attempt(
+    controller: &mut WifiController<'static>,
+    ap: &AccessPointConfig,
+    station: Stack<'static>,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
+    previous: Option<&Record>,
+    id: &str,
+    rx: &mut [u8],
+    tx: &mut [u8],
+) -> Trial {
+    // Validated when it was submitted, so this does not fail; if it somehow
+    // did, there is nothing to try.
+    let Some(record) = submitted_record(previous).await else {
+        return Trial::WifiFailed(JoinFailure::Other);
+    };
+    info!(
+        "setup: trying {} then {}:{}",
+        record.wifi_ssid, record.mqtt_host, record.mqtt_port
+    );
+
+    if !usable_key(&record.wifi_password) {
+        info!(
+            "setup: a {}-character key cannot be a WPA2 key",
+            record.wifi_password.len()
+        );
+        return Trial::WifiFailed(JoinFailure::WrongPassword);
+    }
+
+    // A previous trial that joined and then failed at the broker is still
+    // connected. Leave, and let the station stack see the link drop: it only
+    // forgets its lease on a link change it has polled, and a stale lease
+    // would read as this trial's address.
+    if controller.is_connected() {
+        let _ = controller.disconnect_async().await;
+        let _ = with_timeout(LINK_TIMEOUT, station.wait_link_down()).await;
+    }
+
+    let candidate = StationConfig::default()
+        .with_ssid(record.wifi_ssid.as_str())
+        .with_password(record.wifi_password.as_str().into())
+        // The same as the station mode it is rehearsing: the strongest node
+        // of a mesh, not the first heard.
+        .with_scan_method(ScanMethod::AllChannels);
+    if let Err(e) = controller.set_config(&WifiConfig::AccessPointStation(candidate, ap.clone())) {
+        // `set_config` stops Wi-Fi when it fails, access point included. Put
+        // the access point back, or the phone has nothing to show this on.
+        error!("setup: the driver refused that network ({e:?}); raising the access point again");
+        let restore = WifiConfig::AccessPointStation(StationConfig::default(), ap.clone());
+        if let Err(e) = controller.set_config(&restore) {
+            error!("setup: could not raise the access point again ({e:?})");
+        }
+        return Trial::WifiFailed(JoinFailure::Other);
+    }
+
+    match with_timeout(JOIN_TIMEOUT, controller.connect_async()).await {
+        Ok(Ok(info)) => info!(
+            "setup: joined {} on channel {}",
+            record.wifi_ssid, info.channel
+        ),
+        Ok(Err(WifiError::Disconnected(info))) => {
+            info!("setup: {} refused ({:?})", record.wifi_ssid, info.reason);
+            return Trial::WifiFailed(join_failure(info.reason));
+        }
+        Ok(Err(e)) => {
+            warn!("setup: could not join {} ({e:?})", record.wifi_ssid);
+            return Trial::WifiFailed(JoinFailure::Other);
+        }
+        Err(_) => {
+            info!(
+                "setup: {} did not answer in {}s",
+                record.wifi_ssid,
+                JOIN_TIMEOUT.as_secs()
+            );
+            return Trial::WifiFailed(JoinFailure::Other);
+        }
+    }
+
+    if with_timeout(ADDRESS_TIMEOUT, station.wait_config_up())
+        .await
+        .is_err()
+    {
+        info!("setup: joined, no lease in {}s", ADDRESS_TIMEOUT.as_secs());
+        return Trial::WifiFailed(JoinFailure::NoAddress);
+    }
+    let Some(v4) = station.config_v4() else {
+        return Trial::WifiFailed(JoinFailure::NoAddress);
+    };
+    let addr = v4.address.address().octets();
+    info!("setup: given {}", v4.address.address());
+
+    // Validated as an address by the form.
+    let Ok(host) = Ipv4Addr::from_str(&record.mqtt_host) else {
+        return Trial::BrokerFailed {
+            addr,
+            why: BrokerFailure::Unreachable,
+        };
+    };
+    if let Err(why) = crate::mqtt::probe(
+        station,
+        host,
+        record.mqtt_port,
+        &record.mqtt_user,
+        &record.mqtt_password,
+        id,
+        rx,
+        tx,
+    )
+    .await
+    {
+        info!("setup: the broker check failed ({why:?}); nothing saved");
+        return Trial::BrokerFailed { addr, why };
+    }
+
+    match store.lock().await.save(&record) {
+        Ok(()) => {
+            info!(
+                "setup: saved {} via {}:{}",
+                record.wifi_ssid, record.mqtt_host, record.mqtt_port
+            );
+            Trial::Saved { addr }
+        }
+        Err(e) => {
+            error!("setup: could not save ({e:?})");
+            Trial::NotSaved
+        }
+    }
+}
+
+/// The record under trial, re-read from the body that was submitted.
+async fn submitted_record(previous: Option<&Record>) -> Option<Record> {
+    record_from_form(&SHARED.lock().await.submitted, previous).ok()
+}
+
+/// Sixty-odd disconnect reasons, as the four a person can act on. The reason
+/// itself is on the console.
+fn join_failure(reason: DisconnectReason) -> JoinFailure {
+    match reason {
+        DisconnectReason::FourWayHandshakeTimeout
+        | DisconnectReason::HandshakeTimeout
+        | DisconnectReason::AuthenticationFailed => JoinFailure::WrongPassword,
+        DisconnectReason::NoAccessPointFound
+        | DisconnectReason::NoAccessPointFoundWithCompatibleSecurity
+        | DisconnectReason::NoAccessPointFoundInAuthmodeThreshold
+        | DisconnectReason::NoAccessPointFoundInRssiThreshold => JoinFailure::NotFound,
+        _ => JoinFailure::Other,
     }
 }
 
 /// Brings up the setup network's own embassy-net stack.
 ///
-/// This is a **second** stack. The station-mode one in `main.rs` is not reused
-/// and could not be: this is a different interface with a different address,
-/// and the two never exist at once anyway, because setup mode is entered
-/// before any of the normal tasks are spawned.
+/// This is not the station-mode stack in `main.rs`, which is not reused and
+/// could not be: this is a different interface with a different address, and
+/// the two never exist at once anyway, because setup mode is entered before
+/// any of the normal tasks are spawned.
 ///
 /// Static, not DHCP, because on this network the unit *is* the server.
-fn start_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
-    let rng = Rng::new();
-    let seed = ((rng.random() as u64) << 32) | rng.random() as u64;
-
+fn start_ap_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
     let config = embassy_net::Config::ipv4_static(StaticConfigV4 {
         address: Ipv4Cidr::new(AP_ADDR, 24),
         // No route off this network, because there is nowhere to go: the unit
@@ -275,25 +590,48 @@ fn start_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
         dns_servers: heapless::Vec::new(),
     });
 
-    // One UDP socket for DHCP plus `CONNECTIONS` TCP ones for the form, and a
-    // spare. Too few shows up as `accept failed (InvalidState)` rather than as
-    // anything about sockets.
-    static RESOURCES: StaticCell<StackResources<{ http::CONNECTIONS + 2 }>> = StaticCell::new();
+    // Two UDP sockets, DHCP and DNS, plus `CONNECTIONS` TCP ones for the form,
+    // and a spare. Too few shows up as `accept failed (InvalidState)` rather
+    // than as anything about sockets.
+    static RESOURCES: StaticCell<StackResources<{ http::CONNECTIONS + 3 }>> = StaticCell::new();
 
-    let (stack, runner) =
-        embassy_net::new(device, config, RESOURCES.init(StackResources::new()), seed);
-
+    let (stack, runner) = embassy_net::new(
+        device,
+        config,
+        RESOURCES.init(StackResources::new()),
+        seed(),
+    );
     spawner.spawn(net_task(runner).expect("failed to create setup net task"));
-
     stack
 }
 
-/// Polls the setup stack.
+/// The station half's stack, for trials: a DHCP client, as `main.rs`'s is, and
+/// the broker check's one TCP socket.
+fn start_station_stack(spawner: Spawner, device: Interface<'static>) -> Stack<'static> {
+    // DHCP and the broker check, and a spare.
+    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+
+    let (stack, runner) = embassy_net::new(
+        device,
+        embassy_net::Config::dhcpv4(dhcp_config()),
+        RESOURCES.init(StackResources::new()),
+        seed(),
+    );
+    spawner.spawn(net_task(runner).expect("failed to create trial net task"));
+    stack
+}
+
+fn seed() -> u64 {
+    let rng = Rng::new();
+    ((rng.random() as u64) << 32) | rng.random() as u64
+}
+
+/// Polls a setup stack: the access point's, and the station's for trials.
 ///
 /// A near-twin of `main.rs`'s `net_task`, and separate for a reason that is not
 /// style: that one is defined in the binary crate, and a library module cannot
 /// spawn a task it cannot name. The duplication is two lines.
-#[embassy_executor::task]
+#[embassy_executor::task(pool_size = 2)]
 async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
     runner.run().await
 }
@@ -347,11 +685,14 @@ async fn serve_dhcp(stack: Stack<'static>) -> ! {
     // is broken and drop it, whereas one that routes to us simply finds its
     // packets go nowhere — which is true, and the point.
     //
-    // No DNS server is advertised, because there is not one. A name would have
-    // nothing to resolve against, and hijacking lookups is the captive portal
-    // this design has already declined. The address is typed in by hand.
+    // The unit is the DNS server too, and every name it is asked resolves to
+    // itself — see `serve_dns` and ADR-0026. Not option 114 (RFC 8910): that
+    // names an RFC 8908 *API*, expected over HTTPS and answering JSON, and a
+    // phone handed this form's plain-HTTP address there could well distrust
+    // the network rather than open it.
     let mut gateway = [AP_ADDR];
     let mut options = ServerOptions::new(AP_ADDR, Some(&mut gateway));
+    options.dns = &[AP_ADDR];
     options.lease_duration_secs = LEASE_SECS;
 
     info!("setup: dhcp on {AP_ADDR}, pool {POOL_START}-{POOL_END}");
@@ -380,7 +721,7 @@ async fn serve_dhcp(stack: Stack<'static>) -> ! {
             // Not only a release or a decline, which are the silent ones. This
             // is also what an exhausted pool looks like, and a station sitting
             // here with no address would otherwise show on the console as an
-            // association and then nothing — which `watch_stations` above
+            // association and then nothing — which `log_station` above
             // teaches the reader to interpret as a broken socket loop. Say
             // which it is.
             warn!("setup: dhcp had no answer for {mac} (pool full, or not a request for us)");
@@ -427,6 +768,72 @@ async fn serve_dhcp(stack: Stack<'static>) -> ! {
     }
 }
 
+/// Answers every name with this unit, forever.
+///
+/// This is what makes the phone open the form by itself: its connectivity
+/// probe resolves here, gets the form instead of `204` or `Success`, and the
+/// phone shows it as a captive portal. The packet logic, and which queries go
+/// unanswered, is [`captive_dns::answer`].
+///
+/// One line per name rather than per query: a phone asks the same few names
+/// over and over, and only the first says anything.
+async fn serve_dns(stack: Stack<'static>) -> ! {
+    // Static for the same reason as `serve_dhcp`'s: `main`'s task stack.
+    static RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
+    static TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
+    static RX_BUF: StaticCell<[u8; DNS_BUF]> = StaticCell::new();
+    static TX_BUF: StaticCell<[u8; DNS_BUF]> = StaticCell::new();
+    static QUERY: StaticCell<[u8; DNS_BUF]> = StaticCell::new();
+    static REPLY: StaticCell<[u8; DNS_BUF]> = StaticCell::new();
+
+    let mut socket = UdpSocket::new(
+        stack,
+        RX_META.init([PacketMetadata::EMPTY; 4]),
+        RX_BUF.init([0; DNS_BUF]),
+        TX_META.init([PacketMetadata::EMPTY; 4]),
+        TX_BUF.init([0; DNS_BUF]),
+    );
+    let query = QUERY.init([0; DNS_BUF]);
+    let reply = REPLY.init([0; DNS_BUF]);
+
+    if let Err(e) = socket.bind(captive_dns::PORT) {
+        error!("setup: could not bind udp/{} ({e:?})", captive_dns::PORT);
+        halt().await
+    }
+
+    info!("setup: dns on {AP_ADDR}, every name is {AP_ADDR}");
+
+    let mut answered = 0u32;
+    loop {
+        let (len, from) = match socket.recv_from(query).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                warn!("setup: dns recv failed ({e:?})");
+                continue;
+            }
+        };
+
+        let Some(n) = captive_dns::answer(&query[..len], AP_ADDR_OCTETS, reply) else {
+            info!(
+                "setup: dns ignored a {len} byte packet from {}",
+                from.endpoint
+            );
+            continue;
+        };
+
+        // The first few, so a capture shows the probe arriving without a
+        // phone's background chatter filling it.
+        if answered < 8 {
+            info!("setup: dns answered {} ({len} bytes)", from.endpoint);
+        }
+        answered = answered.saturating_add(1);
+
+        if let Err(e) = socket.send_to(&reply[..n], from).await {
+            warn!("setup: dns send failed ({e:?})");
+        }
+    }
+}
+
 /// Stops, without spinning.
 async fn halt() -> ! {
     loop {
@@ -449,6 +856,7 @@ async fn serve_form(
     stack: Stack<'static>,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
+    setup_ssid: &str,
 ) -> ! {
     let [s0, s1, s2] = http::slots();
 
@@ -458,9 +866,9 @@ async fn serve_form(
     );
 
     join3(
-        connection(0, stack, s0, store, previous),
-        connection(1, stack, s1, store, previous),
-        connection(2, stack, s2, store, previous),
+        connection(0, stack, s0, store, previous, setup_ssid),
+        connection(1, stack, s1, store, previous, setup_ssid),
+        connection(2, stack, s2, store, previous, setup_ssid),
     )
     .await
     .0
@@ -473,6 +881,7 @@ async fn connection(
     buffers: http::Slot,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
+    setup_ssid: &str,
 ) -> ! {
     let http::Slot {
         rx,
@@ -490,8 +899,19 @@ async fn connection(
             continue;
         }
 
-        // `Saved` is the only way out of this loop, and out of setup mode.
-        if let Outcome::Saved = handle(slot, &mut socket, request, page, store, previous).await {
+        // `Saved` is *Save anyway*'s way out of setup mode; a trial that passes
+        // restarts from the radio instead.
+        if let Outcome::Saved = handle(
+            slot,
+            &mut socket,
+            request,
+            page,
+            store,
+            previous,
+            setup_ssid,
+        )
+        .await
+        {
             // The browser is told before the unit disappears. Without the
             // flush the reset races the last segment and the phone shows a
             // connection error on what was actually a success.
@@ -515,6 +935,15 @@ enum Outcome {
 }
 
 /// Reads one request and answers it.
+///
+/// | | |
+/// |---|---|
+/// | `GET /` | the form, suggesting what the last scan heard |
+/// | `POST /save` | starts a trial, then `303` to `/status` |
+/// | `GET /status` | testing, the form again with what failed, or saved |
+/// | `POST /keep` | *Save anyway*: the tested record, broker unchecked |
+/// | `GET /rescan` | scans, then `302` to `/` |
+/// | anything else | `302` to `/` — a phone's connectivity probe, mostly |
 async fn handle(
     slot: u8,
     socket: &mut TcpSocket<'_>,
@@ -522,6 +951,7 @@ async fn handle(
     page: &mut String<PAGE_LEN>,
     store: &Mutex<CriticalSectionRawMutex, Store>,
     previous: Option<&Record>,
+    setup_ssid: &str,
 ) -> Outcome {
     let Some((head, body)) = http::read_request("setup", slot, socket, request).await else {
         return Outcome::Continue;
@@ -537,39 +967,60 @@ async fn handle(
 
     match (head.method, head.path.as_str()) {
         (Method::Post, "/save") => {
-            match record_from_form(body, previous) {
-                Ok(record) => match store.lock().await.save(&record) {
-                    Ok(()) => {
-                        info!(
-                            "setup: saved {} via {}:{}",
-                            record.wifi_ssid, record.mqtt_host, record.mqtt_port
-                        );
-                        render_saved(page, &record);
-                        http::send("setup", socket, "200 OK", "", page).await;
-                        Outcome::Saved
-                    }
-                    Err(e) => {
-                        // Flash refused the write. Say so on the page rather
-                        // than rebooting into a unit that is still unconfigured
-                        // and cannot explain why.
-                        error!("setup: could not save ({e:?})");
-                        render_form(page, body, None, Some("Saving to flash failed."));
-                        http::send("setup", socket, "500 Internal Server Error", "", page).await;
-                        Outcome::Continue
-                    }
-                },
-                Err(e) => {
-                    // Not an error on the console: a typo is ordinary, and
-                    // warning about every one would make a real fault harder
-                    // to spot in a capture.
-                    info!("setup: form rejected ({e:?})");
-                    render_form(page, body, Some(e), None);
-                    // 200, not 400. The body *is* the answer — the form again,
-                    // with the message — and a browser shows it either way.
-                    http::send("setup", socket, "200 OK", "", page).await;
-                    Outcome::Continue
+            if let Err(e) = record_from_form(body, previous) {
+                // Not an error on the console: a typo is ordinary, and
+                // warning about every one would make a real fault harder
+                // to spot in a capture.
+                info!("setup: form rejected ({e:?})");
+                render_form(
+                    page,
+                    body,
+                    Notice::Invalid(e),
+                    &SHARED.lock().await.networks,
+                );
+                // 200, not 400. The body *is* the answer — the form again,
+                // with the message — and a browser shows it either way.
+                http::send("setup", socket, "200 OK", "", page).await;
+                return Outcome::Continue;
+            }
+
+            {
+                let mut shared = SHARED.lock().await;
+                // A second press while one is running, or after one saved,
+                // starts nothing: the status page already says how it went.
+                if may_start(shared.trial) {
+                    shared.submitted.clear();
+                    let _ = shared.submitted.push_str(body);
+                    shared.trial = Trial::Testing;
+                    TRY.signal(());
                 }
             }
+            // See Other, so a reload asks for the status rather than posting
+            // the form a second time.
+            redirect(socket, page, "303 See Other", "/status").await;
+            Outcome::Continue
+        }
+        (Method::Get, "/status") => {
+            let rendered = render_status(page, &*SHARED.lock().await, previous, setup_ssid);
+            if rendered {
+                http::send("setup", socket, "200 OK", "", page).await;
+            } else {
+                redirect(socket, page, "302 Found", "/").await;
+            }
+            Outcome::Continue
+        }
+        (Method::Post, "/keep") => keep(socket, page, store, previous).await,
+        (Method::Get, "/rescan") => {
+            let before = SHARED.lock().await.scans;
+            SCAN.signal(());
+            let _ = with_timeout(RESCAN_WAIT, async {
+                while SHARED.lock().await.scans == before {
+                    Timer::after(Duration::from_millis(250)).await;
+                }
+            })
+            .await;
+            redirect(socket, page, "302 Found", "/").await;
+            Outcome::Continue
         }
         (Method::Other, _) => {
             page.clear();
@@ -577,16 +1028,115 @@ async fn handle(
             http::send("setup", socket, "405 Method Not Allowed", "", page).await;
             Outcome::Continue
         }
-        // `GET /` and everything else. A phone probes several odd paths the
-        // moment it joins — `/generate_204`, `/hotspot-detect.html` — looking
-        // for internet access, and answering them all with the form means
-        // whichever one a browser lands on is the right one. It is not a
-        // captive portal: there is no DNS trickery, so the address is still
-        // typed in by hand.
-        _ => {
-            render_form(page, "", None, None);
+        (Method::Get, "/") => {
+            render_form(page, "", Notice::None, &SHARED.lock().await.networks);
             http::send("setup", socket, "200 OK", "", page).await;
             Outcome::Continue
         }
+        // Everything else, which is mostly a phone's connectivity probe —
+        // `/generate_204`, `/hotspot-detect.html` — arriving here because
+        // `serve_dns` sent it. A redirect rather than the form itself, so the
+        // portal sheet shows the unit's address and the form posts back to it,
+        // not to `connectivitycheck.gstatic.com`.
+        _ => {
+            redirect(socket, page, "302 Found", "/").await;
+            Outcome::Continue
+        }
     }
+}
+
+/// The status page for where the trial is. `false` when there is nothing to
+/// show, because nothing was submitted.
+fn render_status(
+    page: &mut String<PAGE_LEN>,
+    shared: &Shared,
+    previous: Option<&Record>,
+    setup_ssid: &str,
+) -> bool {
+    if shared.trial == Trial::Idle {
+        return false;
+    }
+    let Ok(record) = record_from_form(&shared.submitted, previous) else {
+        return false;
+    };
+    match shared.trial {
+        Trial::Idle => return false,
+        Trial::Testing => render_testing(page, &record.wifi_ssid, setup_ssid, TRIAL_MAX_SECS),
+        Trial::Saved { addr } => render_saved(page, &record, addr),
+        failed => {
+            let Some(html) = message(
+                failed,
+                &record.wifi_ssid,
+                &record.mqtt_host,
+                record.mqtt_port,
+            ) else {
+                return false;
+            };
+            let notice = Notice::Trial {
+                html: &html,
+                offer_keep: matches!(failed, Trial::BrokerFailed { .. }),
+            };
+            render_form(page, &shared.submitted, notice, &shared.networks);
+        }
+    }
+    true
+}
+
+/// *Save anyway*: the record whose Wi-Fi joined and whose broker did not.
+///
+/// Only from that state. The record is the tested one, re-read from what was
+/// submitted, never the boxes as they are now, which may have been edited
+/// since.
+async fn keep(
+    socket: &mut TcpSocket<'_>,
+    page: &mut String<PAGE_LEN>,
+    store: &Mutex<CriticalSectionRawMutex, Store>,
+    previous: Option<&Record>,
+) -> Outcome {
+    let kept = {
+        let shared = SHARED.lock().await;
+        keepable(shared.trial).and_then(|addr| {
+            record_from_form(&shared.submitted, previous)
+                .ok()
+                .map(|record| (record, addr))
+        })
+    };
+    let Some((record, addr)) = kept else {
+        redirect(socket, page, "303 See Other", "/status").await;
+        return Outcome::Continue;
+    };
+
+    match store.lock().await.save(&record) {
+        Ok(()) => {
+            info!(
+                "setup: saved {} via {}:{}, broker unchecked",
+                record.wifi_ssid, record.mqtt_host, record.mqtt_port
+            );
+            render_saved(page, &record, addr);
+            http::send("setup", socket, "200 OK", "", page).await;
+            Outcome::Saved
+        }
+        Err(e) => {
+            // Flash refused the write. Say so on the page rather than
+            // rebooting into a unit that is still unconfigured and cannot
+            // explain why.
+            error!("setup: could not save ({e:?})");
+            SHARED.lock().await.trial = Trial::NotSaved;
+            redirect(socket, page, "303 See Other", "/status").await;
+            Outcome::Continue
+        }
+    }
+}
+
+/// An empty response sending the browser to `path` on the unit's address.
+async fn redirect(
+    socket: &mut TcpSocket<'_>,
+    page: &mut String<PAGE_LEN>,
+    status: &str,
+    path: &str,
+) {
+    page.clear();
+    let mut location: String<64> = String::new();
+    let _ = write!(location, "Location: {AP_URL}{path}\r\n");
+    http::send("setup", socket, status, &location, page).await;
 }

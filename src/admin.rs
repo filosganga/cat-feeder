@@ -1270,7 +1270,7 @@ mod tests {
         assert!(page.contains("margin:0 auto"));
         assert!(page.contains("<link rel=icon href=\"data:image/svg+xml,"));
         let mut form = String::new();
-        crate::provisioning::render_form(&mut form, "", None, None);
+        crate::provisioning::render_form(&mut form, "", crate::provisioning::Notice::None, &[]);
         assert!(form.contains("margin:0 auto") && form.contains(FAVICON));
     }
 

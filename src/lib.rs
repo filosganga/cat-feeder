@@ -26,6 +26,7 @@ extern crate alloc;
 pub mod admin;
 pub mod button;
 pub mod calibrate;
+pub mod captive_dns;
 pub mod dhcp;
 pub mod discovery;
 pub mod display;
@@ -40,6 +41,7 @@ pub mod provisioning;
 pub mod reset;
 pub mod schedule;
 pub mod sha256;
+pub mod trial;
 pub mod tz;
 pub mod update;
 

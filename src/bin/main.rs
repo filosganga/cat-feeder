@@ -294,6 +294,7 @@ async fn main(spawner: Spawner) -> ! {
             cat_feeder::setup::run(
                 spawner,
                 peripherals.WIFI,
+                id.as_str(),
                 ssid.as_str(),
                 password.as_str(),
                 store,
@@ -386,7 +387,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let (stack, runner) = embassy_net::new(
         interfaces.station,
-        embassy_net::Config::dhcpv4(dhcp_config()),
+        embassy_net::Config::dhcpv4(cat_feeder::config::dhcp_config()),
         // DHCP, MQTT and the admin page's connections, with one spare.
         mk_static!(StationSockets, StationSockets::new()),
         seed,
@@ -2098,21 +2099,6 @@ fn log_click(outcome: ClickOutcome, min_spacing_ms: u64) {
         }
         ClickOutcome::NotTurning => {}
     }
-}
-
-/// DHCP as smoltcp does it, but resending DISCOVER after two seconds, not ten.
-///
-/// The ten was measured before it was understood: from `wifi: associated` to
-/// `wifi: connected` took 10015–10059 ms on four captures in a row — the first
-/// DISCOVER goes out as the link comes up, before the access point forwards
-/// for us, and is lost; nothing retries until smoltcp's `discover_timeout`
-/// expires. Shortening the retry rather than delaying the first DISCOVER
-/// covers that cause and any other lost packet, at the cost of at most a few
-/// extra broadcasts on a network that is not answering anyway.
-fn dhcp_config() -> embassy_net::DhcpConfig {
-    let mut config = embassy_net::DhcpConfig::default();
-    config.retry_config.discover_timeout = smoltcp::time::Duration::from_secs(2);
-    config
 }
 
 /// Reports what the DS3231 holds, and keeps it set from live `feeder/time`.
