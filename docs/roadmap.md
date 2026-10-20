@@ -67,6 +67,11 @@ for every net that reaches a GPIO, so each new one gets its macro with the
 wiring. A laptop on the Zero's USB-C feeds the rail past the USB sense, so the
 bench reads "on batteries".
 
+The circuit with the dividers, for laying out with harmonia, is
+`hardware/pcb-battery-sense.net`, with its board file and footprints beside
+it. It is written by hand: `dev/netlist.toml` plus the five parts, so a change
+to the netlist is not carried over.
+
 In order:
 
 1. **Measure the battery current**: as the firmware runs today, and in deep

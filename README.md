@@ -59,7 +59,7 @@ from the unit itself once it is running:
 | 220 µF 16 V electrolytic capacitor | stops the motor's inrush browning out the ESP32 |
 | **MBRF2045CT** dual Schottky | joins USB and the feeder's own AA batteries, so USB never charges them |
 | 1 kΩ resistor | guards the switch input |
-| Perfboard, female headers, a 6-pin header (or JST XH) | the layout is [`pcb.diy`](pcb.diy) |
+| Perfboard, female headers, a 6-pin header (or JST XH) | the layout is [`hardware/pcb.diy`](hardware/pcb.diy) |
 | 5 V USB adapter, 1 A or more | into the feeder's original USB socket |
 | *Optional:* 2× 1 kΩ, a 2-pin female header, a JST XH 4-pin header; a 5 V WS2812, a push button and 100 nF on a small board | to bring the LED and BOOT outside the feeder |
 | *Optional:* ESP32-C6-DEV-KIT-N8 | for development on a breadboard |

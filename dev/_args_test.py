@@ -33,7 +33,7 @@ set -euo pipefail
 
 def python_parser():
     ap = _args.Parser("Does a thing.\n\n  ./dev/thing", prog="thing")
-    ap.add_argument("--layout", default="pcb.diy")
+    ap.add_argument("--layout", default="hardware/pcb.diy")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--side", choices=["component", "solder"], default="component")
     return ap
@@ -54,7 +54,7 @@ def run_python(argv):
 class PythonTools(unittest.TestCase):
     def test_an_option_not_given_takes_its_default(self):
         code, _, _, ns = run_python([])
-        self.assertEqual((code, ns.layout, ns.all, ns.side), (0, "pcb.diy", False, "component"))
+        self.assertEqual((code, ns.layout, ns.all, ns.side), (0, "hardware/pcb.diy", False, "component"))
 
     def test_a_value_follows_its_option_as_a_word_or_after_an_equals_sign(self):
         self.assertEqual(run_python(["--layout", "a.diy"])[3].layout, "a.diy")

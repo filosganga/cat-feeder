@@ -7,7 +7,7 @@ adds options as it would to argparse:
 
     import _args
     ap = _args.Parser(__doc__)
-    ap.add_argument("--layout", default="pcb.diy")
+    ap.add_argument("--layout", default="hardware/pcb.diy")
     args = ap.parse_args()
 
 A bash script describes its options here and evaluates what comes back: one

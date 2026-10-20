@@ -91,7 +91,7 @@ _args.need_python(3, 11, "tomllib")  # only if it needs more than 3.9
 
 def main():
     ap = _args.Parser(__doc__)
-    ap.add_argument("--layout", default="pcb.diy")
+    ap.add_argument("--layout", default="hardware/pcb.diy")
     args = ap.parse_args()
     _args.to_repo_root()
     _args.need_file(args.layout, "layout")

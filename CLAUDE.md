@@ -345,7 +345,8 @@ wiring.rs        the Bus static: every shared handle and who writes it
 config.rs        Config from the flash record; `dhcp_config`, shared with setup
 examples/mkrecord.rs  host-only record builder for dev/provision
 homeassistant/packages/cat_feeder.yaml  the HA half: time, pause, copy schedule
-pcb.diy          the perfboard (component side); its nets are dev/netlist.toml (ADR-0030)
+hardware/pcb.diy  the perfboard (component side); its nets are dev/netlist.toml (ADR-0030)
+hardware/pcb-battery-sense.net  the same plus the roadmap's battery sense, for harmonia
 ```
 
 Tasks: `net`, `mqtt`, `switch`, `feeder`, `schedule` (1 s tick), `rtc`,

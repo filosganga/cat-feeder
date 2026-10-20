@@ -85,7 +85,7 @@ GPIO.
 | 220 µF 16 V electrolytic | across the rail after the diode-OR. Without it the motor's inrush browns out the ESP32. Its two legs are the star points for 5 V and ground |
 | MBRF2045CT dual common-cathode Schottky | the diode-OR between USB and the feeder's batteries. A part marked `MBRF2045DT` is a vendor variant and works |
 | 1 kΩ resistor | R1, in series on the switch line |
-| perfboard, female headers, a 6-pin header for the feeder's cable | the layout is [`pcb.diy`](../pcb.diy), double-sided and plated-through |
+| perfboard, female headers, a 6-pin header for the feeder's cable | the layout is [`pcb.diy`](../hardware/pcb.diy), double-sided and plated-through |
 | JST XH 6-pin header and housing | optional, for a feeder whose wires need re-crimping anyway |
 | 2× 1 kΩ resistor, a 2-pin female header, a JST XH 4-pin header | optional: R2, R3, `Pads` and `Ext`, for the LED and BOOT board — see *The LED and BOOT connectors* |
 | Waveshare ESP32-C6-DEV-KIT-N8 | optional, for development on a breadboard |
@@ -142,7 +142,7 @@ are referenced to the Zero's ground, so they must be.
 
 ## The perfboard
 
-[`pcb.diy`](../pcb.diy) is the layout, drawn in
+[`pcb.diy`](../hardware/pcb.diy) is the layout, drawn in
 [DIY Layout Creator](https://github.com/bancika/diy-layout-creator). Open it
 there to print or export a picture to solder from. What it must connect is
 [`dev/netlist.toml`](../dev/netlist.toml); the drawing places it. GPIO3–GPIO5 are

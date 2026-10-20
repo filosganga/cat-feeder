@@ -94,7 +94,7 @@ def mm_to_in(el, tag, default):
 
 def main():
     ap = _args.Parser(__doc__)
-    ap.add_argument("--layout", default="pcb.diy")
+    ap.add_argument("--layout", default="hardware/pcb.diy")
     ap.add_argument("--out")
     ap.add_argument("--netlist", default="dev/netlist.toml")
     ap.add_argument("--side", default="component")
