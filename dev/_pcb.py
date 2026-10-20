@@ -208,7 +208,7 @@ def load(path):
 
 
 def load_netlist(path):
-    """dev/netlist.toml as {net name: (pins, firmware macro or None)}, or exits.
+    """hardware/netlist.toml as {net name: (pins, firmware macro or None)}, or exits.
 
     Mistakes in the file itself are reported here rather than as drawing faults:
     a pin in two nets, or a net of one pin, is a netlist that says nothing true.

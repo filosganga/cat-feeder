@@ -11,7 +11,7 @@
 The picture is what dev/pcb-check believes, drawn from the same parser:
 holes and bottom traces coloured by net, jumpers, parts, header pin names and
 module outlines, with every net listed beside the board under its name in
-dev/netlist.toml, and anything the two disagree on in red. Open it in any
+hardware/netlist.toml, and anything the two disagree on in red. Open it in any
 browser; hovering a hole names it, its pin and its net. It is not DIYLC's own
 drawing, which only its File menu exports.
 
@@ -96,7 +96,7 @@ def main():
     ap = _args.Parser(__doc__)
     ap.add_argument("--layout", default="hardware/pcb.diy")
     ap.add_argument("--out")
-    ap.add_argument("--netlist", default="dev/netlist.toml")
+    ap.add_argument("--netlist", default="hardware/netlist.toml")
     ap.add_argument("--side", default="component")
     ap.add_argument("--true-size", action="store_true")
     args = ap.parse_args()

@@ -145,7 +145,7 @@ are referenced to the Zero's ground, so they must be.
 [`pcb.diy`](../hardware/pcb.diy) is the layout, drawn in
 [DIY Layout Creator](https://github.com/bancika/diy-layout-creator). Open it
 there to print or export a picture to solder from. What it must connect is
-[`dev/netlist.toml`](../dev/netlist.toml); the drawing places it. GPIO3–GPIO5 are
+[`hardware/netlist.toml`](../hardware/netlist.toml); the drawing places it. GPIO3–GPIO5 are
 unconnected, and the DS3231 is alone on the I²C bus.
 
 **The drawing is the component side**, with the bottom traces seen through the
@@ -337,9 +337,9 @@ threshold at about 2.8 V.
 Run it after any edit to `pcb.diy`. It reads the drawing and fails on:
 
 - a header whose pin names disagree with the part's silkscreen
-  ([`dev/pinouts.toml`](../dev/pinouts.toml));
+  ([`hardware/pinouts.toml`](../hardware/pinouts.toml));
 - a supply joined to ground or to another supply;
-- a net that differs from [`dev/netlist.toml`](../dev/netlist.toml), the
+- a net that differs from [`hardware/netlist.toml`](../hardware/netlist.toml), the
   statement of what connects to what (ADR-0030): split, joined to another, or
   reaching a pin meant to be spare;
 - a GPIO wired other than where `src/board.rs` drives it;

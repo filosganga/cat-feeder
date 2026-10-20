@@ -32,7 +32,7 @@ its row; git history keeps the record.
   ERC, the layout on a 2.54 mm grid, DRC including body outlines and 3D fit
   (`pcb-check` cannot see a part's size), all of it headless through
   `kicad-cli`, and the same project for a manufactured PCB. It means redrawing
-  `pcb.diy` and retiring `pcb-check` and `pcb-render`. `dev/netlist.toml`
+  `pcb.diy` and retiring `pcb-check` and `pcb-render`. `hardware/netlist.toml`
   (ADR-0030) is the half of it already done, and `dev/kicad-netlist`
   already writes it as a KiCad netlist, with footprints for the modules.
 - Tune the LED palette in a real room; green reads much brighter than blue at the same value.
@@ -69,7 +69,7 @@ bench reads "on batteries".
 
 The circuit with the dividers, for laying out with harmonia, is
 `hardware/pcb-battery-sense.net`, with its board file and footprints beside
-it. It is written by hand: `dev/netlist.toml` plus the five parts, so a change
+it. It is written by hand: `hardware/netlist.toml` plus the five parts, so a change
 to the netlist is not carried over.
 
 In order:

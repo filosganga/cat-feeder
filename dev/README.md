@@ -290,7 +290,7 @@ docker compose down -v                  # stop and wipe every retained message
 ./dev/pcb-check                         # check pcb.diy before soldering; see the pcb-review skill
 ./dev/pcb-render                        # draw what the check sees: pcb.diy -> target/pcb.svg
 ./dev/pcb-render --side solder --true-size   # the bottom, mirrored, to print at 100% and solder from
-./dev/kicad-netlist                     # dev/netlist.toml as a KiCad netlist -> target/kicad/
+./dev/kicad-netlist                     # hardware/netlist.toml as a KiCad netlist -> target/kicad/
 ./dev/ota --address <ip> --id <id> --board zero   # build and send firmware over the network
 ./dev/bootloader                        # rebuild bootloader/bootloader.bin in Docker (ADR-0024); rarely
 ```

@@ -16,7 +16,7 @@
 # Copy a new part's row from its silkscreen, never from the drawing.
 #
 # Only the parts live here. What each pin is wired to, and which are spare, is
-# the design, and `dev/netlist.toml` says that.
+# the design, and `hardware/netlist.toml` says that.
 
 ["ESP32C6-L"]
 module = "ESP32-C6-Zero"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exports dev/netlist.toml as a KiCad netlist, for tools that read one.
+"""Exports hardware/netlist.toml as a KiCad netlist, for tools that read one.
 
   ./dev/kicad-netlist                          # -> target/kicad/cat-feeder.net
   ./dev/kicad-netlist --out board.net          # somewhere else
@@ -8,9 +8,9 @@
   ./dev/kicad-netlist --pinouts parts.toml     # another set of part pinouts
 
 Writes KiCad's S-expression netlist (version "E", as Eeschema 8 writes it):
-each [part.<ref>] of dev/netlist.toml as a component with its value and a
+each [part.<ref>] of hardware/netlist.toml as a component with its value and a
 footprint from KiCad's standard library, each net with its pins numbered by
-dev/pinouts.toml. The modules have no stock footprint, so theirs are
+hardware/pinouts.toml. The modules have no stock footprint, so theirs are
 generated from pcb.diy into cat-feeder.pretty/ beside the netlist; a tool
 reading the netlist needs that library too.
 
@@ -39,7 +39,7 @@ import _pcb as pc  # noqa: E402
 # The output is KiCad's S-expression netlist (`(export (version "E") ...)`, what
 # Eeschema 8 and `kicad-cli sch export netlist` write): one `comp` per part with
 # its value and footprint, one `net` per net with a `node` per pin. Pins numbered
-# by dev/pinouts.toml, pin 1 first, carry their silkscreen name as `pinfunction`.
+# by hardware/pinouts.toml, pin 1 first, carry their silkscreen name as `pinfunction`.
 # Pins in no net are written as KiCad writes them, one `unconnected-(...)` net
 # each, so every pad of every part is accounted for.
 #
@@ -86,8 +86,8 @@ def lib_part(name):
 def main():
     ap = _args.Parser(__doc__)
     ap.add_argument("--layout", default="hardware/pcb.diy")
-    ap.add_argument("--netlist", default="dev/netlist.toml")
-    ap.add_argument("--pinouts", default="dev/pinouts.toml")
+    ap.add_argument("--netlist", default="hardware/netlist.toml")
+    ap.add_argument("--pinouts", default="hardware/pinouts.toml")
     ap.add_argument("--out", default="target/kicad/cat-feeder.net")
     args = ap.parse_args()
     _args.to_repo_root()

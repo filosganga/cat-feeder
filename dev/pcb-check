@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks the perfboard drawing before anything is soldered or powered.
 
-  ./dev/pcb-check                        # pcb.diy against dev/pinouts.toml
+  ./dev/pcb-check                        # pcb.diy against hardware/pinouts.toml
   ./dev/pcb-check --all                  # ...and list signal-to-signal neighbours too
   ./dev/pcb-check --layout other.diy     # another drawing
   ./dev/pcb-check --pinouts parts.toml   # another set of part pinouts
@@ -10,12 +10,12 @@
 
 Reports, in order:
 
-  pinouts     each header's pin names against dev/pinouts.toml, the parts' own
+  pinouts     each header's pin names against hardware/pinouts.toml, the parts' own
               silkscreen order
   power       nets that join ground to a supply, 5 V to 3V3, or hold a polarised
               capacitor the wrong way round
   nets        every net with its pins, and the pins connected to nothing
-  netlist     the drawing's nets against dev/netlist.toml, what is meant to
+  netlist     the drawing's nets against hardware/netlist.toml, what is meant to
               connect to what: a net split, two joined, a pin where none belongs
               (ADR-0030)
   firmware    each net's GPIO against the pin src/board.rs hands out for it
@@ -27,7 +27,7 @@ Exits 1 when a pinout, a supply, a net, a firmware pin or a label is wrong;
 neighbours are reported for reading, since every perfboard has them.
 
 What it cannot know: anything the drawing does not say. A part missing from
-dev/pinouts.toml is reported as unchecked, not as fine, and a part this does
+hardware/pinouts.toml is reported as unchecked, not as fine, and a part this does
 not recognise is listed under "Not checked" rather than silently dropped. Why
 each rule is shaped as it is: dev/_pcb.py.
 """
@@ -50,8 +50,8 @@ from _pcb import (  # noqa: E402
 def main():
     ap = _args.Parser(__doc__)
     ap.add_argument("--layout", default="hardware/pcb.diy")
-    ap.add_argument("--pinouts", default="dev/pinouts.toml")
-    ap.add_argument("--netlist", default="dev/netlist.toml")
+    ap.add_argument("--pinouts", default="hardware/pinouts.toml")
+    ap.add_argument("--netlist", default="hardware/netlist.toml")
     ap.add_argument("--board-rs", default="src/board.rs")
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()

@@ -256,7 +256,7 @@ cargo test --lib --target "$(rustc -vV | awk '/^host:/{print $2}')"  # pure logi
 ./dev/capture [--reset]                # listen without reflashing; --reset: from boot
 ./dev/provision [--host ip --user u --password-file -] [--detent-ms n] [--portion-scale p]
 ./dev/soak --hours n && ./dev/soak-report
-./dev/pcb-check                        # after every pcb.diy edit, against dev/netlist.toml; pcb-review skill
+./dev/pcb-check                        # after every pcb.diy edit, against hardware/netlist.toml; pcb-review skill
 docker compose up -d && ./dev/watch    # local broker + HA; see dev/README.md
 ```
 
@@ -345,7 +345,7 @@ wiring.rs        the Bus static: every shared handle and who writes it
 config.rs        Config from the flash record; `dhcp_config`, shared with setup
 examples/mkrecord.rs  host-only record builder for dev/provision
 homeassistant/packages/cat_feeder.yaml  the HA half: time, pause, copy schedule
-hardware/pcb.diy  the perfboard (component side); its nets are dev/netlist.toml (ADR-0030)
+hardware/pcb.diy  the perfboard (component side); its nets are hardware/netlist.toml (ADR-0030)
 hardware/pcb-battery-sense.net  the same plus the roadmap's battery sense, for harmonia
 ```
 

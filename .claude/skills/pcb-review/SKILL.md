@@ -1,6 +1,6 @@
 ---
 name: pcb-review
-description: Reviews the perfboard drawing, pcb.diy (DIY Layout Creator), before anything is soldered or powered — runs dev/pcb-check, reads its pinout, netlist (against dev/netlist.toml), firmware-pin and neighbouring-net reports, and says what the check cannot see. Use whenever pcb.diy changes, when asked whether a layout is right or safe to solder, when a new module or header is added to the board, when a soldered unit does nothing at power-on, or when writing the beep-test table in `docs/hardware.md`.
+description: Reviews the perfboard drawing, pcb.diy (DIY Layout Creator), before anything is soldered or powered — runs dev/pcb-check, reads its pinout, netlist (against hardware/netlist.toml), firmware-pin and neighbouring-net reports, and says what the check cannot see. Use whenever pcb.diy changes, when asked whether a layout is right or safe to solder, when a new module or header is added to the board, when a soldered unit does nothing at power-on, or when writing the beep-test table in `docs/hardware.md`.
 ---
 
 # Reviewing the perfboard
@@ -22,9 +22,9 @@ whether the drawing is saved before trusting a result, and rerun after it is.
 
 | Section | Fails on | What it caught here |
 |---|---|---|
-| Pinouts | a header's names disagree with `dev/pinouts.toml` | the DRV8833's `Vcc`/`GND` drawn swapped: a reversed supply on first power |
+| Pinouts | a header's names disagree with `hardware/pinouts.toml` | the DRV8833's `Vcc`/`GND` drawn swapped: a reversed supply on first power |
 | Power | ground joined to a supply, 5 V to 3V3, an electrolytic's `-` on a supply | |
-| Netlist | a net of `dev/netlist.toml` split in the drawing, two joined, or a pin wired that no net has | the switch line one jumper short of GPIO2 (split) |
+| Netlist | a net of `hardware/netlist.toml` split in the drawing, two joined, or a pin wired that no net has | the switch line one jumper short of GPIO2 (split) |
 | Firmware pins | a net's GPIO is not the one its `src/board.rs` macro hands out, or a macro no net claims | |
 | Labels | a printed label on a pin of another name | |
 | Neighbours | never; it ranks | 5 V beside ground, 5 V beside GPIO2, 3V3 beside `In1` |
@@ -35,7 +35,7 @@ its netlist on every part it predates (R1, R2, R3, `Pads`, `Ext`): a good
 regression test for a change to the script.
 
 The netlist is the design and the drawing only places it (ADR-0030): change
-`dev/netlist.toml` first, then draw until the check agrees. A pin in no net is
+`hardware/netlist.toml` first, then draw until the check agrees. A pin in no net is
 meant to be spare; the file lists the spare ones in a closing comment.
 
 **Neighbours are for reading, not passing.** Every perfboard has nets a hole
@@ -55,9 +55,9 @@ beep-test probe goes.
 
 Say these out loud in a review; a green run does not cover them.
 
-- **Whether `dev/netlist.toml` is right.** The check holds the drawing to it,
+- **Whether `hardware/netlist.toml` is right.** The check holds the drawing to it,
   and the firmware's pins to it; it cannot tell a net that should not exist.
-- **A part's real pinout, unless it is in `dev/pinouts.toml`.** The netlist is
+- **A part's real pinout, unless it is in `hardware/pinouts.toml`.** The netlist is
   only as good as the pin names in the drawing. A header with no entry prints
   `??` and is unchecked. When a module is added, copy its row **from the
   silkscreen on the part**, never from the drawing — the drawing is the thing
@@ -77,9 +77,9 @@ Say these out loud in a review; a green run does not cover them.
 
 ## When the board changes
 
-1. A new or rewired net: `dev/netlist.toml` first — the design — with
+1. A new or rewired net: `hardware/netlist.toml` first — the design — with
    `firmware = "<macro>"` on any net that reaches a GPIO.
-2. A new part: its row in `dev/pinouts.toml`, from the part's silkscreen.
+2. A new part: its row in `hardware/pinouts.toml`, from the part's silkscreen.
 3. Edit and save in DIY Layout Creator.
 4. `./dev/pcb-check` until it passes, then read the neighbours.
    `./dev/pcb-render` draws the same nets to `target/pcb.svg`, named by the

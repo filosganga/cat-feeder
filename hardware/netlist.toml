@@ -9,7 +9,7 @@
 #
 # Each net is `[net.<name>]` with:
 #   pins      every pin on it, as `Header.pin` (the names in pcb.diy and
-#             dev/pinouts.toml) or `Part.lead` (R1.1, C1.+, Q1.2). Case does
+#             hardware/pinouts.toml) or `Part.lead` (R1.1, C1.+, Q1.2). Case does
 #             not matter. A resistor's two leads may be fitted either way.
 #   firmware  for a net that reaches a GPIO, the src/board.rs macro that drives
 #             it. The check holds the two to the same GPIO, and every macro in
@@ -115,7 +115,7 @@ pins = ["R3.2", "Ext.BOOT"]
 #              spacing, or their bodies.
 #   symbol     "Library:Name", the KiCad symbol, for the netlist's libsource.
 #   rows       a part on headers: its pin rows, by header name in pcb.diy and
-#              dev/pinouts.toml. Pins are numbered along them in pinouts order,
+#              hardware/pinouts.toml. Pins are numbered along them in pinouts order,
 #              the second row carrying on from the first.
 #   outline    a generated footprint's body: a rectangle's name in pcb.diy.
 #   drawn      a two- or three-lead part's name in pcb.diy, if not the

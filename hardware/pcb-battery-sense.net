@@ -1,5 +1,5 @@
 (export (version "E")
-  (design (source "dev/netlist.toml, by hand, plus the battery sense of docs/roadmap.md") (tool "hand-written"))
+  (design (source "hardware/netlist.toml, by hand, plus the battery sense of docs/roadmap.md") (tool "hand-written"))
   (components
     (comp (ref "U1") (value "ESP32-C6-Zero") (footprint "ESP32-C6-Zero"))
     (comp (ref "U2") (value "DRV8833 breakout") (footprint "DRV8833-breakout"))

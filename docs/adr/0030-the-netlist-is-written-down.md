@@ -1,6 +1,6 @@
 # The netlist is written down, and the drawing is checked against it
 
-`dev/netlist.toml` says what connects to what on the perfboard, net by net.
+`hardware/netlist.toml` says what connects to what on the perfboard, net by net.
 `pcb.diy` only says where the parts sit and how the copper runs, and
 `dev/pcb-check` fails on any difference between the two: a net split, two
 nets joined, a pin wired that no net has. A net that reaches a GPIO names the
@@ -11,7 +11,7 @@ the nets from it and judged them by local rules (pin order, supplies, spare
 pins), so a drawing that agreed with itself passed even when it connected the
 wrong things: a data line run to the wrong resistor broke no rule. The intent
 lived in three places that nothing compared: `board.rs`'s pin table, the
-tables in `docs/hardware.md`, and the `unused` lists in `dev/pinouts.toml`.
+tables in `docs/hardware.md`, and the `unused` lists in `hardware/pinouts.toml`.
 Those lists move into the netlist, where a pin in no net is spare;
 `pinouts.toml` is left with the parts alone.
 
